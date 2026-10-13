@@ -5,27 +5,49 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      actions-minor:
+        update-types: ["minor", "patch"]
+      actions-major:
+        update-types: ["major"]
 
   - package-ecosystem: npm
     directory: /web
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      web-minor:
+        update-types: ["minor", "patch"]
+      web-major:
+        update-types: ["major"]
 
   - package-ecosystem: npm
     directory: /ios/app-store-images
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      store-images-minor:
+        update-types: ["minor", "patch"]
+      store-images-major:
+        update-types: ["major"]
 
   - package-ecosystem: bundler
     directory: /ios
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      bundler-minor:
+        update-types: ["minor", "patch"]
+      bundler-major:
+        update-types: ["major"]
 
   # XcodeGen owns the dependency declarations. Before merging a Swift update,
   # apply its version changes to ios/project.yml and regenerate the project.
+  # Swift updates stay UNGROUPED so each major/minor can be regenerated and
+  # validated individually.
   - package-ecosystem: swift
     directory: /ios
     schedule:
