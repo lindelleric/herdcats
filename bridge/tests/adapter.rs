@@ -256,14 +256,110 @@ fn recognized_messages_with_invalid_content_fail_closed() {
     }
 }
 #[test]
-fn complete_and_partial_oversized_records_are_rejected() {
+fn complete_oversized_image_records_are_counted_once_and_later_text_is_visible() {
     let temp = Temp::new();
     let path = temp.0.join("log.jsonl");
-    for ending in ["", "\n"] {
-        fs::write(&path, format!("{}{}", "x".repeat(1024 * 1024 + 1), ending)).unwrap();
-        assert_eq!(
-            Follower::default().refresh(&path, SESSION).unwrap_err(),
-            "record_too_large"
-        );
-    }
+    let image = oversized_image_record();
+    fs::write(
+        &path,
+        format!("{}{}", line(&message("before", "before image")), image),
+    )
+    .unwrap();
+    let mut follower = Follower::default();
+    assert!(follower.refresh(&path, SESSION).unwrap());
+    assert_eq!(follower.transcript.unknown_records, 1);
+    assert_eq!(follower.transcript.entries.len(), 1);
+    assert!(!follower.refresh(&path, SESSION).unwrap());
+    append(&path, &line(&message("after", "after image")));
+    assert!(follower.refresh(&path, SESSION).unwrap());
+    assert_eq!(follower.transcript.unknown_records, 1);
+    assert_eq!(follower.transcript.entries.len(), 2);
+    assert_eq!(follower.transcript.entries[1].text, "after image");
+    assert_eq!(follower.offset, fs::metadata(&path).unwrap().len());
+}
+
+#[test]
+fn incomplete_oversized_image_records_wait_for_newline_without_counting() {
+    let temp = Temp::new();
+    let path = temp.0.join("log.jsonl");
+    let image = oversized_image_record();
+    let before = line(&message("before", "before image"));
+    fs::write(&path, format!("{}{}", before, &image[..image.len() - 2])).unwrap();
+    let mut follower = Follower::default();
+    assert!(follower.refresh(&path, SESSION).unwrap());
+    assert_eq!(follower.offset, before.len() as u64);
+    assert_eq!(follower.transcript.unknown_records, 0);
+    assert!(!follower.refresh(&path, SESSION).unwrap());
+    append(&path, "}");
+    assert!(!follower.refresh(&path, SESSION).unwrap());
+    assert_eq!(follower.offset, before.len() as u64);
+    assert_eq!(follower.transcript.unknown_records, 0);
+    append(
+        &path,
+        &format!("\n{}", line(&message("after", "after image"))),
+    );
+    assert!(follower.refresh(&path, SESSION).unwrap());
+    assert_eq!(follower.transcript.unknown_records, 1);
+    assert_eq!(follower.transcript.entries.len(), 2);
+    assert_eq!(follower.transcript.entries[1].text, "after image");
+    assert!(!follower.refresh(&path, SESSION).unwrap());
+    assert_eq!(follower.transcript.unknown_records, 1);
+}
+
+#[test]
+fn oversized_record_omissions_reset_on_rewrite_and_small_malformed_rows_fail_closed() {
+    let temp = Temp::new();
+    let path = temp.0.join("log.jsonl");
+    let image = oversized_image_record();
+    fs::write(
+        &path,
+        format!("{}{}", image, line(&message("old", "old text"))),
+    )
+    .unwrap();
+    let mut follower = Follower::default();
+    follower.refresh(&path, SESSION).unwrap();
+    let generation = follower.generation;
+    fs::write(
+        &path,
+        format!("{}{}", image, line(&message("new", "new text"))),
+    )
+    .unwrap();
+    assert!(follower.refresh(&path, SESSION).unwrap());
+    assert_eq!(follower.generation, generation + 1);
+    assert_eq!(follower.transcript.unknown_records, 1);
+    assert_eq!(follower.transcript.entries.len(), 1);
+    assert_eq!(follower.transcript.entries[0].text, "new text");
+    let offset = follower.offset;
+    append(&path, &format!("{}{{bad}}\n", image));
+    assert_eq!(
+        follower.refresh(&path, SESSION).unwrap_err(),
+        "invalid_transcript"
+    );
+    assert_eq!(follower.offset, offset);
+    assert_eq!(follower.transcript.unknown_records, 1);
+    assert_eq!(follower.transcript.entries[0].text, "new text");
+    fs::write(&path, line(&message("small", "small text"))).unwrap();
+    follower.refresh(&path, SESSION).unwrap();
+    assert_eq!(follower.transcript.unknown_records, 0);
+    assert_eq!(follower.transcript.entries.len(), 1);
+    assert_eq!(follower.transcript.entries[0].text, "small text");
+}
+
+fn oversized_image_record() -> String {
+    line(
+        &json!({"type":"user","uuid":"image-result","sessionId":SESSION,
+        "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"image-tool",
+            "content":[{"type":"image","source":{"type":"base64","media_type":"image/png",
+                "data":"A".repeat(1024 * 1024)}}]}]}}),
+    )
+}
+
+fn append(path: &std::path::Path, bytes: &str) {
+    use std::io::Write;
+    fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .unwrap()
+        .write_all(bytes.as_bytes())
+        .unwrap();
 }

@@ -1,7 +1,8 @@
 #!/bin/sh
 # Pinned release installer. No sudo, compiler, daemon or agent configuration.
+main() {
 set -eu
-HB_VERSION=0.1.0
+HB_VERSION=0.1.1
 HB_BIN_DIR=${HOME:?HOME is required}/.local/bin
 HB_REPLACE=no
 HB_BASE=https://github.com/zhiyao/herdcats/releases/download
@@ -58,15 +59,14 @@ case "$HB_EXPECTED" in *[!0-9a-f]*) fail 'Invalid checksum';; esac
 if [ "$HB_HASH" = sha256sum ]; then HB_ACTUAL=$(sha256sum "$HB_TEMP/$HB_ASSET" | awk '{print $1}')
 else HB_ACTUAL=$(shasum -a 256 "$HB_TEMP/$HB_ASSET" | awk '{print $1}'); fi
 [ "$HB_EXPECTED" = "$HB_ACTUAL" ] || fail 'Checksum mismatch; nothing installed'
-chmod 700 "$HB_TEMP/$HB_ASSET"
-# The downloaded release is a trusted executable; probe its fixed v1 contract.
-HB_PROBE=$("$HB_TEMP/$HB_ASSET" --version-json) || fail 'Binary cannot run on this host'
-HB_CONTRACT='{"agents":["claude"],"herdr_protocol":22,"name":"herdcats-bridge","protocol":1,"version":"'"$HB_VERSION"'"}'
-[ "$HB_PROBE" = "$HB_CONTRACT" ] || fail 'Release version or protocol mismatch'
 mkdir -p "$HB_BIN_DIR"
 HB_STAGE=$(mktemp -d "$HB_BIN_DIR/.herdcats-bridge.XXXXXX")
 cp "$HB_TEMP/$HB_ASSET" "$HB_STAGE/herdcats-bridge"
 chmod 755 "$HB_STAGE/herdcats-bridge"
+# Probe the verified release on the destination volume: TMPDIR may be noexec.
+HB_PROBE=$("$HB_STAGE/herdcats-bridge" --version-json) || fail 'Binary cannot run on this host'
+HB_CONTRACT='{"agents":["claude"],"herdr_protocol":22,"name":"herdcats-bridge","protocol":1,"version":"'"$HB_VERSION"'"}'
+[ "$HB_PROBE" = "$HB_CONTRACT" ] || fail 'Release version or protocol mismatch'
 if [ "$HB_REPLACE" = yes ]; then
   if [ -L "$HB_DEST" ] || { [ -e "$HB_DEST" ] && [ ! -f "$HB_DEST" ]; }; then fail 'Destination changed; refusing replacement'; fi
   mv -f "$HB_STAGE/herdcats-bridge" "$HB_BIN_DIR/"
@@ -74,3 +74,7 @@ else
   link "$HB_STAGE/herdcats-bridge" "$HB_DEST" || fail 'Destination appeared; nothing replaced'
 fi
 printf '%s\n' "Installed herdcats-bridge $HB_VERSION at $HB_DEST" 'Return to Herdcats and tap Check again.'
+}
+
+# Keep invocation last so an incomplete curl | sh download cannot run setup.
+main "$@"

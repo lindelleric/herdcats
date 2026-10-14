@@ -23,6 +23,7 @@ import Observation
     private var paneId = ""
     private var epoch: String?
     private var sequence: UInt64 = 0
+    private var evictedIds: Set<String> = []
 
     func begin(owner: UUID, paneId: String) {
         self.owner = owner
@@ -70,7 +71,19 @@ import Observation
                 let rows = data.entries
             else { throw AgentBridgeError.identityMismatch }
             try validate(rows)
-            for row in rows {
+            let removed = data.evictedIds ?? []
+            guard removed.count <= 1000, removed.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 264 }) else {
+                throw AgentBridgeError.invalidFrame
+            }
+            let removedSet = Set(removed)
+            guard evictedIds.union(removedSet).count <= 100_000 else { throw AgentBridgeError.invalidFrame }
+            evictedIds.formUnion(removedSet)
+            entries.removeAll { removedSet.contains($0.id) }
+            if let cursor = before, removedSet.contains(cursor) {
+                before = entries.first?.id
+                hasMore = false
+            }
+            for row in rows where !evictedIds.contains(row.id) {
                 if let index = entries.firstIndex(where: { $0.id == row.id }) {
                     entries[index] = row
                 } else {
@@ -84,7 +97,8 @@ import Observation
                 hasMore = true
                 before = entries.first?.id
             }
-            agentStatus = data.agentStatus
+            agentStatus = data.agentStatus ?? agentStatus
+            unknownRecords = data.unknownRecords ?? unknownRecords
             droppedEntries = data.droppedEntries ?? droppedEntries
             revision += 1
         default: throw AgentBridgeError.invalidFrame
@@ -97,11 +111,13 @@ import Observation
         }
         try validate(rows)
         let currentIds = Set(entries.map(\.id))
-        let prefix = rows.filter { !currentIds.contains($0.id) }
+        let prefix = rows.filter { !currentIds.contains($0.id) && !evictedIds.contains($0.id) }
         // Never let a delayed history page overwrite a streamed revision.
         entries = Array((prefix + entries).suffix(1000))
-        hasMore = (page.hasMore ?? false) && entries.count < 1000
-        before = page.before
+        if !rows.contains(where: { evictedIds.contains($0.id) }) {
+            hasMore = (page.hasMore ?? false) && entries.count < 1000
+        }
+        before = entries.first?.id
         droppedEntries = page.droppedEntries ?? droppedEntries
     }
     func end(owner: UUID, error: AgentBridgeError) {
@@ -111,6 +127,7 @@ import Observation
         phase = error == .closed ? .disconnected : .unavailable(error.code)
     }
     private func clear() {
+        evictedIds.removeAll()
         entries = []
         identity = nil
         generation = nil

@@ -30,6 +30,8 @@ struct Watch {
     previous: Vec<Entry>,
     unavailable: Option<&'static str>,
     status: String,
+    unknown_records: usize,
+    dropped_entries: usize,
 }
 pub struct Service {
     pub client: Client,
@@ -90,7 +92,11 @@ impl Service {
             &json!({"event":event,"epoch":self.epoch,"seq":self.sequence,"data":data}),
         )
     }
-    fn poll_inner(&self, watch: &mut Watch) -> Result<(Identity, bool, String)> {
+    fn poll_inner(
+        &self,
+        watch: &mut Watch,
+        refresh: &mut impl FnMut(&mut Follower, std::fs::File, &str) -> Result<bool>,
+    ) -> Result<(Identity, bool, String)> {
         let snapshot = self.client.snapshot()?;
         let pane = snapshot
             .panes
@@ -126,20 +132,34 @@ impl Service {
         };
         if watch.identity.as_ref() != Some(&identity) {
             watch.follower = Follower::default();
+            // A transient read of a new occupant cannot authorize serving the
+            // previous occupant's cached transcript.
+            watch.identity = None;
         }
-        watch
-            .follower
-            .refresh_file(resolver.open(&path)?, &session)?;
+        refresh(&mut watch.follower, resolver.open(&path)?, &session)?;
         let reset = watch.identity.as_ref() != Some(&identity)
             || watch.unavailable.is_some()
             || watch.follower.generation != watch.generation;
         Ok((identity, reset, pane.agent_status.clone()))
     }
     pub fn poll(&mut self, out: &mut impl Write) -> io::Result<()> {
+        self.poll_with_refresh(out, |follower, file, session| {
+            follower.refresh_file(file, session)
+        })
+    }
+    fn poll_with_refresh(
+        &mut self,
+        out: &mut impl Write,
+        mut refresh: impl FnMut(&mut Follower, std::fs::File, &str) -> Result<bool>,
+    ) -> io::Result<()> {
         let Some(mut watch) = self.watch.take() else {
             return Ok(());
         };
-        match self.poll_inner(&mut watch) {
+        match self.poll_inner(&mut watch, &mut refresh) {
+            Err("source_changing") if watch.identity.is_some() && watch.unavailable.is_none() => {
+                // The follower commits only verified reads; retry on the next
+                // poll while keeping this session's verified page and cursors.
+            }
             Err(code) => {
                 if watch.unavailable != Some(code) {
                     self.generation += 1;
@@ -156,11 +176,13 @@ impl Service {
             }
             Ok((identity, reset, status)) => {
                 let data = &watch.follower.transcript;
-                let evicted = watch
+                let evicted: Vec<_> = watch
                     .previous
                     .iter()
-                    .any(|old| !data.entries.iter().any(|new| new.id == old.id));
-                if reset || evicted {
+                    .filter(|old| !data.entries.iter().any(|new| new.id == old.id))
+                    .map(|old| old.id.clone())
+                    .collect();
+                if reset {
                     self.generation += 1;
                     let mut body = page(&data.entries, data.entries.len());
                     body["identity"] = json!(identity);
@@ -178,29 +200,45 @@ impl Service {
                         })
                         .cloned()
                         .collect();
-                    if !changed.is_empty() || status != watch.status {
-                        // Emit bounded update batches, with one sequence per batch.
-                        if changed.is_empty() {
-                            self.event(out, "timeline.updated", json!({"identity":identity,"generation":self.generation,"entries":[],"agent_status":status}))?;
-                        } else {
-                            let mut batch = Vec::new();
-                            let mut size = 0;
-                            for entry in changed {
-                                let encoded = serde_json::to_vec(&entry)?.len() + 1;
-                                if !batch.is_empty() && size + encoded > MAX_RECORD / 2 {
-                                    self.event(out, "timeline.updated", json!({"identity":identity,"generation":self.generation,"entries":batch,"agent_status":status,"dropped_entries":data.dropped_entries}))?;
-                                    batch.clear();
-                                    size = 0;
-                                }
-                                batch.push(entry);
-                                size += encoded;
+                    if !changed.is_empty()
+                        || !evicted.is_empty()
+                        || status != watch.status
+                        || data.unknown_records != watch.unknown_records
+                        || data.dropped_entries != watch.dropped_entries
+                    {
+                        // Each batch reserves half the frame for the envelope.
+                        // Evictions precede inserts, with <=1000 IDs in total.
+                        let mut evictions = Vec::new();
+                        let mut size = 0;
+                        for id in evicted {
+                            let encoded = serde_json::to_vec(&id)?.len() + 1;
+                            if !evictions.is_empty() && size + encoded > MAX_RECORD / 2 {
+                                self.event(out, "timeline.updated", json!({"identity":identity,"generation":self.generation,"entries":[],"evicted_ids":evictions,"agent_status":status,"unknown_records":data.unknown_records,"dropped_entries":data.dropped_entries}))?;
+                                evictions.clear();
+                                size = 0;
                             }
-                            if !batch.is_empty() {
-                                self.event(out, "timeline.updated", json!({"identity":identity,"generation":self.generation,"entries":batch,"agent_status":status,"dropped_entries":data.dropped_entries}))?;
-                            }
+                            evictions.push(id);
+                            size += encoded;
                         }
+                        let mut batch = Vec::new();
+                        for entry in changed {
+                            let encoded = serde_json::to_vec(&entry)?.len() + 1;
+                            if (!batch.is_empty() || !evictions.is_empty())
+                                && size + encoded > MAX_RECORD / 2
+                            {
+                                self.event(out, "timeline.updated", json!({"identity":identity,"generation":self.generation,"entries":batch,"evicted_ids":evictions,"agent_status":status,"unknown_records":data.unknown_records,"dropped_entries":data.dropped_entries}))?;
+                                batch.clear();
+                                evictions.clear();
+                                size = 0;
+                            }
+                            batch.push(entry);
+                            size += encoded;
+                        }
+                        self.event(out, "timeline.updated", json!({"identity":identity,"generation":self.generation,"entries":batch,"evicted_ids":evictions,"agent_status":status,"unknown_records":data.unknown_records,"dropped_entries":data.dropped_entries}))?;
                     }
                 }
+                watch.unknown_records = data.unknown_records;
+                watch.dropped_entries = data.dropped_entries;
                 watch.previous = data.entries.clone();
                 watch.identity = Some(identity);
                 watch.status = status;
@@ -212,6 +250,16 @@ impl Service {
         Ok(())
     }
     pub fn request(&mut self, bytes: &[u8], out: &mut impl Write) -> io::Result<()> {
+        self.request_with_refresh(bytes, out, |follower, file, session| {
+            follower.refresh_file(file, session)
+        })
+    }
+    fn request_with_refresh(
+        &mut self,
+        bytes: &[u8],
+        out: &mut impl Write,
+        refresh: impl FnMut(&mut Follower, std::fs::File, &str) -> Result<bool>,
+    ) -> io::Result<()> {
         let request: Value = match serde_json::from_slice(bytes) {
             Ok(value) => value,
             Err(_) => return Self::error(out, Value::Null, "invalid_json"),
@@ -256,6 +304,8 @@ impl Service {
                     previous: Vec::new(),
                     unavailable: None,
                     status: String::new(),
+                    unknown_records: 0,
+                    dropped_entries: 0,
                 });
                 Self::write(out, &json!({"id":id,"result":{"watching":pane}}))?;
                 self.poll(out)
@@ -265,7 +315,7 @@ impl Service {
                 Self::write(out, &json!({"id":id,"result":{"watching":null}}))
             }
             "history" => {
-                self.poll(out)?;
+                self.poll_with_refresh(out, refresh)?;
                 let Some(watch) = &self.watch else {
                     return Self::error(out, id, "not_watching");
                 };
@@ -280,7 +330,7 @@ impl Service {
                     .as_str()
                     .and_then(|id| entries.iter().position(|e| e.id == id))
                 else {
-                    return Self::error(out, id, "invalid_cursor");
+                    return Self::error(out, id, "stale_cursor");
                 };
                 let mut result = page(entries, before);
                 result["identity"] = json!(watch.identity);
@@ -340,5 +390,147 @@ pub fn serve(mut service: Service, interval: Duration) -> io::Result<()> {
             service.poll(&mut out)?;
             deadline = Instant::now() + interval;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{fs, os::unix::net::UnixListener};
+    const SESSION: &str = "16246b9d-4c3d-54fc-b6d3-2a765d418491";
+    const OTHER: &str = "11111111-1111-4111-8111-111111111111";
+
+    // Return snapshots synchronously for each explicit poll. The injected
+    // refresh boundary makes source_changing independent of timing/file races.
+    fn fixture() -> (Service, PathBuf, std::sync::Arc<std::sync::Mutex<String>>) {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "service-test-{}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        fs::create_dir_all(root.join("projects/one")).unwrap();
+        for session in [SESSION, OTHER] {
+            let text = (0..107).map(|i| format!("{}\n", json!({"type":"user","uuid":format!("m{i}"),"sessionId":session,"message":{"role":"user","content":format!("text{i}")}}))).collect::<String>();
+            fs::write(root.join(format!("projects/one/{session}.jsonl")), text).unwrap();
+        }
+        let socket = root.join("h.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let session = std::sync::Arc::new(std::sync::Mutex::new(SESSION.to_owned()));
+        let state = session.clone();
+        // Cleanup wakes this blocking listener with an empty request.
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut line = String::new();
+                if BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap()
+                    == 0
+                {
+                    break;
+                }
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let snapshot = json!({"protocol":22,"version":"0.9.3","panes":[{"pane_id":"w1:p1","terminal_id":"terminal-one","workspace_id":"w1","tab_id":"w1:t1","agent":"claude","agent_status":"idle","revision":1,"agent_session":{"agent":"claude","source":"herdr:claude","kind":"id","value":state.lock().unwrap().clone()}}]});
+                writeln!(stream, "{}", json!({"id":request["id"],"result":{"type":"session_snapshot","snapshot":snapshot}})).unwrap();
+            }
+        });
+        let mut service = Service::new(socket, root.join("projects"));
+        service.initialized = true;
+        service
+            .request(
+                br#"{"id":"w","method":"watch","params":{"pane_id":"w1:p1"}}"#,
+                &mut Vec::new(),
+            )
+            .unwrap();
+        (service, root, session)
+    }
+    fn cleanup(service: &Service, root: PathBuf) {
+        // Wake and terminate the fixture thread without a valid request.
+        drop(std::os::unix::net::UnixStream::connect(&service.client.socket).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+    fn frames(out: Vec<u8>) -> Vec<Value> {
+        String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+    #[test]
+    fn changing_same_source_keeps_verified_history_and_generation() {
+        let (mut service, root, _) = fixture();
+        let generation = service.generation;
+        let entries = service.watch.as_ref().unwrap().previous.clone();
+        let mut output = Vec::new();
+        service
+            .poll_with_refresh(&mut output, |_, _, _| Err("source_changing"))
+            .unwrap();
+        assert!(
+            output.is_empty(),
+            "a retry must not clear the client timeline"
+        );
+        assert_eq!(service.generation, generation);
+        assert_eq!(service.watch.as_ref().unwrap().previous, entries);
+        service.request_with_refresh(json!({"id":"h","method":"history","params":{"generation":generation,"before":"message:m7"}}).to_string().as_bytes(), &mut output, |_, _, _| Err("source_changing")).unwrap();
+        let replies = frames(output);
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0]["result"]["entries"].as_array().unwrap().len(), 7);
+        assert_eq!(replies[0]["result"]["generation"], generation);
+        cleanup(&service, root);
+    }
+    #[test]
+    fn changing_new_identity_clears_previous_occupant_and_recovers_with_snapshot() {
+        let (mut service, root, identity) = fixture();
+        let generation = service.generation;
+        *identity.lock().unwrap() = OTHER.to_owned();
+        let mut output = Vec::new();
+        service
+            .poll_with_refresh(&mut output, |_, _, _| Err("source_changing"))
+            .unwrap();
+        let replies = frames(output);
+        assert_eq!(replies[0]["event"], "timeline.unavailable");
+        assert_eq!(replies[0]["data"]["code"], "source_changing");
+        assert!(service.watch.as_ref().unwrap().identity.is_none());
+        assert!(service.watch.as_ref().unwrap().previous.is_empty());
+        assert!(
+            service
+                .watch
+                .as_ref()
+                .unwrap()
+                .follower
+                .transcript
+                .entries
+                .is_empty()
+        );
+        let mut output = Vec::new();
+        service.request(json!({"id":"h","method":"history","params":{"generation":generation,"before":"message:m7"}}).to_string().as_bytes(), &mut output).unwrap();
+        let replies = frames(output);
+        assert_eq!(replies[0]["event"], "timeline.snapshot");
+        assert_eq!(replies[0]["data"]["identity"]["native_session_id"], OTHER);
+        assert_eq!(replies[1]["error"]["code"], "stale_cursor");
+        cleanup(&service, root);
+    }
+    #[test]
+    fn counter_only_changes_emit_an_update() {
+        let (mut service, root, _) = fixture();
+        let generation = service.generation;
+        let mut output = Vec::new();
+        service
+            .poll_with_refresh(&mut output, |follower, _, _| {
+                follower.transcript.unknown_records += 1;
+                Ok(true)
+            })
+            .unwrap();
+        let replies = frames(output);
+        assert_eq!(replies[0]["event"], "timeline.updated");
+        assert_eq!(replies[0]["data"]["entries"], json!([]));
+        assert_eq!(replies[0]["data"]["unknown_records"], 1);
+        assert_eq!(replies[0]["data"]["generation"], generation);
+        cleanup(&service, root);
     }
 }

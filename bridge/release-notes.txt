@@ -1,8 +1,15 @@
 Optional host companion for Herdcats native Claude Timeline.
 
+Patch fixes:
+- Oversized image/tool records are omitted with a visible record count instead of disabling session history.
+- Transient reads of the same session retry without clearing verified history.
+- Retention updates preserve generation and loaded history; only an evicted cursor expires.
+- Installation works with noexec temporary directories, and truncated script downloads cannot run setup.
+- Release builds are verified against their exact version-tag commit.
+
 Install on the direct SSH computer that owns Herdr and the Claude transcripts:
 
-curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v0.1.0/install.sh | sh -s -- --version 0.1.0
+curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v__BRIDGE_VERSION__/install.sh | sh -s -- --version __BRIDGE_VERSION__
 
 Requires macOS 13+ or Linux with glibc 2.35+ (Ubuntu 22.04+), curl and SHA-256 tooling. Apple Silicon, Intel Mac, Linux arm64 and x86_64 binaries are included. Herdr protocol 22 and an exact Claude session reference are required. No root access, Rust, Python, hooks or persistent service required. Existing installation updates require --replace.
 

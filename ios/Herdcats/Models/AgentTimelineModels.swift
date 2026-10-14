@@ -40,6 +40,7 @@ struct AgentBridgePayload: Codable, Sendable {
     var identity: AgentTimelineIdentity?
     var generation: UInt64?
     var entries: [AgentTimelineEntry]?
+    var evictedIds: [String]?
     var hasMore: Bool?
     var before: String?
     var agentStatus: String?
@@ -101,6 +102,12 @@ struct AgentTimelineConnectionState: Equatable, Sendable {
 }
 
 enum TimelineComposePolicy {
+    /// Native history is optional; absent history uses the existing pane input
+    /// path. A present identity must still pass native session/status checks.
+    static func canCompose(identity: AgentTimelineIdentity?, paneId: String, status: String?, connected: Bool) -> Bool {
+        connected && (identity == nil || canSend(identity: identity, paneId: paneId, status: status, connected: connected))
+    }
+
     static func canSend(identity: AgentTimelineIdentity?, paneId: String, status: String?, connected: Bool)
         -> Bool
     {

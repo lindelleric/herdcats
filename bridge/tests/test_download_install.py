@@ -68,6 +68,53 @@ if os.environ.get('RACE') and 'herdcats-bridge-darwin' in url:
         self.assertFalse(marker.exists())
         self.assertFalse(self.bin.exists())
 
+    def test_temp_directory_execute_denied_still_installs(self):
+        # Simulate a noexec download volume by denying executable permission
+        # there, while permitting execution on the destination volume.
+        temp = self.root / 'noexec'
+        temp.mkdir()
+        self.env['TMPDIR'] = str(temp)
+        commands = Path(self.env['PATH'].split(':')[0])
+        real_chmod = shutil.which('chmod')
+        wrapper = commands / 'chmod'
+        wrapper.write_text('#!/usr/bin/env python3\nimport os, sys\nargs = sys.argv[1:]\nif args[-1].startswith(os.environ["TMPDIR"] + "/"):\n    args[0] = "600"\nos.execv(' + repr(real_chmod) + ', ["chmod"] + args)\n')
+        wrapper.chmod(0o755)
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        installed = self.bin / 'herdcats-bridge'
+        self.assertEqual(installed.read_bytes(), self.asset.read_bytes())
+        self.assertEqual(list(temp.iterdir()), [])
+        self.assertEqual(list(self.bin.iterdir()), [installed])
+
+    def test_invalid_probe_never_leaves_installed_binary(self):
+        self.asset.write_text('#!/bin/sh\necho invalid-contract\n')
+        self.checksums()
+        result = self.run_install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.bin / 'herdcats-bridge').exists())
+        if self.bin.exists():
+            self.assertEqual(list(self.bin.iterdir()), [])
+
+    def test_truncated_pipe_never_downloads_executes_or_installs(self):
+        marker = self.root / 'executed'
+        self.asset.write_text('#!/bin/sh\ntouch ' + str(marker) + '\necho invalid-contract\n')
+        self.checksums()
+        commands = Path(self.env['PATH'].split(':')[0])
+        curl = commands / 'curl'
+        curl.write_text(curl.read_text().replace('args = sys.argv[1:]',
+            'pathlib.Path(os.environ["FETCH_MARKER"]).touch()\nargs = sys.argv[1:]'))
+        fetched = self.root / 'fetched'
+        self.env['FETCH_MARKER'] = str(fetched)
+        lines = SCRIPT.read_text().splitlines(keepends=True)
+        for end in range(1, len(lines)):
+            with self.subTest(end=end):
+                subprocess.run(['/bin/sh', '-s', '--', '--version', self.version],
+                               input=''.join(lines[:end]), env=self.env,
+                               text=True, capture_output=True)
+                self.assertFalse(fetched.exists(), 'Truncated script performed a download')
+                self.assertFalse(marker.exists(), 'Truncated script executed a download')
+                self.assertFalse(self.bin.exists(), 'Truncated script created an install directory')
+
     def test_update_is_explicit_and_symlinks_are_preserved(self):
         self.assertEqual(self.run_install().returncode, 0)
         self.assertNotEqual(self.run_install().returncode, 0)

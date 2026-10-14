@@ -2,7 +2,7 @@
   "date": "2026-10-13",
   "status": "claude_read_only_host_foundation_verified",
   "tests": {
-    "rust": 27,
+    "rust": 32,
     "rust_result": "passed",
     "command": "cargo test --manifest-path bridge/Cargo.toml --offline",
     "clippy": "all targets with -D warnings passed",
@@ -10,8 +10,8 @@
     "phase0_result": "passed",
     "installer": 9,
     "installer_result": "passed against debug and release binaries in temporary directories",
-    "release_build": "cargo build --manifest-path bridge/Cargo.toml --release --locked --offline passed",
-    "setup_distribution_python": 20,
+    "release_build": "0.1.1 release --locked --offline passed",
+    "setup_distribution_python": 24,
     "setup_distribution_result": "all passed; explicit installer, fake HTTPS release download, packaging and actual mobile launcher execution"
   },
   "independent_review": {
@@ -66,5 +66,20 @@
     "release_workflow": "Four native builds and draft assembly passed in CI38505344824; release published after checksum and binary validation",
     "public_install_script": "bridge/scripts/install.sh; no Rust/Python requirement for users"
   },
-  "release_evidence": "compatibility/release/v0.1.0.json"
+  "release_evidence": "compatibility/release/v0.1.0.json",
+  "patch_review_fixes": {
+    "status": "verified locally;0.1.1 release pending",
+    "findings": [
+      "oversized source records omitted/counted without disabling subsequent history",
+      "same-session read race retains verified cache and cursors",
+      "retention emits evicted_ids updates without generation reset",
+      "release source verified against exact version tag for every trigger",
+      "installer probes on destination volume; main invocation only at EOF"
+    ],
+    "logs": [
+      "/private/tmp/hc-patch-rust.log",
+      "/private/tmp/hc-patch-python.log",
+      "/private/tmp/hc-patch-clippy.log"
+    ]
+  }
 }

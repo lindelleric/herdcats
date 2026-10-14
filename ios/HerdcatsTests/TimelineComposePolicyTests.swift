@@ -4,6 +4,13 @@ import Testing
 
 @Suite("Timeline composition policy")
 struct TimelineComposePolicyTests {
+    @Test func paneCompositionRemainsAvailableWhenHistoryHasNoIdentity() {
+        #expect(TimelineComposePolicy.canCompose(identity: nil, paneId: "p", status: nil, connected: true))
+        #expect(TimelineComposePolicy.canCompose(identity: nil, paneId: "p", status: "blocked", connected: true))
+        #expect(!TimelineComposePolicy.canCompose(identity: nil, paneId: "p", status: nil, connected: false))
+        let stale = AgentTimelineIdentity(paneId: "other", terminalId: "t", agent: "claude", nativeSessionId: "s")
+        #expect(!TimelineComposePolicy.canCompose(identity: stale, paneId: "p", status: "idle", connected: true))
+    }
     @Test func onlyMatchingUnblockedClaudeIdentityCanCompose() {
         let identity = AgentTimelineIdentity(
             paneId: "p", terminalId: "t", agent: "claude", nativeSessionId: "s")

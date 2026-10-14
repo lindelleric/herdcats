@@ -1100,7 +1100,7 @@ struct PaneSessionView: View {
 #if DEBUG && targetEnvironment(simulator)
         if ScreenshotFixtures.enabled {
             let surface = PaneInputSurfaceModel()
-            if ScreenshotFixtures.screen == "compose" {
+            if ["compose", "timeline-helper-missing", "timeline-unavailable", "timeline-disconnected"].contains(ScreenshotFixtures.screen) {
                 surface.requestComposeDraft()
                 _draft = State(initialValue: "Looks good. Add a test for reconnecting, then open a pull request.")
             } else if ScreenshotFixtures.screen == "voice" {
@@ -1137,7 +1137,7 @@ struct PaneSessionView: View {
     private var canSend: Bool {
         !trimmedDraft.isEmpty
             && !isSending && !isTimelineSending
-            && (!showsTimeline || TimelineComposePolicy.canSend(identity:timeline.identity,paneId:pane.paneId,status:timeline.agentStatus,connected:AgentTimelineConnectionState(phase:appModel.phase,generation:appModel.ownership.transportGeneration).isReady))
+            && (!showsTimeline || TimelineComposePolicy.canCompose(identity:timeline.identity,paneId:pane.paneId,status:timeline.agentStatus,connected:AgentTimelineConnectionState(phase:appModel.phase,generation:appModel.ownership.transportGeneration).isReady))
             && !dictation.isBusy
             && !(attachment?.isUploading ?? false)
     }
@@ -1941,8 +1941,8 @@ struct PaneSessionView: View {
         let sentDraft = trimmedDraft
         let originalDraft = draft
         do {
-            if showsTimeline {
-                guard let identity=timeline.identity,let owned=appModel.ownership.transportGeneration else {throw HerdrError.notConnected}
+            if showsTimeline, let identity = timeline.identity {
+                guard let owned=appModel.ownership.transportGeneration else {throw HerdrError.notConnected}
                 isTimelineSending=true
                 defer {isTimelineSending=false}
                 try await appModel.connection.submitTimelinePrompt(text:text,identity:identity,owned:owned)

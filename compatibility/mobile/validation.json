@@ -17,22 +17,25 @@
     "Icon-only mode switch in the top-right navigation toolbar beside Pane Options; opposite-mode glyph and accessibility label. Mode is scoped to pane and connection identity.",
     "Missing helper classified separately from transport disconnection; setup sheet copies pinned prebuilt installer command and rechecks without installing from the app",
     "Managed ~/.local/bin helper takes precedence over stale PATH installation",
-    "Initial write failure drains bootstrap output until stream completion/timeout so missing-helper setup reason survives"
+    "Initial write failure drains bootstrap output until stream completion/timeout so missing-helper setup reason survives",
+    "Compose uses existing pane input when native history is absent; verified Claude identities retain native preflight guards",
+    "Eviction updates remove only retired IDs, preserve generation/loaded history, and suppress stale-history resurrection",
+    "Disconnected helper has Check again while SSH remains connected; errors explain actual source failures"
   ],
   "validation": {
     "ios_unit": {
-      "total": 374,
-      "passed": 373,
+      "total": 376,
+      "passed": 375,
       "skipped": 1,
-      "result": "passed_after_helper_onboarding_review_fixes",
+      "result": "passed_after_claude_review_fixes",
       "skipped_test": "liveCitadelFramesHistoryUpdatesIdleCancellationAndReconnect (ephemeral fixture not bundled in normal test builds)",
       "command": "xcodebuild test -project ios/Herdcats.xcodeproj -scheme Herdcats -destination 'platform=iOS Simulator,id=<available simulator>' -only-testing:HerdcatsTests CODE_SIGN_IDENTITY=-",
       "note": "Initial unsigned run had existing Keychain entitlement errors. Signed full-suite rerun passed.",
       "release_recheck": "373 executed passed,1 opt-in skipped; /private/tmp/hc-release-ios.log"
     },
     "ios_ui": {
-      "tests": 4,
-      "result": "passed_after_helper_onboarding_review_fixes",
+      "tests": 6,
+      "result": "passed_after_claude_review_fixes",
       "target": "HerdcatsUITests/AgentTimelineUITests",
       "coverage": [
         "light/dark + tool expansion",
@@ -44,7 +47,7 @@
         "Missing-helper setup, copy acknowledgement, recheck dismissal and Terminal fallback"
       ],
       "note": "One earlier UI run was interrupted by overlapping unit tests on the same simulator. Sequential rerun passed.",
-      "log": "/private/tmp/hc-onboarding-final.log",
+      "log": "/private/tmp/hc-review-fixes-final-ios.log",
       "release_recheck": "4 passed; /private/tmp/hc-release-ios.log"
     },
     "live_citadel": {
@@ -98,7 +101,7 @@
     "Bounded inline output/history; no full-output fetch",
     "Host helper must be installed explicitly; no auto-install",
     "Simulator validation; hardware performance/background behavior still needs device testing",
-    "Questions/approvals remain Terminal-only. Native Compose uses the existing Herdr agent prompt command rather than a mutating bridge method.",
+    "Questions/approvals remain Terminal-only. Verified-session Compose uses the existing Herdr agent prompt command rather than a mutating bridge method.",
     "Herdr22 exposes no atomic expected-native-session precondition on agent prompt. A fresh occupant check reduces replacement risk but cannot eliminate a host-side replacement between that check and command execution."
   ],
   "cleanup": [

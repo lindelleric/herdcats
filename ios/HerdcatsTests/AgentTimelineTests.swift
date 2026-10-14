@@ -87,6 +87,18 @@ struct AgentBridgeFramingTests {
         wrong.begin(owner: owner, paneId: "different")
         #expect(throws: AgentBridgeError.self) { try wrong.consume(frame("timeline.snapshot"), owner: owner) }
     }
+    @Test func evictionsPreserveLoadedHistoryAndDoNotResurrectFromDelayedPage() throws {
+        let s = store()
+        try s.consume(frame("timeline.snapshot", entries: ["a", "b", "c"], hasMore: true), owner: owner)
+        let delayed = try frame("timeline.snapshot", entries: ["a", "b"]).data!
+        let update = try AgentBridgeFrame.decode(Data("{\"event\":\"timeline.updated\",\"epoch\":\"epoch-a\",\"seq\":2,\"data\":{\"identity\":{\"pane_id\":\"w1:p1\",\"terminal_id\":\"t1\",\"agent\":\"claude\",\"native_session_id\":\"session-a\"},\"generation\":1,\"entries\":[],\"evicted_ids\":[\"message:a\"],\"unknown_records\":2}}".utf8))
+        try s.consume(update, owner: owner)
+        #expect(s.entries.map(\.text) == ["b", "c"])
+        #expect(s.generation == 1)
+        #expect(s.unknownRecords == 2)
+        try s.mergeHistory(delayed, owner: owner, generation: 1)
+        #expect(s.entries.map(\.text) == ["b", "c"])
+    }
     @Test func delayedEventsAndFailuresCannotReplaceNewOwner() throws {
         let s = store()
         let next = UUID()

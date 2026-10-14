@@ -1,6 +1,6 @@
 {
   "component": "herdcats-bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "protocol": 1,
   "herdr_protocol": 22,
   "supported_agent": "Claude with exact herdr:claude session reference",
@@ -55,14 +55,14 @@
     "Codex, saved-machine routing and native approvals/questions remain gated"
   ],
   "onboarding": {
-    "status": "published; public download/install path verified",
+    "status": "0.1.1 patch verified locally; publication pending",
     "app_flow": [
       "Missing-helper state offers Set up Timeline; Terminal remains available",
       "Copy pinned one-command installer; run on the direct SSH host",
       "Installer downloads matching native binary, verifies SHA-256, probes protocol/version and installs to ~/.local/bin",
       "Return to app and tap Check again; installed location takes priority over older PATH copies"
     ],
-    "command": "curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v0.1.0/install.sh | sh -s -- --version 0.1.0",
+    "command": "curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v0.1.1/install.sh | sh -s -- --version 0.1.1",
     "user_dependencies": [
       "POSIX shell utilities including link",
       "curl",

@@ -302,7 +302,7 @@ fn escaped_tool_output_updates_fit_frame_budget_without_closing_stream() {
     assert_eq!(peer.next()["id"], "stop");
 }
 #[test]
-fn bounded_retention_causes_snapshot_when_older_entries_are_evicted() {
+fn bounded_retention_updates_keep_generation_and_validate_retained_cursors() {
     let server = Server::new();
     let mut text = (0..1000)
         .map(|i| row(SESSION, &format!("m{i}"), "text"))
@@ -313,16 +313,24 @@ fn bounded_retention_causes_snapshot_when_older_entries_are_evicted() {
     let before = peer.watch();
     text += &row(SESSION, "m1000", "latest");
     server.transcript(SESSION, &text);
-    let mut after = peer.next();
-    // An in-place test write can overlap a scheduled read. A transient failure
-    // must recover before we assert the retention snapshot.
-    if after["event"] == "timeline.unavailable" {
-        assert_eq!(after["data"]["code"], "source_changing");
-        after = peer.next();
-    }
-    assert_eq!(after["event"], "timeline.snapshot");
+    let after = peer.next();
+    assert_eq!(after["event"], "timeline.updated");
     assert_eq!(after["data"]["dropped_entries"], 1);
-    assert_ne!(after["data"]["generation"], before["data"]["generation"]);
+    assert_eq!(after["data"]["generation"], before["data"]["generation"]);
+    assert_eq!(after["data"]["evicted_ids"], json!(["message:m0"]));
+    peer.send(json!({"id":"retained","method":"history","params":{"generation":before["data"]["generation"],"before":"message:m900"}}));
+    assert_eq!(
+        peer.next()["result"]["entries"].as_array().unwrap().len(),
+        100
+    );
+    peer.send(json!({"id":"evicted","method":"history","params":{"generation":before["data"]["generation"],"before":"message:m0"}}));
+    assert_eq!(peer.next()["error"]["code"], "stale_cursor");
+    text += &row(SESSION, "m1001", "latest again");
+    server.transcript(SESSION, &text);
+    let next = peer.next();
+    assert_eq!(next["event"], "timeline.updated");
+    assert_eq!(next["data"]["generation"], before["data"]["generation"]);
+    assert_eq!(next["data"]["evicted_ids"], json!(["message:m1"]));
 }
 #[test]
 fn requests_do_not_starve_occupant_refresh() {

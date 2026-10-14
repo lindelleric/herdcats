@@ -2,12 +2,69 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class ReleaseSourceTests(unittest.TestCase):
+    def test_workflow_rejects_source_that_does_not_match_version_tag(self):
+        workflow = (ROOT.parent / '.github/workflows/bridge-release.yml').read_text()
+        for step in ['Verify version and native architecture', 'Resolve release version']:
+            # Exercise the workflow's actual validation against a local Git repo.
+            block = workflow.split('name: ' + step + '\n', 1)[1]
+            script = textwrap.dedent(block.split("python3 - <<'PY'\n", 1)[1].split('\n          PY', 1)[0])
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / 'bridge').mkdir()
+                (root / 'bridge/Cargo.toml').write_text('[package]\nversion = "0.2.0"\n')
+                def git(*args):
+                    return subprocess.check_output(['git', *args], cwd=root, text=True).strip()
+                git('init', '-q')
+                git('add', '.')
+                git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com', 'commit', '-qm', 'release')
+                tagged = git('rev-parse', 'HEAD')
+                git('tag', 'herdcats-bridge-v0.2.0')
+                env = {**os.environ, 'BRIDGE_VERSION': '0.2.0',
+                    'BRIDGE_PLATFORM': {'Darwin': 'darwin', 'Linux': 'linux'}[platform.system()] + '-' + {'aarch64': 'arm64', 'arm64': 'arm64', 'x86_64': 'x86_64'}[platform.machine()],
+                    'GITHUB_EVENT_NAME': 'workflow_dispatch', 'GITHUB_SHA': tagged,
+                    'GITHUB_REF': 'refs/heads/main', 'GITHUB_REF_NAME': 'main',
+                    'GITHUB_ENV': str(root / 'env')}
+                def validate():
+                    return subprocess.run([sys.executable, '-c', script], cwd=root, env=env, capture_output=True)
+                with self.subTest(step=step, source='matching'):
+                    result = validate()
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                with self.subTest(step=step, source='matching-tag-push'):
+                    env.update(GITHUB_EVENT_NAME='push', BRIDGE_VERSION='',
+                               GITHUB_REF='refs/tags/herdcats-bridge-v0.2.0',
+                               GITHUB_REF_NAME='herdcats-bridge-v0.2.0')
+                    result = validate()
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                with self.subTest(step=step, source='wrong-tag-push'):
+                    env['GITHUB_REF'] = 'refs/tags/unrelated'
+                    self.assertNotEqual(validate().returncode, 0)
+                env.update(GITHUB_EVENT_NAME='workflow_dispatch', BRIDGE_VERSION='0.2.0',
+                           GITHUB_REF='refs/heads/main', GITHUB_REF_NAME='main')
+                with self.subTest(step=step, source='missing-version-tag'):
+                    env['BRIDGE_VERSION'] = '0.3.0'
+                    self.assertNotEqual(validate().returncode, 0)
+                env['BRIDGE_VERSION'] = '0.2.0'
+                with self.subTest(step=step, source='mismatched-dispatch'):
+                    env['GITHUB_SHA'] = '0' * 40
+                    self.assertNotEqual(validate().returncode, 0)
+                env['GITHUB_SHA'] = tagged
+                (root / 'unrelated').write_text('branch work')
+                git('add', '.')
+                git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com', 'commit', '-qm', 'unrelated')
+                env['GITHUB_SHA'] = git('rev-parse', 'HEAD')
+                with self.subTest(step=step, source='same-version-wrong-head'):
+                    self.assertNotEqual(validate().returncode, 0)
 
 class PackageTests(unittest.TestCase):
     def test_package_contains_exact_binary_and_checksum(self):

@@ -1,6 +1,6 @@
 {
   "protocol": 1,
-  "bridge_version": "0.1.0",
+  "bridge_version": "0.1.1",
   "transport": "non-PTY stdio NDJSON; one watched pane per process",
   "launch": {
     "command": "herdcats-bridge serve --stdio",
@@ -116,9 +116,12 @@
         "identity",
         "generation",
         "entries",
-        "agent_status"
+        "agent_status",
+        "evicted_ids",
+        "unknown_records",
+        "dropped_entries"
       ],
-      "effect": "upsert stable IDs in order; unseen IDs append; updates may span multiple bounded frames"
+      "effect": "Remove evicted_ids before stable-ID upserts; retention does not reset generation. Do not resurrect evicted IDs from delayed history. Counters may update with no entries; frames remain bounded."
     },
     "timeline.unavailable": {
       "fields": [
@@ -140,7 +143,7 @@
     "truncated": "boolean, conservatively preserved for replayed tools"
   },
   "reconnect": "No persistent replay cursor. Start a new helper, initialize and watch. Epoch change or sequence gap requires fresh snapshot. Notifications can interleave all replies.",
-  "cursor": "Generation-bound before entry ID. Changes to identity/source, recovery or retention eviction reset generation. Old cursors return stale_cursor or timeline_unavailable.",
+  "cursor": "Generation-bound before entry ID. Identity/source replacement or genuine outage recovery resets generation. Normal retention keeps generation; a retained cursor remains valid and an evicted cursor returns stale_cursor.",
   "limits": {
     "source_bytes": 67108864,
     "wire_frame_bytes": 1048576,
@@ -151,7 +154,9 @@
     "details_bytes": 8192,
     "entry_identities": 100000,
     "project_directories": 10000,
-    "request_queue": 16
+    "request_queue": 16,
+    "oversized_source_record_behavior": "Complete source lines exceeding parsed record limit are omitted and counted once; incomplete lines wait for newline. The 64MiB source bound remains hard.",
+    "evicted_ids_per_update": 1000
   },
   "source_policy": "Herdr22 Claude reference source herdr:claude; native UUID exact filename/path beneath pinned transcript root; ambiguity, symlinks, missing reference or foreign main-session records fail closed.",
   "implementation_limits": [
@@ -202,5 +207,6 @@
     "unsupported_agent",
     "unsupported_herdr_protocol",
     "unsupported_session_source"
-  ]
+  ],
+  "transient_read_behavior": "source_changing retries without clearing verified cache for the same identity. A changed occupant still clears old state."
 }

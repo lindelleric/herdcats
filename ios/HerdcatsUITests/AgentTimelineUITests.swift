@@ -42,6 +42,33 @@ final class AgentTimelineUITests: XCTestCase {
             app.terminate()
         }
     }
+    func testDisconnectedTimelineCanRetryWithoutReconnectingSSH() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-disconnected", "-hc.light", "-paneShowComposeByDefault", "YES"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Timeline disconnected"].waitForExistence(timeout: 5))
+        let retry = app.buttons["timeline-helper-retry"]
+        XCTAssertTrue(retry.exists)
+        if retry.exists { retry.tap() }
+        XCTAssertTrue(app.staticTexts["Timeline disconnected"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["timeline-compose-send"].isEnabled)
+        XCTAssertTrue(app.buttons["timeline-open-terminal"].exists)
+        app.terminate()
+    }
+    func testComposeRemainsEnabledWithoutNativeHistory() {
+        for screen in ["timeline-helper-missing", "timeline-unavailable"] {
+            let app = XCUIApplication()
+            app.launchArguments = ["-hc.screenshots", "-hc.screen", screen, "-hc.light", "-paneShowComposeByDefault", "YES"]
+            app.launch()
+            let field = app.descendants(matching: .any)["timeline-compose-field"].firstMatch
+            XCTAssertTrue(field.waitForExistence(timeout: 5))
+            // Fixture supplies a draft; this regression checks actual Send enablement.
+            let send = app.buttons["timeline-compose-send"]
+            XCTAssertTrue(send.waitForExistence(timeout: 5))
+            XCTAssertTrue(send.isEnabled, "Existing pane composition must not depend on native history")
+            app.terminate()
+        }
+    }
     func testMissingHelperOffersSetupAndRecheck() {
         let app = XCUIApplication()
         app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-helper-missing", "-hc.light"]

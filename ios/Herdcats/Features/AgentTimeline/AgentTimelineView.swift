@@ -120,16 +120,23 @@ struct AgentTimelineView: View {
                 Text("Connecting to timeline…")
             }.frame(maxWidth: .infinity).padding(.vertical, 32)
         case .disconnected:
-            ContentUnavailableView(
-                "Timeline disconnected", systemImage: "wifi.slash",
-                description: Text("Reconnect to load current session messages."))
+            ContentUnavailableView {
+                Label("Timeline disconnected", systemImage: "wifi.slash")
+            } description: {
+                Text(connectionState.isReady ? "The history connection ended. Check again to reload messages." : "Reconnect to load current session messages.")
+            } actions: {
+                Button("Check again") { retry += 1 }
+                    .buttonStyle(.herdrSecondary)
+                    .disabled(!connectionState.isReady)
+                    .accessibilityIdentifier("timeline-helper-retry")
+            }
         case .unavailable(let code):
             ContentUnavailableView {
                 Label(code == "helper_missing" ? "Set up Timeline" : "Timeline unavailable", systemImage: "text.bubble")
             } description: {
                 Text(explanation(code))
             } actions: {
-                if ["helper_missing", "protocol_mismatch"].contains(code) {
+                if ["helper_missing", "protocol_mismatch", "record_too_large"].contains(code) {
                     Button("Set up Timeline") { showsSetup = true }
                         .buttonStyle(.herdrPrimary)
                         .accessibilityIdentifier("timeline-helper-setup")
@@ -145,12 +152,18 @@ struct AgentTimelineView: View {
         case "helper_missing":
             return "Install the small host helper to see this session as native messages. Terminal is available now."
         case "unsupported_agent":
-            return "Native history currently supports Claude. Use Terminal for this agent."
-        case "routed_host_unsupported": return "Native history is not available through saved machines yet."
+            return "Native history currently supports Claude. You can still send messages below or use Terminal."
+        case "routed_host_unsupported": return "Native history is not available through saved machines yet. Messages can still be sent below."
         case "session_reference_unavailable", "ambiguous_session", "invalid_session_reference":
-            return "This pane has no verified session history. Use Terminal to continue."
+            return "This pane has no verified session history. Compose and Terminal remain available."
         case "transcript_root_unavailable", "transcript_unavailable":
             return "Claude session history is unavailable on this host."
+        case "source_changing": return "Session history is being updated. Try again in a moment."
+        case "record_too_large": return "This helper cannot read an oversized session record. Update the helper to reload history."
+        case "source_too_large": return "This session exceeds the current history size limit. Compose and Terminal remain available."
+        case "unsafe_transcript_path", "invalid_transcript", "session_mismatch":
+            return "Session history could not be read safely. Compose and Terminal remain available."
+        case "herdr_unavailable": return "The helper cannot reach Herdr on this host. Check the host session, then try again."
         case "unsupported_herdr_protocol", "protocol_mismatch":
             return "The host helper and Herdr version are not compatible."
         default:
@@ -171,7 +184,7 @@ struct AgentTimelineView: View {
             if ScreenshotFixtures.enabled {
                 do {
                     try timeline.consume(AgentTimelineScreenshotFixture.frame(paneId: paneId), owner: owner)
-                } catch { timeline.end(owner: owner, error: .invalidFrame) }
+                } catch { timeline.end(owner: owner, error: (error as? AgentBridgeError) ?? .invalidFrame) }
                 return
             }
         #endif
@@ -282,7 +295,7 @@ private struct AgentBridgeSetupView: View {
     let onCheckAgain: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var copied = false
-    private let command = "curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v0.1.0/install.sh | sh -s -- --version 0.1.0"
+    private let command = "curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v0.1.1/install.sh | sh -s -- --version 0.1.1"
 
     var body: some View {
         NavigationStack {

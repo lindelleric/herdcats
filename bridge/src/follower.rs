@@ -70,13 +70,15 @@ impl Follower {
         let start = if reset { 0 } else { self.offset as usize };
         let mut offset = start;
         for part in bytes[start..].split_inclusive(|b| *b == b'\n') {
-            if part.len() > MAX_RECORD {
-                return Err("record_too_large");
-            }
             if part.last() != Some(&b'\n') {
                 break;
             }
-            if part != b"\n" {
+            if part.len() > MAX_RECORD {
+                // Image tool results can exceed the normal record limit. Count
+                // their omission without deserializing them, then keep following
+                // the transcript. Partial lines stay uncommitted until complete.
+                transcript.unknown_records += 1;
+            } else if part != b"\n" {
                 let row = serde_json::from_slice(part).map_err(|_| "invalid_transcript")?;
                 transcript.apply(&row, session)?;
             }
