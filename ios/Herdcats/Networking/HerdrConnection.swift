@@ -197,6 +197,7 @@ actor HerdrConnection {
     /// Exclusive remote composer mutations (send, escape).
     let paneInput = PaneInputCoordinator()
     var agentBridges: [UUID:AgentBridgeClient] = [:]
+    var helperSetupOperation: UUID?
     var liveShells: [String: PaneLiveShells] = [:]
     var preparingLiveShells: [String: UUID] = [:]
     var activeLiveSessions: [String: PaneLiveInputSession] = [:]

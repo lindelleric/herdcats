@@ -147,3 +147,133 @@ struct AgentBridgeClientTests {
         throw AgentBridgeError.timeout
     }
 }
+
+@Suite("Host helper explicit setup policy")
+struct HostHelperSetupPolicyTests {
+    private func report(_ version: String = "0.1.3", protocolNumber: Int = 1) -> String {
+        "HC_HELPER_MANAGED\n{\"name\":\"herdcats-bridge\",\"version\":\"\(version)\",\"protocol\":\(protocolNumber),\"herdr_protocol\":22,\"agents\":[\"claude\"]}"
+    }
+    @Test func currentInstallationNeedsNoDownloadOrReplacement() throws {
+        let probe = try HostHelperProbe(output: report())
+        #expect(probe == .present(version: "0.1.3", managed: true, compatible: true))
+        #expect(HostHelperSetupPlan.decision(probe: probe, replace: true, checkOnly: false) == .ready)
+    }
+    @Test func unknownAndOldManagedFilesRequireExplicitReplacement() throws {
+        for output in [report("0.1.0"), "HC_HELPER_MANAGED\nnot a version report"] {
+            let probe = try HostHelperProbe(output: output)
+            #expect(HostHelperSetupPlan.decision(probe: probe, replace: false, checkOnly: false) == .replacementRequired(probe))
+            #expect(HostHelperSetupPlan.decision(probe: probe, replace: true, checkOnly: false) == .install(replace: true))
+        }
+    }
+    @Test func inspectionNeverInstallsEvenWithReplacementAuthorized() throws {
+        let missing = try HostHelperProbe(output: "HC_HELPER_MISSING\n")
+        #expect(HostHelperSetupPlan.decision(probe: missing, replace: true, checkOnly: true) == .missing)
+        let old = try HostHelperProbe(output: report("0.1.0"))
+        #expect(HostHelperSetupPlan.decision(probe: old, replace: true, checkOnly: true) == .replacementRequired(old))
+    }
+    @Test func externalHelperIsNotOverwrittenAndNewerCompatibleHelperIsNotDowngraded() throws {
+        let external = try HostHelperProbe(output: report("0.1.0").replacingOccurrences(of: "MANAGED", with: "EXTERNAL"))
+        #expect(HostHelperSetupPlan.decision(probe: external, replace: true, checkOnly: false) == .install(replace: false))
+        let newer = try HostHelperProbe(output: report("0.1.4"))
+        #expect(HostHelperSetupPlan.decision(probe: newer, replace: true, checkOnly: false) == .ready)
+    }
+    @Test func incompatibleProtocolDoesNotCountAsInstalledAndUnsafeTargetFailsClosed() throws {
+        let probe = try HostHelperProbe(output: report(protocolNumber: 2))
+        #expect(probe == .present(version: "0.1.3", managed: true, compatible: false))
+        #expect(throws: HostHelperSetupError.unsafeDestination) { try HostHelperProbe(output: "HC_HELPER_BLOCKED\n") }
+    }
+}
+
+@Suite("Isolated helper command lifecycle")
+struct HostHelperCommandTests {
+    @Test func commandReturnsBoundedOutputAndClosesOnlyItsOwnedChannel() async throws {
+        let channel = HostHelperCommand()
+        let owned = BridgeTestWire()
+        let shared = BridgeTestWire()
+        let output = try await channel.run(timeout: 1) { command in
+            _ = await command.attach { await owned.close() }
+            await command.receive(Data("verified helper".utf8))
+        }
+        #expect(output == "verified helper")
+        try await waitForClose(owned)
+        #expect(await owned.closes == 1)
+        #expect(await shared.closes == 0)
+    }
+    @Test func oversizedOutputClosesOwnedChannel() async throws {
+        let channel = HostHelperCommand()
+        let owned = BridgeTestWire()
+        do {
+            _ = try await channel.run(timeout: 1) { command in
+                _ = await command.attach { await owned.close() }
+                await command.receive(Data(repeating: 65, count: 65537))
+            }
+            Issue.record("unbounded installer output accepted")
+        } catch { #expect(error as? HostHelperSetupError == .invalidResponse) }
+        try await waitForClose(owned)
+        #expect(await owned.closes == 1)
+    }
+    @Test func timeoutClosesOwnedChannelWhileReaderIsIdle() async throws {
+        let channel = HostHelperCommand()
+        let owned = BridgeTestWire()
+        do {
+            _ = try await channel.run(timeout: 0.03) { command in
+                _ = await command.attach { await owned.close() }
+                try await Task.sleep(for: .seconds(10))
+            }
+            Issue.record("timeout accepted")
+        } catch {}
+        try await waitForClose(owned)
+        #expect(await owned.closes == 1)
+    }
+    @Test func cancellationBeforeLateAttachClosesItAndCannotCompleteSuccessfully() async throws {
+        let channel = HostHelperCommand()
+        let owned = BridgeTestWire()
+        let pending = Task {
+            try await channel.run(timeout: 1) { _ in
+                await owned.write(Data("started".utf8))
+                try await Task.sleep(for: .seconds(10))
+            }
+        }
+        for _ in 0..<500 {
+            if await !owned.commands.isEmpty { break }
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        try #require(await !owned.commands.isEmpty)
+        pending.cancel()
+        do { _ = try await pending.value; Issue.record("cancelled install accepted") } catch {}
+        let attached = await channel.attach { await owned.close() }
+        #expect(!attached)
+        #expect(await owned.closes == 1)
+    }
+    private func waitForClose(_ wire: BridgeTestWire) async throws {
+        for _ in 0..<500 {
+            if await wire.closes > 0 { return }
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        throw AgentBridgeError.timeout
+    }
+}
+
+
+@Suite("Helper setup host and completion guards")
+struct HostHelperSetupGuardTests {
+    @Test func routedHostCannotStartInstaller() async {
+        let gateway = HerdrConnection()
+        let machine = HerdrMachine(id: "child", label: "Child", target: "u@child", session: "default", enabled: true)
+        let route = HerdrConnection(gateway: gateway, machine: machine, generation: ConnectionGeneration(rawValue: 1), identity: nil)
+        do {
+            _ = try await route.setUpHostHelper(replace: true, checkOnly: false,
+                target: ConnectionIdentity(host: "child", port: 22, username: "u"), owned: ConnectionGeneration(rawValue: 1),
+                onStage: { _ in Issue.record("routed install started") })
+            Issue.record("routed installer accepted")
+        } catch { #expect(error as? AgentBridgeError == .routedHostUnsupported) }
+    }
+    @Test func invalidCompletionAndReportedFailureNeverBecomeSuccess() throws {
+        #expect(throws: HostHelperSetupError.failed("checksum_mismatch")) {
+            try HostHelperSetupPlan.verifyInstallation("HC_HELPER_ERROR:checksum_mismatch\n")
+        }
+        #expect(throws: HostHelperSetupError.invalidResponse) {
+            try HostHelperSetupPlan.verifyInstallation("HC_HELPER_INSTALLED\n{\"name\":\"herdcats-bridge\",\"version\":\"0.1.3\",\"protocol\":2,\"herdr_protocol\":22,\"agents\":[\"claude\"]}")
+        }
+    }
+}

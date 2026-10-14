@@ -1,7 +1,7 @@
 {
   "date": "2026-10-14",
-  "status": "native_timeline_and_terminal_share_floating_compose",
-  "scope": "Native Claude Timeline and dark Terminal share the original floating Compose overlay with voice/photo controls; raw Terminal input remains available.",
+  "status": "explicit_one_click_host_helper_setup_verified",
+  "scope": "Native Claude Timeline and dark Terminal share the original floating Compose overlay with voice/photo controls; raw Terminal input remains available. Explicit host-helper installation over the displayed direct SSH connection, with manual fallback.",
   "features": [
     "Protocol1 non-PTY Citadel client with request correlation and bounded Unicode NDJSON",
     "Readiness/transport/view/native identity ownership; resets and unavailable clear memory-only state",
@@ -15,7 +15,7 @@
     "Prompt dispatch uses fresh native occupant verification and explicitly captured SSH generation; never falls back to shell or blocked request responses",
     "Editing is disabled during send; delayed acknowledgements preserve any later draft edits",
     "Icon-only mode switch in the top-right navigation toolbar beside Pane Options; opposite-mode glyph and accessibility label. Mode is scoped to pane and connection identity.",
-    "Missing helper classified separately from transport disconnection; setup sheet copies pinned prebuilt installer command and rechecks without installing from the app",
+    "Missing helper classified separately from transport disconnection; setup sheet offers explicit installation, pinned manual instructions and recheck",
     "Managed ~/.local/bin helper takes precedence over stale PATH installation",
     "Initial write failure drains bootstrap output until stream completion/timeout so missing-helper setup reason survives",
     "Compose uses existing pane input when native history is absent; verified Claude identities retain native preflight guards",
@@ -28,22 +28,29 @@
     "Setup retry remains in drawer with missing-helper feedback; revision observation handles identical immediate failure",
     "Both modes use PaneVoiceComposeBar in one transparent bottom overlay, without an opaque full-width dock background",
     "Terminal keyboard toolbar button opens Compose; Show Compose by Default remains honored on mode changes",
-    "Timeline clear footer reserves scroll space above floating Compose; Latest remains accessible above the bubble"
+    "Timeline clear footer reserves scroll space above floating Compose; Latest remains accessible above the bubble",
+    "Install requires a user tap after displaying SSH host, user, port and managed helper path; opening Timeline never installs",
+    "Read-only probe precedes install; incompatible existing helper requires a separate replacement action; compatible newer helpers remain unchanged",
+    "Pinned installer SHA256 verified before execution; bounded isolated non-PTY command, cancellation and timeout close only owned channel",
+    "Ambiguous installation offers check-first recovery; failed preflight says no installation started; manual setup and Terminal remain available"
   ],
   "validation": {
     "ios_unit": {
-      "total": 377,
-      "passed": 376,
-      "skipped": 1,
-      "result": "passed_after_claude_review_fixes",
-      "skipped_test": "liveCitadelFramesHistoryUpdatesIdleCancellationAndReconnect (ephemeral fixture not bundled in normal test builds)",
+      "total": 389,
+      "passed": 387,
+      "skipped": 2,
+      "result": "passed",
       "command": "xcodebuild test -project ios/Herdcats.xcodeproj -scheme Herdcats -destination 'platform=iOS Simulator,id=<available simulator>' -only-testing:HerdcatsTests CODE_SIGN_IDENTITY=-",
       "note": "Initial unsigned run had existing Keychain entitlement errors. Signed full-suite rerun passed.",
-      "release_recheck": "376 passed,1 opt-in skipped; /private/tmp/hc-compose-overlay-green.log"
+      "release_recheck": "387 passed,2 opt-in skipped; /private/tmp/hc-oneclick-final-green.log",
+      "skipped_tests": [
+        "liveCitadelFramesHistoryUpdatesIdleCancellationAndReconnect",
+        "HostHelperInstallLiveSSHTests (requires disposable SSH configuration)"
+      ]
     },
     "ios_ui": {
-      "tests": 8,
-      "result": "passed_after_restoring_shared_floating_compose",
+      "tests": 10,
+      "result": "passed",
       "target": "HerdcatsUITests/AgentTimelineUITests",
       "coverage": [
         "light/dark + tool expansion",
@@ -57,11 +64,14 @@
         "button and swipe dismissal to Terminal; explicit Timeline re-entry; deferral survives app relaunch",
         "successful helper check closes guidance, stays in Timeline and clears host deferral",
         "Terminal Compose opens from keyboard toolbar and preserves the Timeline draft",
-        "Identical field widths in both modes and Terminal Compose by Default preference"
+        "Identical field widths in both modes and Terminal Compose by Default preference",
+        "Explicit install with host/path disclosure, no automatic installation",
+        "Existing-helper replacement requires a second action",
+        "Uncertain install checks first; download and probe failures retain manual fallback"
       ],
       "note": "One earlier UI run was interrupted by overlapping unit tests on the same simulator. Sequential rerun passed.",
-      "log": "/private/tmp/hc-compose-overlay-green.log",
-      "release_recheck": "8 passed; /private/tmp/hc-compose-overlay-green.log"
+      "log": "/private/tmp/hc-oneclick-recovery-green.log",
+      "release_recheck": "10 passed including final probe-failure recovery; /private/tmp/hc-oneclick-recovery-green.log"
     },
     "live_citadel": {
       "tests": 1,
@@ -105,7 +115,8 @@
       "light": ".lavish/timeline-floating-compose-light.png",
       "dark": ".lavish/native-timeline-dark.png",
       "terminal": ".lavish/terminal-always-dark.png",
-      "terminal_compose": ".lavish/terminal-floating-compose.png"
+      "terminal_compose": ".lavish/terminal-floating-compose.png",
+      "one_click_setup": ".lavish/timeline-oneclick-setup.png"
     }
   },
   "limitations": [
@@ -122,8 +133,7 @@
     "Disposable loopback SSH and synthetic socket servers stopped",
     "Ephemeral credential source/resource removed and project regenerated",
     "No user agent was started or prompted in this mobile stage",
-    "No global SSH keys/hooks or user credentials changed",
-    "No commit/push/deployment"
+    "No global SSH keys/hooks or user credentials changed"
   ],
   "files": [
     "ios/Herdcats/Networking/AgentBridgeClient.swift",
@@ -135,9 +145,34 @@
   "first_use_drawer": {
     "size": "large detent with drag indicator",
     "preference_scope": "ConnectionIdentity.storageKey (SSH host, port, user and route identity)",
-    "installation": "User explicitly runs pinned0.1.3 command on host; no auto-install",
+    "installation": "Explicit Install button over direct SSH or manual pinned command; no installation on drawer opening",
     "red": "new automatic drawer test failed before implementation; retry feedback regression failed until observing timeline revision",
-    "green": "full unit and7UI tests pass",
+    "green": "387 unit tests and10 UI tests passed; two opt-in tests skipped",
     "screenshot": ".lavish/timeline-first-use-drawer.png"
+  },
+  "one_click_setup": {
+    "helper_version": "0.1.3",
+    "direct_ssh_only": true,
+    "opening_timeline_installs": false,
+    "uses_sudo": false,
+    "creates_daemon_or_hooks": false,
+    "live_ssh": {
+      "result": "passed",
+      "log": "/private/tmp/hc-oneclick-live-green.log",
+      "scope": "Disposable loopback SSH with isolated child HOME; public release installed and verified",
+      "coverage": [
+        "installation and re-probe",
+        "exit7 preserved",
+        "timeout closes owned channel",
+        "parent SSH stays healthy"
+      ],
+      "cleanup": "Disposable SSH server stopped; private keys and temporary test configuration removed",
+      "installed_on_user_host": false
+    },
+    "script_tests": {
+      "passed": 9,
+      "suite_total": 33,
+      "log": "/private/tmp/hc-oneclick-python-final.log"
+    }
   }
 }

@@ -81,11 +81,20 @@ final class AgentTimelineUITests: XCTestCase {
         preview.name = "Timeline first-use drawer"
         preview.lifetime = .keepAlways
         add(preview)
-        XCTAssertGreaterThan(drawer.frame.height, app.frame.height * 0.55)
+        let sheetTop = app.navigationBars["Set up Timeline"].frame.minY
+        let sheetBottom = app.buttons["timeline-helper-use-terminal"].frame.maxY
+        XCTAssertGreaterThan(sheetBottom - sheetTop, app.frame.height * 0.75)
+        let manual = app.buttons["Manual setup"]
+        for _ in 0..<3 where !manual.isHittable { drawer.swipeUp() }
+        manual.tap()
         let copy = app.buttons["timeline-helper-copy-command"]
-        for _ in 0..<3 where !copy.isHittable { drawer.swipeUp() }
+        for _ in 0..<4 {
+            let visibleBottom = app.staticTexts["demo@studio-mac"].frame.minY - 8
+            if copy.isHittable && copy.frame.maxY < visibleBottom { break }
+            drawer.swipeUp()
+        }
         copy.tap()
-        XCTAssertTrue(app.staticTexts["Command copied"].exists)
+        XCTAssertTrue(app.staticTexts["Command copied"].waitForExistence(timeout: 3))
         app.buttons["timeline-helper-check-again"].tap()
         XCTAssertTrue(app.staticTexts["The helper was not found yet. Run the command on your SSH host, then check again."].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["A clearer view of your agent"].exists)
@@ -125,6 +134,52 @@ final class AgentTimelineUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.staticTexts["Conversation"].waitForExistence(timeout: 5), "Successful setup restores Timeline as the default for this host")
         app.terminate()
+    }
+    func testOneClickInstallIsExplicitAndReturnsToTimeline() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-helper-missing", "-hc.light", "-hc.timeline-install-result", "success"]
+        launch(app)
+        let install = app.buttons["timeline-helper-install"]
+        let exists = install.waitForExistence(timeout: 5)
+        XCTAssertTrue(exists)
+        guard exists else { app.terminate(); return }
+        XCTAssertEqual(install.label, "Install Timeline helper")
+        XCTAssertTrue(app.staticTexts["demo@studio-mac"].exists)
+        XCTAssertTrue(app.staticTexts["~/.local/bin/herdcats-bridge"].exists)
+        XCTAssertTrue(app.staticTexts["A clearer view of your agent"].exists, "Opening the drawer must not install automatically")
+        install.tap()
+        XCTAssertTrue(app.staticTexts["Conversation"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["timeline-open-terminal"].exists)
+        XCTAssertFalse(app.staticTexts["A clearer view of your agent"].exists)
+        app.terminate()
+    }
+    func testHelperReplacementAndUncertainInstallRequireSeparateActions() {
+        for scenario in ["replacement", "uncertain", "failure", "probe_failure"] {
+            let app = XCUIApplication()
+            app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-helper-missing", "-hc.light", "-hc.timeline-install-result", scenario]
+            launch(app)
+            let install = app.buttons["timeline-helper-install"]
+            XCTAssertTrue(install.waitForExistence(timeout: 5))
+            install.tap()
+            let feedback = app.staticTexts["timeline-setup-feedback"]
+            XCTAssertTrue(feedback.waitForExistence(timeout: 5))
+            XCTAssertFalse(app.staticTexts["Conversation"].exists)
+            if scenario == "replacement" {
+                XCTAssertEqual(install.label, "Replace helper with 0.1.3")
+                install.tap()
+                XCTAssertTrue(app.staticTexts["Conversation"].waitForExistence(timeout: 5))
+            } else if scenario == "uncertain" {
+                XCTAssertEqual(install.label, "Check installation")
+                install.tap()
+                XCTAssertTrue(app.staticTexts["Conversation"].waitForExistence(timeout: 5))
+            } else {
+                XCTAssertTrue(feedback.label.contains(scenario == "failure" ? "could not download" : "No installation was started"))
+                XCTAssertEqual(install.label, "Install Timeline helper")
+                app.buttons["timeline-helper-use-terminal"].tap()
+                XCTAssertTrue(app.scrollViews["pane-output-scroll-view"].waitForExistence(timeout: 5))
+            }
+            app.terminate()
+        }
     }
     private func launch(_ app: XCUIApplication) {
         app.launchArguments += ["-hc.timeline-intro-reset"]

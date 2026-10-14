@@ -4,7 +4,7 @@
   "protocol": 1,
   "herdr_protocol": 22,
   "supported_agent": "Claude with exact herdr:claude session reference",
-  "install_scope": "Explicit user-selected directory on the direct SSH host that owns Herdr and the Claude transcripts. No auto-install, hooks or persistent service.",
+  "install_scope": "Explicit Install button on the displayed direct SSH host, or user-selected manual directory. No install on opening Timeline, sudo, hooks or persistent service.",
   "requirements": [
     "Rust 1.85 or later for a source build",
     "Python 3.8 or later for installer",
@@ -60,7 +60,9 @@
       "Missing helper automatically opens near-full-screen Timeline benefits and host-helper setup guidance",
       "Dismiss or Use Terminal for now selects Terminal and remembers the SSH-host choice",
       "Timeline toolbar icon retries and reopens guidance while helper is missing",
-      "Copy pinned one-command installer and run on the direct SSH host",
+      "Display SSH host/user/port and ~/.local/bin/herdcats-bridge before an explicit Install action",
+      "Probe existing helper, then install pinned release with progress; incompatible existing helper requires separate Replace authorization",
+      "After uncertain installation, check existing helper before allowing a retry; retain Manual setup copy instructions",
       "Check again remains in guidance when unavailable; verified native Timeline closes the sheet and restores its default"
     ],
     "command": "curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v0.1.3/install.sh | sh -s -- --version 0.1.3",
@@ -76,6 +78,7 @@
     "release_workflow": ".github/workflows/bridge-release.yml",
     "publication": "Native four-platform CI38535142834 passed; helper0.1.3 published and public HTTPS installer verified in owned temporary directory",
     "download_boundary": "HTTPS release assets and same-channel SHA256SUMS; checksums are integrity checks, not independent signing",
-    "build_dependencies": "Rust and Python are required only for source-build/development path below"
+    "build_dependencies": "Rust and Python are required only for source-build/development path below",
+    "app_installer_integrity": "App pins the install.sh SHA256 before execution; installer checks native binary checksum. This does not add independent release signing."
   }
 }

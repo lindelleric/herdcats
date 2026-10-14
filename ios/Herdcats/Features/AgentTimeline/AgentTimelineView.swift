@@ -7,6 +7,7 @@ struct AgentTimelineView: View {
     let connection: HerdrConnection
     let timeline: AgentTimelineState
     let bottomOverlayInset: CGFloat
+    let setupTarget: ConnectionIdentity
     let onUseTerminal: () -> Void
     let onSetupComplete: () -> Void
     @Environment(AppModel.self) private var appModel
@@ -17,6 +18,11 @@ struct AgentTimelineView: View {
     @State private var setupShouldUseTerminal = true
     @State private var isCheckingSetup = false
     @State private var setupFeedback: String?
+    @State private var helperStage: HostHelperSetupStage = .idle
+    @State private var helperInstallTask: Task<Void, Never>?
+    @State private var helperInstallToken: UUID?
+    @State private var fixtureHelperInstalled = false
+    @State private var helperMayHaveInstalled = false
     @State private var retry = 0
     @State private var isPaging = false
     @State private var pageError: String?
@@ -155,17 +161,24 @@ struct AgentTimelineView: View {
             case .loading: break
             }
         }
+        .onChange(of: connectionState) { _, _ in cancelHelperInstallation() }
+        .onChange(of: scenePhase) { _, phase in if phase != .active { cancelHelperInstallation() } }
+        .onDisappear { cancelHelperInstallation() }
         .sheet(isPresented: $showsSetup, onDismiss: {
+            cancelHelperInstallation()
             if setupShouldUseTerminal { onUseTerminal() }
         }) {
             AgentBridgeSetupView(
                 isChecking: isCheckingSetup, feedback: setupFeedback,
+                stage: helperStage, target: setupTarget,
+                canInstall: connectionState.isReady && appModel.supportsHostServices && appModel.connectionIdentity == setupTarget,
+                onInstall: startHelperInstallation,
                 onCheckAgain: {
                     setupFeedback = nil
                     isCheckingSetup = true
                     retry += 1
                 },
-                onUseTerminal: { showsSetup = false }
+                onUseTerminal: { cancelHelperInstallation(); showsSetup = false }
             )
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
@@ -176,6 +189,113 @@ struct AgentTimelineView: View {
         setupShouldUseTerminal = true
         setupFeedback = nil
         showsSetup = true
+    }
+    @MainActor private func startHelperInstallation() {
+        guard helperInstallTask == nil, !helperStage.isBusy, !isCheckingSetup else { return }
+        if helperStage == .installed { isCheckingSetup = true; retry += 1; return }
+        let checkOnly = helperStage == .uncertain
+        let replacing: Bool
+        if case .replacementRequired = helperStage { replacing = true } else { replacing = false }
+        let token = UUID()
+        helperInstallToken = token
+        let ownedConnection = connectionState
+        setupFeedback = nil
+        helperStage = .checking
+        helperMayHaveInstalled = checkOnly
+        helperInstallTask = Task { @MainActor in
+            do {
+                let result: HostHelperSetupDecision
+                #if DEBUG && targetEnvironment(simulator)
+                if ScreenshotFixtures.enabled {
+                    try await Task.sleep(for: .milliseconds(150))
+                    let args = ProcessInfo.processInfo.arguments
+                    let scenario = args.firstIndex(of: "-hc.timeline-install-result").flatMap { index in
+                        index + 1 < args.count ? args[index + 1] : nil
+                    } ?? "failure"
+                    if scenario == "replacement" && !replacing {
+                        result = .replacementRequired(.present(version: "0.1.0", managed: true, compatible: false))
+                    } else if scenario == "uncertain" && !checkOnly {
+                        helperStage = .installing
+                        helperMayHaveInstalled = true
+                        throw AgentBridgeError.closed
+                    } else if scenario == "probe_failure" {
+                        throw AgentBridgeError.closed
+                    } else if scenario == "failure" {
+                        throw HostHelperSetupError.failed("download_failed")
+                    } else {
+                        if !checkOnly { helperStage = .installing; helperMayHaveInstalled = true }
+                        try await Task.sleep(for: .milliseconds(150))
+                        fixtureHelperInstalled = true
+                        result = .ready
+                    }
+                } else {
+                    guard let owned = ownedConnection.generation else { throw AgentBridgeError.closed }
+                    result = try await connection.setUpHostHelper(
+                        replace: replacing, checkOnly: checkOnly, target: setupTarget, owned: owned,
+                        onStage: { stage in await commitHelperStage(stage, token: token, connection: ownedConnection) })
+                }
+                #else
+                guard let owned = ownedConnection.generation else { throw AgentBridgeError.closed }
+                result = try await connection.setUpHostHelper(
+                    replace: replacing, checkOnly: checkOnly, target: setupTarget, owned: owned,
+                    onStage: { stage in await commitHelperStage(stage, token: token, connection: ownedConnection) })
+                #endif
+                try Task.checkCancellation()
+                guard helperInstallToken == token, ownedConnection == connectionState, showsSetup else { return }
+                helperInstallTask = nil
+                switch result {
+                case .ready:
+                    helperStage = .installed
+                    isCheckingSetup = true
+                    retry += 1
+                case .missing:
+                    helperStage = .idle
+                    setupFeedback = "No helper was found. Tap Install Timeline helper to try installation, or use manual setup."
+                case .replacementRequired(let probe):
+                    helperStage = .replacementRequired(probe)
+                    if case .present(let version, let managed, _) = probe {
+                        setupFeedback = managed
+                            ? "Existing helper version \(version ?? "unknown") will be replaced at the location shown. Tap Replace to authorize this update."
+                            : "An existing helper was found elsewhere. Install a managed copy at the location shown; the other copy will remain unchanged."
+                    }
+                case .install: throw HostHelperSetupError.invalidResponse
+                }
+            } catch {
+                guard helperInstallToken == token, ownedConnection == connectionState, showsSetup else { return }
+                helperInstallTask = nil
+                if let setupError = error as? HostHelperSetupError {
+                    if helperMayHaveInstalled && (setupError == .invalidResponse || setupError == .failed("install_failed")) {
+                        helperStage = .uncertain
+                        setupFeedback = "Installation could not be verified. Check installation before trying again, or use manual setup."
+                    } else {
+                        helperStage = .idle
+                        helperMayHaveInstalled = false
+                        setupFeedback = setupError.localizedDescription
+                    }
+                } else if helperMayHaveInstalled {
+                    helperStage = .uncertain
+                    setupFeedback = "Installation could not be confirmed. It may have finished on the host. Check installation before trying again, or use manual setup."
+                } else {
+                    helperStage = .idle
+                    setupFeedback = "The host could not be checked. Reconnect and try again, or use manual setup. No installation was started."
+                }
+            }
+        }
+    }
+    @MainActor private func commitHelperStage(_ stage: HostHelperSetupStage, token: UUID, connection: AgentTimelineConnectionState) {
+        guard helperInstallToken == token, connection == connectionState, showsSetup else { return }
+        helperStage = stage
+        if stage == .installing { helperMayHaveInstalled = true }
+    }
+    @MainActor private func cancelHelperInstallation() {
+        guard let task = helperInstallTask else { return }
+        helperInstallToken = nil
+        helperInstallTask = nil
+        task.cancel()
+        helperStage = helperMayHaveInstalled ? .uncertain : .idle
+        setupFeedback = helperMayHaveInstalled
+            ? "Installation may have finished on the host. Check installation before trying again."
+            : "The host check stopped. Reconnect and try again. No installation was started."
     }
     @ViewBuilder private var availability: some View {
         switch timeline.phase {
@@ -250,7 +370,7 @@ struct AgentTimelineView: View {
                 do {
                     try timeline.consume(AgentTimelineScreenshotFixture.frame(
                         paneId: paneId,
-                        helperInstalled: retry > 0 && ProcessInfo.processInfo.arguments.contains("-hc.timeline-helper-installed")
+                        helperInstalled: fixtureHelperInstalled || (retry > 0 && ProcessInfo.processInfo.arguments.contains("-hc.timeline-helper-installed"))
                     ), owner: owner)
                 } catch { timeline.end(owner: owner, error: (error as? AgentBridgeError) ?? .invalidFrame) }
                 return
@@ -358,14 +478,33 @@ private struct AgentTimelineEntryView: View {
     }
 }
 
-/// Instructions only: installation always runs explicitly on the selected host.
+/// Explicit opt-in installation on the displayed SSH endpoint; manual setup stays available.
 private struct AgentBridgeSetupView: View {
     let isChecking: Bool
     let feedback: String?
+    let stage: HostHelperSetupStage
+    let target: ConnectionIdentity
+    let canInstall: Bool
+    let onInstall: () -> Void
     let onCheckAgain: () -> Void
     let onUseTerminal: () -> Void
     @State private var copied = false
-    private let command = "curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v0.1.3/install.sh | sh -s -- --version 0.1.3"
+    private var command: String {
+        "curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v\(HostHelperSetupPlan.version)/install.sh | sh -s -- --version \(HostHelperSetupPlan.version)"
+    }
+    private var installLabel: String {
+        switch stage {
+        case .idle: "Install Timeline helper"
+        case .checking: "Checking host…"
+        case .installing: "Installing helper…"
+        case .verifying: "Verifying installation…"
+        case .uncertain: "Check installation"
+        case .installed: "Open Timeline"
+        case .replacementRequired(let probe):
+            if case .present(_, true, _) = probe { "Replace helper with \(HostHelperSetupPlan.version)" }
+            else { "Install managed helper" }
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -393,15 +532,12 @@ private struct AgentBridgeSetupView: View {
                         Text("It runs only while Timeline is open. There’s no background service or agent hook to configure.")
                             .font(.jost(.subheadline)).foregroundStyle(Theme.textMuted)
                     }
+                    Text("Tapping Install downloads the pinned helper and verifies its checksum before running the installer. No sudo, background service, or agent hooks are required.")
+                        .font(.jost(.subheadline)).foregroundStyle(Theme.textMuted)
+                    DisclosureGroup("Manual setup") {
                     VStack(alignment: .leading, spacing: 14) {
                         Text("Set it up once on your SSH host")
                             .font(.jost(.headline)).accessibilityAddTraits(.isHeader)
-                        Text("1. Copy the command below.\n2. Run it on the computer where Herdr and Claude are running.\n3. Come back here and tap Check again.")
-                            .font(.jost(.subheadline)).foregroundStyle(Theme.textMuted)
-                        Text(command)
-                            .font(.system(.footnote, design: .monospaced)).textSelection(.enabled)
-                            .padding(16).frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Theme.fieldBackground, in: RoundedRectangle(cornerRadius: 16))
                         Button {
                             UIPasteboard.general.string = command
                             copied = true
@@ -411,10 +547,18 @@ private struct AgentBridgeSetupView: View {
                         }
                         .buttonStyle(.herdrSecondary)
                         .accessibilityIdentifier("timeline-helper-copy-command")
+                        Text("1. Copy the command below.\n2. Run it on the computer where Herdr and Claude are running.\n3. Come back here and tap Check again.")
+                            .font(.jost(.subheadline)).foregroundStyle(Theme.textMuted)
+                        Text(command)
+                            .font(.system(.footnote, design: .monospaced)).textSelection(.enabled)
+                            .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Theme.fieldBackground, in: RoundedRectangle(cornerRadius: 16))
                         Text("The installer checks the download and installs in your user account. Already installed? Add --replace to update it.")
                             .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
                         Link("View downloads and setup details", destination: URL(string: "https://github.com/zhiyao/herdcats/releases")!)
                             .font(.jost(.subheadline))
+                    }
+                    .padding(.top, 12)
                     }
                 }
                 .padding(24)
@@ -422,17 +566,31 @@ private struct AgentBridgeSetupView: View {
             .accessibilityIdentifier("timeline-setup-scroll")
             .safeAreaInset(edge: .bottom) {
                 VStack(spacing: 12) {
+                    VStack(spacing: 3) {
+                        Text("\(target.username)@\(target.host)").font(.jost(.subheadline, weight: .semibold))
+                        Text("~/.local/bin/herdcats-bridge").font(.system(.caption, design: .monospaced))
+                        Text("Port \(target.port) · helper \(HostHelperSetupPlan.version)").font(.jost(.caption))
+                    }.foregroundStyle(Theme.textMuted)
                     if let feedback {
                         Text(feedback).font(.jost(.caption)).foregroundStyle(Theme.textMuted)
                             .accessibilityIdentifier("timeline-setup-feedback")
                     }
+                    Button(action: onInstall) {
+                        HStack {
+                            if stage.isBusy { ProgressView() }
+                            Text(installLabel)
+                        }.frame(maxWidth: .infinity)
+                    }
+                    .disabled(stage.isBusy || isChecking || !canInstall)
+                    .buttonStyle(.herdrPrimary)
+                    .accessibilityIdentifier("timeline-helper-install")
                     Button(action: onCheckAgain) {
                         HStack {
                             if isChecking { ProgressView() }
                             Text(isChecking ? "Checking…" : "Check again")
                         }.frame(maxWidth: .infinity)
                     }
-                    .disabled(isChecking).buttonStyle(.herdrPrimary)
+                    .disabled(isChecking || stage.isBusy).buttonStyle(.herdrSecondary)
                     .accessibilityIdentifier("timeline-helper-check-again")
                     Button("Use Terminal for now", action: onUseTerminal)
                         .buttonStyle(.herdrSecondary)

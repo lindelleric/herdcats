@@ -469,7 +469,10 @@ extension SSHClient {
         )
 
         func close() async throws {
-            try await channel.close()
+            // A short exec can finish and close remotely before cleanup runs.
+            // Closing that already-closed channel is successful cleanup.
+            do { try await channel.close() }
+            catch ChannelError.alreadyClosed {}
         }
 
         do {
@@ -477,7 +480,8 @@ extension SSHClient {
             try await perform(inbound, TTYStdinWriter(channel: channel))
             try await close()
         } catch {
-            try await close()
+            // Cleanup must not replace the command's exit-status/read error.
+            try? await close()
             throw error
         }
     }

@@ -11,8 +11,8 @@
     "installer": 9,
     "installer_result": "passed against debug and release binaries in temporary directories",
     "release_build": "0.1.3 release --locked --offline passed; all four native CI jobs passed",
-    "setup_distribution_python": 24,
-    "setup_distribution_result": "all passed; explicit installer, fake HTTPS release download, packaging and actual mobile launcher execution"
+    "setup_distribution_python": 33,
+    "setup_distribution_result": "33 passed, including9 tests executing the actual mobile probe/install shell scripts"
   },
   "independent_review": {
     "findings_fixed": [
@@ -64,7 +64,9 @@
     "published_release": true,
     "ci": "macOS Apple Silicon/Intel and Linux arm64/x86_64 native tests, Clippy, builds and packaging passed",
     "release_workflow": "Four native builds and draft assembly passed in CI38535142834 attempt2; published after checksum/platform checks",
-    "public_install_script": "bridge/scripts/install.sh; no Rust/Python requirement for users"
+    "public_install_script": "bridge/scripts/install.sh; no Rust/Python requirement for users",
+    "mobile_one_click": "Explicit direct-SSH action; app-pinned script digest, bounded command, separate replacement authorization, check-first recovery and manual fallback",
+    "mobile_live_ssh": "Public0.1.3 installed in isolated temporary HOME over disposable loopback SSH; verified timeout cleanup, exit7 propagation and parent connection health. /private/tmp/hc-oneclick-live-green.log"
   },
   "release_evidence": "compatibility/release/v0.1.3.json",
   "patch_review_fixes": {

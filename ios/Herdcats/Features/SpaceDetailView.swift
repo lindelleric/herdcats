@@ -1357,7 +1357,7 @@ struct PaneSessionView: View {
             if showsTimeline {
                 AgentTimelineView(
                     paneId: pane.paneId, connection: appModel.connection, timeline: timeline,
-                    bottomOverlayInset: bottomDockHeight,
+                    bottomOverlayInset: bottomDockHeight, setupTarget: connectionScope,
                     onUseTerminal: {
                         UserDefaults.standard.set(true, forKey: TimelineSetupPreference.key(scope: connectionScope))
                         showsTimeline = false

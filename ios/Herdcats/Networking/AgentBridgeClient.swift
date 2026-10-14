@@ -268,3 +268,189 @@ extension HerdrConnection {
         slot.matches(owned) && agentBridges[bridgeId] != nil
     }
 }
+
+/// Immutable release selected by this app build, not a host-supplied URL.
+enum HostHelperSetupPlan {
+    static let version = "0.1.3"
+    static let installerSHA256 = "7e04cf29f32a45d53594346dec0aec7f5dcea697b162303e6bae1987f56795d4"
+    static func installationScript(replace: Bool) -> String {
+        return #"""
+        set -eu
+        fail() { printf 'HC_HELPER_ERROR:%s\n' "$1"; exit 0; }
+        command -v curl >/dev/null 2>&1 || fail curl_missing
+        if command -v sha256sum >/dev/null 2>&1; then HB_HASH=sha256sum
+        elif command -v shasum >/dev/null 2>&1; then HB_HASH=shasum
+        else fail checksum_tool_missing; fi
+        HB_SETUP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/herdcats-setup.XXXXXX") || fail temporary_directory_failed
+        trap 'rm -rf "$HB_SETUP_DIR"' EXIT
+        trap 'exit 1' HUP INT TERM
+        curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+          --connect-timeout 15 --max-time 60 --max-filesize 65536 --retry 1 \
+          -o "$HB_SETUP_DIR/install.sh" \
+          'https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v\#(version)/install.sh' \
+          2>/dev/null || fail download_failed
+        if [ "$HB_HASH" = sha256sum ]; then HB_SUM=$(sha256sum "$HB_SETUP_DIR/install.sh" | awk '{print $1}')
+        else HB_SUM=$(shasum -a 256 "$HB_SETUP_DIR/install.sh" | awk '{print $1}'); fi
+        [ "$HB_SUM" = '\#(installerSHA256)' ] || fail checksum_mismatch
+        /bin/sh "$HB_SETUP_DIR/install.sh" --version '\#(version)'\#(replace ? " --replace" : "") \
+          >"$HB_SETUP_DIR/install.log" 2>&1 || fail install_failed
+        printf '%s\n' HC_HELPER_INSTALLED
+        "$HOME/.local/bin/herdcats-bridge" --version-json 2>/dev/null
+        """#
+    }
+}
+
+extension HostHelperSetupPlan {
+    static func decision(probe: HostHelperProbe, replace: Bool, checkOnly: Bool) -> HostHelperSetupDecision {
+        switch probe {
+        case .missing: return checkOnly ? .missing : .install(replace: false)
+        case .present(_, let managed, let compatible):
+            if compatible { return .ready }
+            if checkOnly || !replace { return .replacementRequired(probe) }
+            return .install(replace: managed)
+        }
+    }
+}
+
+/// One bounded command channel. Never closes the shared SSH client.
+actor HostHelperCommand {
+    private var continuation: CheckedContinuation<String, Error>?
+    private var output = Data()
+    private var closer: (@Sendable () async -> Void)?
+    private var work: Task<Void, Never>?
+    private var timer: Task<Void, Never>?
+    private var ended = false
+    private var started = false
+
+    func run(timeout: TimeInterval, operation: @escaping @Sendable (HostHelperCommand) async throws -> Void) async throws -> String {
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            guard !started && !ended else { throw CancellationError() }
+            started = true
+            return try await withCheckedThrowingContinuation { continuation in
+                self.continuation = continuation
+                timer = Task {
+                    do { try await Task.sleep(for: .seconds(timeout)) } catch { return }
+                    await self.finish(error: HerdrError.timeout("helper setup"))
+                }
+                work = Task {
+                    do {
+                        try Task.checkCancellation()
+                        try await operation(self)
+                        await self.finish(error: nil)
+                    } catch { await self.finish(error: error) }
+                }
+            }
+        } onCancel: { Task { await self.finish(error: CancellationError()) } }
+    }
+    func run(client: SSHClient, script: String, timeout: TimeInterval) async throws -> String {
+        let command = "exec /bin/sh -c \(HerdrConnection.shellSafeArgument(script))"
+        return try await run(timeout: timeout) { owned in
+            try await client.withExec(command) { inbound, outbound in
+                guard await owned.attach(close: { try? await outbound.close() }) else { throw CancellationError() }
+                for try await frame in inbound {
+                    switch frame {
+                    case .stdout(let bytes), .stderr(let bytes): await owned.receive(Data(bytes.readableBytesView))
+                    }
+                }
+            }
+        }
+    }
+    func attach(close: @escaping @Sendable () async -> Void) async -> Bool {
+        guard started && !ended else { await close(); return false }
+        closer = close
+        return true
+    }
+    func receive(_ data: Data) async {
+        guard !ended else { return }
+        guard data.count <= 65536 - output.count else { await finish(error: HostHelperSetupError.invalidResponse); return }
+        output.append(data)
+    }
+    private func finish(error: Error?) async {
+        guard !ended else { return }
+        ended = true
+        timer?.cancel(); timer = nil
+        let pending = continuation; continuation = nil
+        let close = closer; closer = nil
+        work?.cancel(); work = nil
+        if let error { pending?.resume(throwing: error) }
+        else { pending?.resume(returning: String(decoding: output, as: UTF8.self)) }
+        output.removeAll()
+        await close?()
+    }
+}
+
+
+extension HostHelperSetupPlan {
+    static var probeScript: String {
+        #"""
+        D="$HOME/.local/bin/herdcats-bridge"
+        if [ -L "$D" ] || { [ -e "$D" ] && [ ! -f "$D" ]; }; then
+          printf '%s\n' HC_HELPER_BLOCKED; exit 0
+        fi
+        B=
+        if [ -f "$D" ]; then B="$D"; MARKER=HC_HELPER_MANAGED
+        else
+          MARKER=HC_HELPER_EXTERNAL
+          B=$(command -v herdcats-bridge 2>/dev/null || true)
+          if [ -z "$B" ]; then
+            for P in "$HOME/.cargo/bin/herdcats-bridge" /opt/homebrew/bin/herdcats-bridge /usr/local/bin/herdcats-bridge; do
+              if [ -x "$P" ]; then B="$P"; break; fi
+            done
+          fi
+        fi
+        if [ -z "$B" ]; then printf '%s\n' HC_HELPER_MISSING; exit 0; fi
+        printf '%s\n' "$MARKER"
+        "$B" --version-json 2>/dev/null || printf '%s\n' HC_HELPER_PROBE_FAILED
+        """#
+    }
+    static func verifyInstallation(_ output: String) throws {
+        if output.hasPrefix("HC_HELPER_ERROR:") {
+            let code = output.dropFirst("HC_HELPER_ERROR:".count).trimmingCharacters(in: .whitespacesAndNewlines)
+            throw HostHelperSetupError.failed(code)
+        }
+        guard output.hasPrefix("HC_HELPER_INSTALLED\n") else { throw HostHelperSetupError.invalidResponse }
+        let report = String(output.dropFirst("HC_HELPER_INSTALLED\n".count))
+        let probe = try HostHelperProbe(output: "HC_HELPER_MANAGED\n" + report)
+        guard case .present(_, true, true) = probe else { throw HostHelperSetupError.invalidResponse }
+    }
+}
+
+extension HerdrConnection {
+    /// User-triggered only. Captures the displayed endpoint and transport before
+    /// probing, and revalidates both immediately before a mutating command.
+    func setUpHostHelper(
+        replace: Bool, checkOnly: Bool, target: ConnectionIdentity, owned: ConnectionGeneration,
+        onStage: @escaping @Sendable (HostHelperSetupStage) async -> Void
+    ) async throws -> HostHelperSetupDecision {
+        guard route == nil else { throw AgentBridgeError.routedHostUnsupported }
+        try requireGeneration(owned)
+        guard identity == target else { throw HerdrError.notConnected }
+        let client = try slot.ownedClient(owned)
+        guard helperSetupOperation == nil else { throw HostHelperSetupError.busy }
+        let operation = UUID()
+        helperSetupOperation = operation
+        defer { if helperSetupOperation == operation { helperSetupOperation = nil } }
+        await onStage(.checking)
+        try Task.checkCancellation()
+        try requireGeneration(owned)
+        guard identity == target else { throw HerdrError.notConnected }
+        let output = try await HostHelperCommand().run(client: client, script: HostHelperSetupPlan.probeScript, timeout: 10)
+        try Task.checkCancellation()
+        try requireGeneration(owned)
+        let probe = try HostHelperProbe(output: output)
+        let decision = HostHelperSetupPlan.decision(probe: probe, replace: replace, checkOnly: checkOnly)
+        guard case .install(let replaceManaged) = decision else { return decision }
+        await onStage(.installing)
+        try Task.checkCancellation()
+        try requireGeneration(owned)
+        guard identity == target else { throw HerdrError.notConnected }
+        let result = try await HostHelperCommand().run(client: client, script: HostHelperSetupPlan.installationScript(replace: replaceManaged), timeout: 180)
+        try Task.checkCancellation()
+        try requireGeneration(owned)
+        await onStage(.verifying)
+        try HostHelperSetupPlan.verifyInstallation(result)
+        try requireGeneration(owned)
+        return .ready
+    }
+}
