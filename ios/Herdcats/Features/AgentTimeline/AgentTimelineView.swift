@@ -295,7 +295,7 @@ private struct AgentBridgeSetupView: View {
     let onCheckAgain: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var copied = false
-    private let command = "curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v0.1.1/install.sh | sh -s -- --version 0.1.1"
+    private let command = "curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v0.1.2/install.sh | sh -s -- --version 0.1.2"
 
     var body: some View {
         NavigationStack {

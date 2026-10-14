@@ -10,6 +10,7 @@ struct Stamp {
     mtime: (i64, i64),
     ctime: (i64, i64),
 }
+
 impl Stamp {
     fn of(m: &fs::Metadata) -> Self {
         Self {
@@ -39,11 +40,11 @@ impl Follower {
         if before.len > MAX_SOURCE {
             return Err("source_too_large");
         }
-        if self.stamp.as_ref() == Some(&before) && self.session == session {
-            return Ok(false);
-        }
         // Retaining a bounded prefix lets us distinguish append from any rewrite,
         // including truncate/regrow between polls or edits earlier in the file.
+        // Equal metadata stamps can hide same-length rewrites on filesystems with
+        // coarse timestamps, so every poll rereads up to MAX_SOURCE bytes. This
+        // bounded I/O cost is necessary to verify the cached content is current.
         let mut bytes = Vec::new();
         (&mut file)
             .take(MAX_SOURCE + 1)
@@ -96,5 +97,51 @@ impl Follower {
         self.stamp = Some(before);
         self.session = session.to_owned();
         Ok(changed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_length_rewrite_is_detected_when_metadata_stamps_collide() {
+        struct TempFile(std::path::PathBuf);
+        impl Drop for TempFile {
+            fn drop(&mut self) {
+                let _ = fs::remove_file(&self.0);
+            }
+        }
+        let path = TempFile(std::env::temp_dir().join(format!(
+            "hc-follower-stamp-collision-{}",
+            std::process::id()
+        )));
+        let session = "16246b9d-4c3d-54fc-b6d3-2a765d418491";
+        let record = |text| {
+            format!(
+                "{}\n",
+                serde_json::json!({"type":"user","uuid":"same","sessionId":session,
+                    "message":{"role":"user","content":text}})
+            )
+        };
+        let old = record("old");
+        let new = record("new");
+        assert_eq!(old.len(), new.len());
+        fs::write(&path.0, &old).unwrap();
+        let source_path = path.0.canonicalize().unwrap();
+        let mut follower = Follower::default();
+        assert!(follower.refresh(&source_path, session).unwrap());
+        assert_eq!(follower.transcript.entries[0].text, "old");
+        let generation = follower.generation;
+        fs::write(&path.0, &new).unwrap();
+        // Model a filesystem whose timestamp resolution cannot distinguish these
+        // same-length writes, while leaving the cached source bytes untouched.
+        follower.stamp = Some(Stamp::of(&fs::metadata(&path.0).unwrap()));
+        assert!(follower.refresh(&source_path, session).unwrap());
+        assert_eq!(follower.transcript.entries.len(), 1);
+        assert_eq!(follower.transcript.entries[0].text, "new");
+        assert_eq!(follower.generation, generation + 1);
+        assert!(!follower.refresh(&source_path, session).unwrap());
+        assert_eq!(follower.generation, generation + 1);
     }
 }

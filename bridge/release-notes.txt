@@ -1,7 +1,7 @@
 Optional host companion for Herdcats native Claude Timeline.
 
 Patch fixes:
-- Oversized image/tool records are omitted with a visible record count instead of disabling session history.
+- Oversized image/tool records are omitted with a visible omission notice instead of disabling session history.
 - Transient reads of the same session retry without clearing verified history.
 - Retention updates preserve generation and loaded history; only an evicted cursor expires.
 - Installation works with noexec temporary directories, and truncated script downloads cannot run setup.
@@ -16,3 +16,5 @@ Requires macOS 13+ or Linux with glibc 2.35+ (Ubuntu 22.04+), curl and SHA-256 t
 Checksums detect damaged downloads; they are provided through the same HTTPS release channel. These binaries are not Developer ID signed/notarized. Native question/approval responses, Codex and saved-machine routing remain unavailable; use Terminal for those interactions.
 
 After installation, return to Herdcats and tap Check again.
+
+- Same-size source rewrites are detected even when filesystem timestamps collide.

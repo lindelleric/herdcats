@@ -1,8 +1,8 @@
 {
-  "date": "2026-10-13",
+  "date": "2026-10-14",
   "status": "claude_read_only_host_foundation_verified",
   "tests": {
-    "rust": 32,
+    "rust": 33,
     "rust_result": "passed",
     "command": "cargo test --manifest-path bridge/Cargo.toml --offline",
     "clippy": "all targets with -D warnings passed",
@@ -10,7 +10,7 @@
     "phase0_result": "passed",
     "installer": 9,
     "installer_result": "passed against debug and release binaries in temporary directories",
-    "release_build": "0.1.1 release --locked --offline passed",
+    "release_build": "0.1.2 release --locked --offline passed",
     "setup_distribution_python": 24,
     "setup_distribution_result": "all passed; explicit installer, fake HTTPS release download, packaging and actual mobile launcher execution"
   },
@@ -68,18 +68,25 @@
   },
   "release_evidence": "compatibility/release/v0.1.0.json",
   "patch_review_fixes": {
-    "status": "verified locally;0.1.1 release pending",
+    "status": "verified locally;0.1.2 release pending",
     "findings": [
       "oversized source records omitted/counted without disabling subsequent history",
       "same-session read race retains verified cache and cursors",
       "retention emits evicted_ids updates without generation reset",
       "release source verified against exact version tag for every trigger",
-      "installer probes on destination volume; main invocation only at EOF"
+      "installer probes on destination volume; main invocation only at EOF",
+      "same-size rewrite with colliding metadata detected by bounded content verification every poll"
     ],
     "logs": [
-      "/private/tmp/hc-patch-rust.log",
-      "/private/tmp/hc-patch-python.log",
-      "/private/tmp/hc-patch-clippy.log"
-    ]
+      "/private/tmp/hc-012-rust.log",
+      "/private/tmp/hc-012-python.log",
+      "/private/tmp/hc-012-clippy.log"
+    ],
+    "failed_release": {
+      "version": "0.1.1",
+      "ci_run": 38522445028,
+      "published": false,
+      "reason": "Linux arm64 exposed same-size rewrite timestamp collision; deterministic regression fixed in0.1.2"
+    }
   }
 }
