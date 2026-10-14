@@ -46,7 +46,7 @@
   ],
   "default_socket": "HERDR_SOCKET_PATH, otherwise ${XDG_CONFIG_HOME:-$HOME/.config}/herdr/herdr.sock",
   "default_transcripts": "$HOME/.claude/projects",
-  "failure_behavior": "Missing helper, unsupported protocol, unmapped session or unreadable transcripts leave Terminal available. Installation is never triggered by opening Timeline.",
+  "failure_behavior": "Absent native history leaves legacy Compose and Terminal available. A verified native identity retains ownership/status guards. Installation is never triggered by opening Timeline.",
   "removal": "Remove only the installed herdcats-bridge file. No daemon, hooks or config are created by this installer.",
   "limits": [
     "Published native release builds/tests verified in CI",
@@ -55,7 +55,7 @@
     "Codex, saved-machine routing and native approvals/questions remain gated"
   ],
   "onboarding": {
-    "status": "0.1.2 patch verified locally; publication pending",
+    "status": "0.1.2 published and public installer verified",
     "app_flow": [
       "Missing-helper state offers Set up Timeline; Terminal remains available",
       "Copy pinned one-command installer; run on the direct SSH host",
@@ -73,7 +73,7 @@
       "Linux glibc2.35+ arm64/x86_64"
     ],
     "release_workflow": ".github/workflows/bridge-release.yml",
-    "publication": "Native four-platform CI passed; helper0.1.0 release published and public installer verified",
+    "publication": "Native four-platform CI passed; helper0.1.2 release published and public HTTPS installer verified in an owned temporary directory",
     "download_boundary": "HTTPS release assets and same-channel SHA256SUMS; checksums are integrity checks, not independent signing",
     "build_dependencies": "Rust and Python are required only for source-build/development path below"
   }

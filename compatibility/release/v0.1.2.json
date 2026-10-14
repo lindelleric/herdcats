@@ -1,0 +1,59 @@
+{
+  "date": "2026-10-14",
+  "status": "published_and_public_installer_verified",
+  "tag": "herdcats-bridge-v0.1.2",
+  "version": "0.1.2",
+  "source_commit": "b77b225",
+  "url": "https://github.com/zhiyao/herdcats/releases/tag/herdcats-bridge-v0.1.2",
+  "ci_url": "https://github.com/zhiyao/herdcats/actions/runs/38525092098",
+  "native_builds": [
+    "darwin-arm64",
+    "darwin-x86_64",
+    "linux-arm64",
+    "linux-x86_64"
+  ],
+  "native_ci_result": "all four passed tests, Clippy, release build and packaging; draft assembly passed",
+  "binary_sha256": {
+    "herdcats-bridge-darwin-arm64": "687ec859fea3d760cb6f5d549dd704ca69c83c1f6ac9fbe2da8933ab8a29da7e",
+    "herdcats-bridge-darwin-x86_64": "11b9b6ef391eb5450d2562e3356c7fa22ec3e90686c1112fb7c36caf4cd7c89b",
+    "herdcats-bridge-linux-arm64": "ca6b665d0a309c5e8ed0328c6865d2e67f30252f4e35703f4bfa8e8566ddb21a",
+    "herdcats-bridge-linux-x86_64": "0d2789fe9a7c3d4c69a8d5d9a0e29a4ade0cc492f0277ed5b3ab820b579c7254"
+  },
+  "installer_sha256": "1847a38a2387552456282ce4dc7cad0ed5cf67ec5cc68e43e4b0dd9ba91d926d",
+  "public_install_smoke": {
+    "result": "passed",
+    "transport": "Real unauthenticated GitHub HTTPS download through published shell installer",
+    "target": "Owned temporary directory only",
+    "probe": {
+      "name": "herdcats-bridge",
+      "version": "0.1.2",
+      "protocol": 1,
+      "herdr_protocol": 22,
+      "agents": [
+        "claude"
+      ]
+    },
+    "started_agent_or_service": false
+  },
+  "local_validation": {
+    "rust": 33,
+    "python_distribution": 24,
+    "compatibility_evidence": 10,
+    "ios_unit_executed": 375,
+    "ios_unit_skipped": 1,
+    "ios_ui": 6
+  },
+  "limits": [
+    "Claude native timeline only; Codex, routed hosts and native approval/question responses remain gated",
+    "macOS13+; Linux glibc2.35+; arm64/x86_64",
+    "No Developer ID signing/notarization",
+    "App feature branch not merged; no phone/TestFlight/App Store deployment"
+  ],
+  "app_latest_release_preserved": "v0.4.0",
+  "failed_predecessor": {
+    "version": "0.1.1",
+    "published": false,
+    "ci_url": "https://github.com/zhiyao/herdcats/actions/runs/38522445028",
+    "reason": "Linux arm64 timestamp collision regression; fixed and verified in0.1.2"
+  }
+}

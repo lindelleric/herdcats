@@ -1,5 +1,5 @@
 {
-  "date": "2026-10-13",
+  "date": "2026-10-14",
   "status": "default_timeline_with_native_composition_and_dark_terminal",
   "scope": "Default native Claude timeline with existing Compose controls, toolbar mode switch beside the menu, and dark-only raw Terminal; optional host helper installation remains explicit.",
   "features": [
@@ -31,7 +31,7 @@
       "skipped_test": "liveCitadelFramesHistoryUpdatesIdleCancellationAndReconnect (ephemeral fixture not bundled in normal test builds)",
       "command": "xcodebuild test -project ios/Herdcats.xcodeproj -scheme Herdcats -destination 'platform=iOS Simulator,id=<available simulator>' -only-testing:HerdcatsTests CODE_SIGN_IDENTITY=-",
       "note": "Initial unsigned run had existing Keychain entitlement errors. Signed full-suite rerun passed.",
-      "release_recheck": "373 executed passed,1 opt-in skipped; /private/tmp/hc-release-ios.log"
+      "release_recheck": "375 executed passed,1 opt-in skipped; /private/tmp/hc-012-ios.log"
     },
     "ios_ui": {
       "tests": 6,
@@ -48,7 +48,7 @@
       ],
       "note": "One earlier UI run was interrupted by overlapping unit tests on the same simulator. Sequential rerun passed.",
       "log": "/private/tmp/hc-review-fixes-final-ios.log",
-      "release_recheck": "4 passed; /private/tmp/hc-release-ios.log"
+      "release_recheck": "6 passed; /private/tmp/hc-012-ios.log"
     },
     "live_citadel": {
       "tests": 1,
@@ -117,5 +117,5 @@
     "ios/Herdcats/Features/AgentTimeline/AgentTimelineState.swift",
     "ios/Herdcats/Features/AgentTimeline/AgentTimelineView.swift"
   ],
-  "onboarding_release_gate": "Helper0.1.0 published after all four native CI builds passed; public installer verified. App build has not been deployed."
+  "onboarding_release_gate": "Helper0.1.2 published after all four native CI builds passed; public installer verified. App not merged or deployed."
 }

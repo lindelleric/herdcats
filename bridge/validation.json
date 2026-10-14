@@ -63,12 +63,12 @@
     "installed_on_user_host": false,
     "published_release": true,
     "ci": "macOS Apple Silicon/Intel and Linux arm64/x86_64 native tests, Clippy, builds and packaging passed",
-    "release_workflow": "Four native builds and draft assembly passed in CI38505344824; release published after checksum and binary validation",
+    "release_workflow": "Four native builds and draft assembly passed in CI38525092098; release published after checksum and binary validation",
     "public_install_script": "bridge/scripts/install.sh; no Rust/Python requirement for users"
   },
-  "release_evidence": "compatibility/release/v0.1.0.json",
+  "release_evidence": "compatibility/release/v0.1.2.json",
   "patch_review_fixes": {
-    "status": "verified locally;0.1.2 release pending",
+    "status": "all review findings addressed;0.1.2 published and public installer verified",
     "findings": [
       "oversized source records omitted/counted without disabling subsequent history",
       "same-session read race retains verified cache and cursors",
