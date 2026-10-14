@@ -80,7 +80,7 @@ struct PaneDetailView: View {
     private var timelineMode: Binding<Bool> {
         let key = sessionIdentity
         return Binding(
-            get: { timelineModes[key] ?? true },
+            get: { timelineModes[key] ?? !UserDefaults.standard.bool(forKey: TimelineSetupPreference.key(scope: connectionScope)) },
             set: { timelineModes[key] = $0 }
         )
     }
@@ -163,7 +163,7 @@ struct PaneDetailView: View {
                         .font(.jost(16, weight: .medium))
                         .foregroundStyle(.primary)
                 }
-                .accessibilityLabel(timelineMode.wrappedValue ? "Terminal" : "Compose")
+                .accessibilityLabel(timelineMode.wrappedValue ? "Terminal" : "Timeline")
                 .accessibilityIdentifier(timelineMode.wrappedValue ? "timeline-open-terminal" : "terminal-open-timeline")
             }
             ToolbarItem(placement: .topBarTrailing) {
@@ -1367,7 +1367,17 @@ struct PaneSessionView: View {
         VStack(spacing: 0) {
             Color.clear.frame(height: topOutputInset)
             if showsTimeline {
-                AgentTimelineView(paneId: pane.paneId, connection: appModel.connection, timeline: timeline)
+                AgentTimelineView(
+                    paneId: pane.paneId, connection: appModel.connection, timeline: timeline,
+                    onUseTerminal: {
+                        UserDefaults.standard.set(true, forKey: TimelineSetupPreference.key(scope: connectionScope))
+                        showsTimeline = false
+                    },
+                    onSetupComplete: {
+                        let key = TimelineSetupPreference.key(scope: connectionScope)
+                        if UserDefaults.standard.bool(forKey: key) { UserDefaults.standard.removeObject(forKey: key) }
+                    }
+                )
                     .safeAreaInset(edge: .bottom) { timelineComposeDock }
             } else {
                 outputScrollView

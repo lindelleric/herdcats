@@ -1,6 +1,6 @@
 {
   "date": "2026-10-14",
-  "status": "default_timeline_with_native_composition_and_dark_terminal",
+  "status": "first_use_timeline_setup_drawer_with_terminal_deferral",
   "scope": "Default native Claude timeline with existing Compose controls, toolbar mode switch beside the menu, and dark-only raw Terminal; optional host helper installation remains explicit.",
   "features": [
     "Protocol1 non-PTY Citadel client with request correlation and bounded Unicode NDJSON",
@@ -21,7 +21,11 @@
     "Compose uses existing pane input when native history is absent; verified Claude identities retain native preflight guards",
     "Eviction updates remove only retired IDs, preserve generation/loaded history, and suppress stale-history resurrection",
     "Disconnected helper has Check again while SSH remains connected; errors explain actual source failures",
-    "Repeated source-changing reads show Delayed while retaining verified history; recovery clears the signal"
+    "Repeated source-changing reads show Delayed while retaining verified history; recovery clears the signal",
+    "Missing helper automatically opens large-detent setup drawer explaining Timeline benefits and on-demand host helper",
+    "Button or swipe dismissal returns to dark Terminal and remembers deferral per SSH connection scope",
+    "Timeline toolbar icon retries helper and reopens setup while missing; success stays in Timeline and clears deferral",
+    "Setup retry remains in drawer with missing-helper feedback; revision observation handles identical immediate failure"
   ],
   "validation": {
     "ios_unit": {
@@ -32,11 +36,11 @@
       "skipped_test": "liveCitadelFramesHistoryUpdatesIdleCancellationAndReconnect (ephemeral fixture not bundled in normal test builds)",
       "command": "xcodebuild test -project ios/Herdcats.xcodeproj -scheme Herdcats -destination 'platform=iOS Simulator,id=<available simulator>' -only-testing:HerdcatsTests CODE_SIGN_IDENTITY=-",
       "note": "Initial unsigned run had existing Keychain entitlement errors. Signed full-suite rerun passed.",
-      "release_recheck": "376 executed passed,1 opt-in skipped; /private/tmp/hc-013-ios.log (before remote dependency merge; combined-state CI separate)"
+      "release_recheck": "376 passed,1 opt-in skipped; /private/tmp/hc-onboarding-final.log"
     },
     "ios_ui": {
-      "tests": 6,
-      "result": "passed_after_claude_review_fixes",
+      "tests": 7,
+      "result": "passed_after_first_use_onboarding",
       "target": "HerdcatsUITests/AgentTimelineUITests",
       "coverage": [
         "light/dark + tool expansion",
@@ -45,11 +49,14 @@
         "default Timeline Compose field",
         "Compose absent from Terminal; fixed-dark Terminal captures from light/dark app",
         "Toolbar icon location beside menu, opposite-mode accessibility labels and draft preservation",
-        "Missing-helper setup, copy acknowledgement, recheck dismissal and Terminal fallback"
+        "Missing-helper setup, copy acknowledgement, recheck dismissal and Terminal fallback",
+        "automatic near-full-screen guidance, copying install command and identical missing-helper retry",
+        "button and swipe dismissal to Terminal; explicit Timeline re-entry; deferral survives app relaunch",
+        "successful helper check closes guidance, stays in Timeline and clears host deferral"
       ],
       "note": "One earlier UI run was interrupted by overlapping unit tests on the same simulator. Sequential rerun passed.",
-      "log": "/private/tmp/hc-review-fixes-final-ios.log",
-      "release_recheck": "6 passed; /private/tmp/hc-013-ios.log"
+      "log": "/private/tmp/hc-onboarding-final.log",
+      "release_recheck": "7 passed; /private/tmp/hc-onboarding-final.log"
     },
     "live_citadel": {
       "tests": 1,
@@ -118,5 +125,13 @@
     "ios/Herdcats/Features/AgentTimeline/AgentTimelineState.swift",
     "ios/Herdcats/Features/AgentTimeline/AgentTimelineView.swift"
   ],
-  "onboarding_release_gate": "Helper0.1.3 published after four native CI builds passed; public installer verified. App not merged or deployed."
+  "onboarding_release_gate": "Helper0.1.3 published after four native CI builds passed; public installer verified. App not merged or deployed.",
+  "first_use_drawer": {
+    "size": "large detent with drag indicator",
+    "preference_scope": "ConnectionIdentity.storageKey (SSH host, port, user and route identity)",
+    "installation": "User explicitly runs pinned0.1.3 command on host; no auto-install",
+    "red": "new automatic drawer test failed before implementation; retry feedback regression failed until observing timeline revision",
+    "green": "full unit and7UI tests pass",
+    "screenshot": ".lavish/timeline-first-use-drawer.png"
+  }
 }

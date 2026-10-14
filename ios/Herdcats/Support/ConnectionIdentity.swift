@@ -76,3 +76,10 @@ enum PanePersistenceKeys {
 
     static func legacyDraft(paneId: String) -> String { "pane-draft.\(paneId)" }
 }
+
+/// Deferring helper setup is scoped to the SSH host and user, never a pane ID.
+enum TimelineSetupPreference {
+    static func key(scope: ConnectionIdentity) -> String {
+        "timeline-setup-deferred.\(scope.storageKey)"
+    }
+}

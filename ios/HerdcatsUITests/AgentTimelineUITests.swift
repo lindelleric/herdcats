@@ -7,7 +7,7 @@ final class AgentTimelineUITests: XCTestCase {
             app.launchArguments =
                 ["-hc.screenshots", "-hc.screen", "timeline", "-paneShowComposeByDefault", "NO"]
                 + (light ? ["-hc.light"] : [])
-            app.launch()
+            launch(app)
             XCTAssertTrue(app.buttons["timeline-open-terminal"].waitForExistence(timeout: 5))
             XCTAssertTrue(app.staticTexts["Conversation"].exists)
             XCTAssertTrue(app.buttons["timeline-tool-tool:read"].exists)
@@ -34,7 +34,7 @@ final class AgentTimelineUITests: XCTestCase {
             app.launchArguments = [
                 "-hc.screenshots", "-hc.screen", screen, "-hc.light", "-paneShowComposeByDefault", "NO",
             ]
-            app.launch()
+            launch(app)
             XCTAssertTrue(
                 app.staticTexts[screen == "timeline-empty" ? "No messages yet" : "Timeline unavailable"]
                     .waitForExistence(timeout: 5))
@@ -45,7 +45,7 @@ final class AgentTimelineUITests: XCTestCase {
     func testDisconnectedTimelineCanRetryWithoutReconnectingSSH() {
         let app = XCUIApplication()
         app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-disconnected", "-hc.light", "-paneShowComposeByDefault", "YES"]
-        app.launch()
+        launch(app)
         XCTAssertTrue(app.staticTexts["Timeline disconnected"].waitForExistence(timeout: 5))
         let retry = app.buttons["timeline-helper-retry"]
         XCTAssertTrue(retry.exists)
@@ -56,10 +56,10 @@ final class AgentTimelineUITests: XCTestCase {
         app.terminate()
     }
     func testComposeRemainsEnabledWithoutNativeHistory() {
-        for screen in ["timeline-helper-missing", "timeline-unavailable"] {
+        for screen in ["timeline-unavailable"] {
             let app = XCUIApplication()
             app.launchArguments = ["-hc.screenshots", "-hc.screen", screen, "-hc.light", "-paneShowComposeByDefault", "YES"]
-            app.launch()
+            launch(app)
             let field = app.descendants(matching: .any)["timeline-compose-field"].firstMatch
             XCTAssertTrue(field.waitForExistence(timeout: 5))
             // Fixture supplies a draft; this regression checks actual Send enablement.
@@ -69,34 +69,71 @@ final class AgentTimelineUITests: XCTestCase {
             app.terminate()
         }
     }
-    func testMissingHelperOffersSetupAndRecheck() {
+    func testMissingHelperAutomaticallyExplainsTimelineAndCanReopenFromTerminal() {
         let app = XCUIApplication()
         app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-helper-missing", "-hc.light"]
-        app.launch()
-        let setup = app.buttons["timeline-helper-setup"]
-        XCTAssertTrue(setup.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["timeline-open-terminal"].exists)
-        setup.tap()
-        XCTAssertTrue(app.staticTexts["Set up native Timeline"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["timeline-helper-copy-command"].exists)
-        app.buttons["timeline-helper-copy-command"].tap()
+        launch(app)
+        XCTAssertTrue(app.staticTexts["A clearer view of your agent"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["How the host helper works"].exists)
+        let drawer = app.scrollViews["timeline-setup-scroll"]
+        XCTAssertTrue(drawer.exists)
+        let preview = XCTAttachment(screenshot: app.screenshot())
+        preview.name = "Timeline first-use drawer"
+        preview.lifetime = .keepAlways
+        add(preview)
+        XCTAssertGreaterThan(drawer.frame.height, app.frame.height * 0.55)
+        let copy = app.buttons["timeline-helper-copy-command"]
+        for _ in 0..<3 where !copy.isHittable { drawer.swipeUp() }
+        copy.tap()
         XCTAssertTrue(app.staticTexts["Command copied"].exists)
-        // Let the label replacement animation settle before capturing the preview.
-        Thread.sleep(forTimeInterval: 0.5)
-        let screenshot = XCTAttachment(screenshot: app.screenshot())
-        screenshot.name = "Host helper setup"
-        screenshot.lifetime = .keepAlways
-        add(screenshot)
         app.buttons["timeline-helper-check-again"].tap()
-        XCTAssertTrue(setup.waitForExistence(timeout: 5))
-        app.buttons["timeline-open-terminal"].tap()
+        XCTAssertTrue(app.staticTexts["The helper was not found yet. Run the command on your SSH host, then check again."].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["A clearer view of your agent"].exists)
+        app.buttons["timeline-helper-use-terminal"].tap()
+        XCTAssertTrue(app.scrollViews["pane-output-scroll-view"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["terminal-open-timeline"].exists)
+        app.buttons["terminal-open-timeline"].tap()
+        XCTAssertTrue(app.staticTexts["A clearer view of your agent"].waitForExistence(timeout: 5))
+        app.buttons["timeline-helper-dismiss"].tap()
         XCTAssertTrue(app.scrollViews["pane-output-scroll-view"].waitForExistence(timeout: 5))
         app.terminate()
+        app.launchArguments.removeAll { $0 == "-hc.timeline-intro-reset" }
+        app.launch()
+        XCTAssertTrue(app.scrollViews["pane-output-scroll-view"].waitForExistence(timeout: 5), "Deferred setup defaults this host to Terminal on the next visit")
+        app.buttons["terminal-open-timeline"].tap()
+        XCTAssertTrue(app.staticTexts["A clearer view of your agent"].waitForExistence(timeout: 5))
+        app.terminate()
+    }
+    func testSuccessfulHelperCheckKeepsTimelineAndSwipeDismissUsesTerminal() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-helper-missing", "-hc.light", "-hc.timeline-helper-installed"]
+        launch(app)
+        XCTAssertTrue(app.staticTexts["A clearer view of your agent"].waitForExistence(timeout: 5))
+        // Native sheet dismissal uses the same Terminal fallback as the buttons.
+        let top = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.07))
+        let bottom = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9))
+        top.press(forDuration: 0.1, thenDragTo: bottom)
+        XCTAssertTrue(app.scrollViews["pane-output-scroll-view"].waitForExistence(timeout: 5))
+        app.buttons["terminal-open-timeline"].tap()
+        XCTAssertTrue(app.staticTexts["A clearer view of your agent"].waitForExistence(timeout: 5))
+        app.buttons["timeline-helper-check-again"].tap()
+        XCTAssertTrue(app.staticTexts["Conversation"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["A clearer view of your agent"].exists)
+        XCTAssertTrue(app.buttons["timeline-open-terminal"].exists)
+        app.terminate()
+        app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline", "-hc.light"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Conversation"].waitForExistence(timeout: 5), "Successful setup restores Timeline as the default for this host")
+        app.terminate()
+    }
+    private func launch(_ app: XCUIApplication) {
+        app.launchArguments += ["-hc.timeline-intro-reset"]
+        app.launch()
     }
     func testSwitchingOutputModesPreservesComposeDraft() {
         let app = XCUIApplication()
         app.launchArguments = ["-hc.screenshots", "-hc.screen", "compose", "-paneShowComposeByDefault", "NO"]
-        app.launch()
+        launch(app)
         let field = app.descendants(matching: .any)["timeline-compose-field"].firstMatch
         // The fixture opens Compose with a deterministic draft.
         XCTAssertTrue(field.waitForExistence(timeout: 5))
@@ -113,7 +150,7 @@ final class AgentTimelineUITests: XCTestCase {
         XCTAssertFalse(field.exists)
         XCTAssertFalse(app.descendants(matching: .any)["pane-compose-field"].firstMatch.exists)
         let composeButton = app.buttons["terminal-open-timeline"]
-        XCTAssertTrue(composeButton.label.contains("Compose"))
+        XCTAssertTrue(composeButton.label.contains("Timeline"))
         composeButton.tap()
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         XCTAssertEqual(field.value as? String, draft)

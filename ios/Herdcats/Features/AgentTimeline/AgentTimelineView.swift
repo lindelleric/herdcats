@@ -6,11 +6,16 @@ struct AgentTimelineView: View {
     let paneId: String
     let connection: HerdrConnection
     let timeline: AgentTimelineState
+    let onUseTerminal: () -> Void
+    let onSetupComplete: () -> Void
     @Environment(AppModel.self) private var appModel
     @Environment(\.scenePhase) private var scenePhase
     @State private var activeClient: AgentBridgeClient?
     @State private var activeOwner: UUID?
     @State private var showsSetup = false
+    @State private var setupShouldUseTerminal = true
+    @State private var isCheckingSetup = false
+    @State private var setupFeedback: String?
     @State private var retry = 0
     @State private var isPaging = false
     @State private var pageError: String?
@@ -113,12 +118,52 @@ struct AgentTimelineView: View {
         }
         .background(Theme.background)
         .task(id: taskKey) { await run() }
-        .sheet(isPresented: $showsSetup) {
-            AgentBridgeSetupView {
-                showsSetup = false
-                retry += 1
+        .onChange(of: timeline.revision, initial: true) { _, _ in
+            switch timeline.phase {
+            case .ready:
+                onSetupComplete()
+                isCheckingSetup = false
+                if showsSetup {
+                    setupShouldUseTerminal = false
+                    showsSetup = false
+                }
+            case .unavailable(let code):
+                if isCheckingSetup {
+                    isCheckingSetup = false
+                    setupFeedback = code == "helper_missing"
+                        ? "The helper was not found yet. Run the command on your SSH host, then check again."
+                        : explanation(code)
+                }
+                if code == "helper_missing" && !showsSetup { beginSetup() }
+            case .disconnected:
+                if isCheckingSetup {
+                    isCheckingSetup = false
+                    setupFeedback = "Reconnect to your SSH host, then check again."
+                }
+            case .loading: break
             }
         }
+        .sheet(isPresented: $showsSetup, onDismiss: {
+            if setupShouldUseTerminal { onUseTerminal() }
+        }) {
+            AgentBridgeSetupView(
+                isChecking: isCheckingSetup, feedback: setupFeedback,
+                onCheckAgain: {
+                    setupFeedback = nil
+                    isCheckingSetup = true
+                    retry += 1
+                },
+                onUseTerminal: { showsSetup = false }
+            )
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+            .presentationCornerRadius(28)
+        }
+    }
+    private func beginSetup() {
+        setupShouldUseTerminal = true
+        setupFeedback = nil
+        showsSetup = true
     }
     @ViewBuilder private var availability: some View {
         switch timeline.phase {
@@ -145,7 +190,7 @@ struct AgentTimelineView: View {
                 Text(explanation(code))
             } actions: {
                 if ["helper_missing", "protocol_mismatch", "record_too_large"].contains(code) {
-                    Button("Set up Timeline") { showsSetup = true }
+                    Button("Set up Timeline") { beginSetup() }
                         .buttonStyle(.herdrPrimary)
                         .accessibilityIdentifier("timeline-helper-setup")
                 }
@@ -191,7 +236,10 @@ struct AgentTimelineView: View {
         #if DEBUG && targetEnvironment(simulator)
             if ScreenshotFixtures.enabled {
                 do {
-                    try timeline.consume(AgentTimelineScreenshotFixture.frame(paneId: paneId), owner: owner)
+                    try timeline.consume(AgentTimelineScreenshotFixture.frame(
+                        paneId: paneId,
+                        helperInstalled: retry > 0 && ProcessInfo.processInfo.arguments.contains("-hc.timeline-helper-installed")
+                    ), owner: owner)
                 } catch { timeline.end(owner: owner, error: (error as? AgentBridgeError) ?? .invalidFrame) }
                 return
             }
@@ -300,53 +348,99 @@ private struct AgentTimelineEntryView: View {
 
 /// Instructions only: installation always runs explicitly on the selected host.
 private struct AgentBridgeSetupView: View {
+    let isChecking: Bool
+    let feedback: String?
     let onCheckAgain: () -> Void
-    @Environment(\.dismiss) private var dismiss
+    let onUseTerminal: () -> Void
     @State private var copied = false
     private let command = "curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v0.1.3/install.sh | sh -s -- --version 0.1.3"
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
-                    Label("Connect your session", systemImage: "text.bubble")
-                        .font(.jost(.title2, weight: .semibold))
-                    Text("Run this command on the computer you connected to over SSH, where Herdr and your agent are running.")
-                        .font(.jost(.body))
-                    Text(command)
-                        .font(.system(.footnote, design: .monospaced))
-                        .textSelection(.enabled)
-                        .padding(16)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Theme.fieldBackground, in: RoundedRectangle(cornerRadius: 16))
-                    Button {
-                        UIPasteboard.general.string = command
-                        copied = true
-                    } label: {
-                        Label(copied ? "Command copied" : "Copy install command", systemImage: copied ? "checkmark" : "doc.on.doc")
-                            .frame(maxWidth: .infinity)
+                VStack(alignment: .leading, spacing: 24) {
+                    Image(systemName: "text.bubble.fill")
+                        .font(.system(size: 36)).foregroundStyle(Theme.text)
+                    Text("A clearer view of your agent")
+                        .font(.jost(.title, weight: .semibold))
+                        .accessibilityAddTraits(.isHeader)
+                    Text("Timeline turns your Claude session into readable messages and tool activity, with colors that match your app.")
+                        .font(.jost(.body)).foregroundStyle(Theme.textMuted)
+                    VStack(alignment: .leading, spacing: 14) {
+                        benefit("Read comfortably in light or dark mode", icon: "circle.lefthalf.filled")
+                        benefit("Follow messages and expand tool results", icon: "text.alignleft")
+                        benefit("Send prompts with Compose, voice, and photos", icon: "square.and.pencil")
                     }
-                    .buttonStyle(.herdrSecondary)
-                    .accessibilityIdentifier("timeline-helper-copy-command")
-                    Text("The installer downloads the helper for your computer and checks its checksum. It installs in your user account and keeps your running agent in its existing pane.")
-                        .font(.jost(.subheadline)).foregroundStyle(Theme.textMuted)
-                    Text("Already installed? Add --replace to the command to update it.")
-                        .font(.jost(.subheadline)).foregroundStyle(Theme.textMuted)
-                    Button("Check again", action: onCheckAgain)
-                        .buttonStyle(.herdrPrimary)
-                        .accessibilityIdentifier("timeline-helper-check-again")
-                    Link("View downloads and setup details", destination: URL(string: "https://github.com/zhiyao/herdcats/releases")!)
-                        .font(.jost(.subheadline))
+                    .padding(18).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Theme.cardBackground, in: RoundedRectangle(cornerRadius: 18))
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("How the host helper works")
+                            .font(.jost(.headline)).accessibilityAddTraits(.isHeader)
+                        Text("A small helper on your SSH computer reads the existing Claude session and sends its history to Herdcats over your SSH connection. Your agent keeps running in the same pane.")
+                            .font(.jost(.subheadline)).foregroundStyle(Theme.textMuted)
+                        Text("It runs only while Timeline is open. There’s no background service or agent hook to configure.")
+                            .font(.jost(.subheadline)).foregroundStyle(Theme.textMuted)
+                    }
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("Set it up once on your SSH host")
+                            .font(.jost(.headline)).accessibilityAddTraits(.isHeader)
+                        Text("1. Copy the command below.\n2. Run it on the computer where Herdr and Claude are running.\n3. Come back here and tap Check again.")
+                            .font(.jost(.subheadline)).foregroundStyle(Theme.textMuted)
+                        Text(command)
+                            .font(.system(.footnote, design: .monospaced)).textSelection(.enabled)
+                            .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Theme.fieldBackground, in: RoundedRectangle(cornerRadius: 16))
+                        Button {
+                            UIPasteboard.general.string = command
+                            copied = true
+                        } label: {
+                            Label(copied ? "Command copied" : "Copy install command", systemImage: copied ? "checkmark" : "doc.on.doc")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.herdrSecondary)
+                        .accessibilityIdentifier("timeline-helper-copy-command")
+                        Text("The installer checks the download and installs in your user account. Already installed? Add --replace to update it.")
+                            .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
+                        Link("View downloads and setup details", destination: URL(string: "https://github.com/zhiyao/herdcats/releases")!)
+                            .font(.jost(.subheadline))
+                    }
                 }
                 .padding(24)
             }
-            .background(Theme.background)
-            .foregroundStyle(Theme.text)
-            .navigationTitle("Set up native Timeline")
+            .accessibilityIdentifier("timeline-setup-scroll")
+            .safeAreaInset(edge: .bottom) {
+                VStack(spacing: 12) {
+                    if let feedback {
+                        Text(feedback).font(.jost(.caption)).foregroundStyle(Theme.textMuted)
+                            .accessibilityIdentifier("timeline-setup-feedback")
+                    }
+                    Button(action: onCheckAgain) {
+                        HStack {
+                            if isChecking { ProgressView() }
+                            Text(isChecking ? "Checking…" : "Check again")
+                        }.frame(maxWidth: .infinity)
+                    }
+                    .disabled(isChecking).buttonStyle(.herdrPrimary)
+                    .accessibilityIdentifier("timeline-helper-check-again")
+                    Button("Use Terminal for now", action: onUseTerminal)
+                        .buttonStyle(.herdrSecondary)
+                        .accessibilityIdentifier("timeline-helper-use-terminal")
+                }
+                .padding(20).background(Theme.background)
+            }
+            .background(Theme.background).foregroundStyle(Theme.text)
+            .navigationTitle("Set up Timeline")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(action: onUseTerminal) { Image(systemName: "xmark") }
+                        .accessibilityLabel("Use Terminal for now")
+                        .accessibilityIdentifier("timeline-helper-dismiss")
+                }
             }
         }
+    }
+    private func benefit(_ title: String, icon: String) -> some View {
+        Label(title, systemImage: icon).font(.jost(.subheadline))
     }
 }

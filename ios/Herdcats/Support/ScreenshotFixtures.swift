@@ -97,6 +97,9 @@ struct ScreenshotRootView: View {
         app.phase = .connected(host: "studio-mac", username: "demo")
         app.hasActiveSession = true
         app.connectionIdentity = ConnectionIdentity(host: "studio-mac", port: 22, username: "demo")
+        if ProcessInfo.processInfo.arguments.contains("-hc.timeline-intro-reset"), let identity = app.connectionIdentity {
+            UserDefaults.standard.removeObject(forKey: TimelineSetupPreference.key(scope: identity))
+        }
         return app
     }()
     var body: some View {

@@ -2,9 +2,9 @@
     import Foundation
 
     enum AgentTimelineScreenshotFixture {
-        static func frame(paneId: String) throws -> AgentBridgeFrame {
+        static func frame(paneId: String, helperInstalled: Bool = false) throws -> AgentBridgeFrame {
             if ScreenshotFixtures.screen == "timeline-disconnected" { throw AgentBridgeError.closed }
-            if ["timeline-unavailable", "timeline-helper-missing"].contains(ScreenshotFixtures.screen) {
+            if ScreenshotFixtures.screen == "timeline-unavailable" || (ScreenshotFixtures.screen == "timeline-helper-missing" && !helperInstalled) {
                 return try AgentBridgeFrame.decode(
                     JSONSerialization.data(withJSONObject: [
                         "event": "timeline.unavailable", "epoch": "fixture", "seq": 1,
