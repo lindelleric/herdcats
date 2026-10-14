@@ -1,0 +1,206 @@
+{
+  "protocol": 1,
+  "bridge_version": "0.1.0",
+  "transport": "non-PTY stdio NDJSON; one watched pane per process",
+  "launch": {
+    "command": "herdcats-bridge serve --stdio",
+    "flags": {
+      "--socket": "Herdr Unix socket; defaults to HERDR_SOCKET_PATH",
+      "--claude-root": "defaults to HOME/.claude/projects",
+      "--poll-ms": "50..5000; default 300"
+    }
+  },
+  "capabilities": {
+    "claude_timeline": "true when transcript root is available; per-pane source validation still required",
+    "codex_timeline": false,
+    "git": false,
+    "prompts": false,
+    "approvals": false,
+    "questions": false,
+    "routed_hosts": false
+  },
+  "requests": [
+    {
+      "method": "initialize",
+      "params": {
+        "protocol": 1
+      },
+      "result_fields": [
+        "protocol",
+        "bridge_version",
+        "epoch",
+        "capabilities"
+      ],
+      "effect": "clears watch; validates Herdr protocol22; required before other methods"
+    },
+    {
+      "method": "watch",
+      "params": {
+        "pane_id": "opaque Herdr ID"
+      },
+      "result": {
+        "watching": "pane_id"
+      },
+      "effect": "ack then snapshot or unavailable"
+    },
+    {
+      "method": "unwatch",
+      "params": {},
+      "result": {
+        "watching": null
+      }
+    },
+    {
+      "method": "history",
+      "params": {
+        "generation": "u64 from snapshot",
+        "before": "stable first entry ID from preceding page"
+      },
+      "result_fields": [
+        "identity",
+        "generation",
+        "entries",
+        "has_more",
+        "before",
+        "dropped_entries"
+      ],
+      "effect": "revalidates source before serving; may emit notifications before response"
+    }
+  ],
+  "envelopes": {
+    "request": {
+      "id": "nonempty string <=128 bytes",
+      "method": "string",
+      "params": "object"
+    },
+    "success": {
+      "id": "request ID",
+      "result": "object"
+    },
+    "failure": {
+      "id": "request ID or null for invalid frame/ID",
+      "error": {
+        "code": "stable string"
+      }
+    },
+    "notification": {
+      "epoch": "process lifetime opaque ID",
+      "seq": "monotonic u64 within epoch",
+      "event": "event name",
+      "data": "object"
+    }
+  },
+  "identity": [
+    "pane_id",
+    "terminal_id",
+    "agent",
+    "native_session_id"
+  ],
+  "client_scope": "Also bind to SSH host, Herdr session and local connection generation; those are not emitted by this helper.",
+  "events": {
+    "timeline.snapshot": {
+      "fields": [
+        "identity",
+        "generation",
+        "entries",
+        "has_more",
+        "before",
+        "agent_status",
+        "unknown_records",
+        "dropped_entries"
+      ],
+      "effect": "replace state; recent page only; fetch earlier retained entries separately"
+    },
+    "timeline.updated": {
+      "fields": [
+        "identity",
+        "generation",
+        "entries",
+        "agent_status"
+      ],
+      "effect": "upsert stable IDs in order; unseen IDs append; updates may span multiple bounded frames"
+    },
+    "timeline.unavailable": {
+      "fields": [
+        "pane_id",
+        "generation",
+        "code"
+      ],
+      "effect": "clear selected timeline and invalidate cursors"
+    }
+  },
+  "entry_fields": {
+    "id": "message:<source UUID> or tool:<tool ID>",
+    "kind": "message or tool",
+    "text": "bounded text/output",
+    "role": "user/assistant or null",
+    "tool_name": "string or null",
+    "status": "running/completed/failed or null",
+    "details": "bounded serialized input or null",
+    "truncated": "boolean, conservatively preserved for replayed tools"
+  },
+  "reconnect": "No persistent replay cursor. Start a new helper, initialize and watch. Epoch change or sequence gap requires fresh snapshot. Notifications can interleave all replies.",
+  "cursor": "Generation-bound before entry ID. Changes to identity/source, recovery or retention eviction reset generation. Old cursors return stale_cursor or timeline_unavailable.",
+  "limits": {
+    "source_bytes": 67108864,
+    "wire_frame_bytes": 1048576,
+    "source_record_bytes": 1048576,
+    "retained_entries": 1000,
+    "page_entries": 100,
+    "text_bytes": 8192,
+    "details_bytes": 8192,
+    "entry_identities": 100000,
+    "project_directories": 10000,
+    "request_queue": 16
+  },
+  "source_policy": "Herdr22 Claude reference source herdr:claude; native UUID exact filename/path beneath pinned transcript root; ambiguity, symlinks, missing reference or foreign main-session records fail closed.",
+  "implementation_limits": [
+    "Polling-only fallback; no subscriptions.",
+    "Bounded source prefix reread on change, new complete records parsed incrementally.",
+    "No full-output retrieval.",
+    "Claude captured2.1.296 schema coverage; no general version promise.",
+    "No deployment/installation or mobile client yet."
+  ],
+  "errors": [
+    "ambiguous_session",
+    "claude_root_required",
+    "herdr_snapshot_too_large",
+    "herdr_unavailable",
+    "incomplete_input_frame",
+    "input_frame_too_large",
+    "input_unavailable",
+    "invalid_cursor",
+    "invalid_herdr_response",
+    "invalid_json",
+    "invalid_pane_id",
+    "invalid_poll_interval",
+    "invalid_request_id",
+    "invalid_session_reference",
+    "invalid_transcript",
+    "missing_argument",
+    "not_initialized",
+    "not_watching",
+    "output_frame_too_large",
+    "pane_unavailable",
+    "protocol_mismatch",
+    "record_too_large",
+    "session_mismatch",
+    "session_reference_unavailable",
+    "socket_required",
+    "source_changing",
+    "source_too_large",
+    "stale_cursor",
+    "stream_closed",
+    "timeline_unavailable",
+    "transcript_identity_limit",
+    "transcript_index_too_large",
+    "transcript_root_unavailable",
+    "transcript_unavailable",
+    "unknown_argument",
+    "unknown_method",
+    "unsafe_transcript_path",
+    "unsupported_agent",
+    "unsupported_herdr_protocol",
+    "unsupported_session_source"
+  ]
+}

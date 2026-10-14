@@ -136,6 +136,9 @@ struct PaneVoiceComposeBar: View {
     // Live row state & modifier routing to Pi/Cursor's PaneLiveModifierComposer
     var isLiveEnabled: Bool
     @Binding var armedModifiers: Set<PaneLiveModifier>
+    var terminalMode: Bool = false
+    var composeFieldIdentifier = "pane-compose-field"
+    var composeSendIdentifier = "pane-compose-send-button"
     var onLiveKey: (String) -> Void
     var onLiveModifier: ((PaneLiveModifier) -> Void)?
     var onLiveEvent: (PaneLiveInputEvent) -> Void
@@ -327,6 +330,7 @@ struct PaneVoiceComposeBar: View {
 
             liveDivider
 
+            if !terminalMode {
             Button {
                 HapticFeedback.impact(.light)
                 onStartVoice()
@@ -341,6 +345,8 @@ struct PaneVoiceComposeBar: View {
             .accessibilityLabel("Start voice recording")
             .accessibilityIdentifier("pane-live-voice-button")
 
+            }
+
             // The keyboard icon opens an editable Compose draft. A tap on pane
             // output is the separate gesture for direct terminal typing.
             Button {
@@ -354,7 +360,7 @@ struct PaneVoiceComposeBar: View {
                     .frame(height: 42)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Compose message")
+            .accessibilityLabel(terminalMode ? "Terminal keyboard" : "Compose message")
             .accessibilityIdentifier("pane-live-keyboard-button")
         }
         .frame(height: 42)
@@ -374,9 +380,10 @@ struct PaneVoiceComposeBar: View {
                 .frame(maxWidth: .infinity)
                 .frame(height: 42)
         }
-        .buttonStyle(PaneTapOrLongPressStyle(isEnabled: isLiveEnabled) {
-            HapticFeedback.impact(.light)
-            isArrowRowOpen = true
+        .buttonStyle(
+            PaneTapOrLongPressStyle(isEnabled: isLiveEnabled) {
+                HapticFeedback.impact(.light)
+                isArrowRowOpen = true
             isKeysDrawerOpen = false
         })
         .disabled(!isLiveEnabled)
@@ -685,7 +692,7 @@ struct PaneVoiceComposeBar: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 8)
                 .accessibilityLabel("Message text")
-                .accessibilityIdentifier("pane-compose-field")
+                .accessibilityIdentifier(composeFieldIdentifier)
 
             // Voice button inside bubble, immediately left of Send
             Button {
@@ -724,7 +731,7 @@ struct PaneVoiceComposeBar: View {
                 .buttonStyle(.plain)
                 .disabled(!canSend || isSending)
                 .accessibilityLabel("Send Message")
-                .accessibilityIdentifier("pane-compose-send-button")
+                .accessibilityIdentifier(composeSendIdentifier)
                 .transition(.scale(scale: 0.85).combined(with: .opacity))
             }
         }

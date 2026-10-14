@@ -196,6 +196,7 @@ actor HerdrConnection {
     var disconnectHandler: (@Sendable () -> Void)?
     /// Exclusive remote composer mutations (send, escape).
     let paneInput = PaneInputCoordinator()
+    var agentBridges: [UUID:AgentBridgeClient] = [:]
     var liveShells: [String: PaneLiveShells] = [:]
     var preparingLiveShells: [String: UUID] = [:]
     var activeLiveSessions: [String: PaneLiveInputSession] = [:]
@@ -215,6 +216,7 @@ actor HerdrConnection {
     /// has an identity. Closes any previous client in the background.
     func reserveConnectGeneration() async -> ConnectionGeneration {
         closeAllLiveShells()
+        closeAllAgentBridges()
         let (attempt, previous) = slot.beginReplace()
         disconnectHandler = nil
         identity = nil
@@ -296,6 +298,7 @@ actor HerdrConnection {
             return
         case let .invalidated(oldClient):
             closeAllLiveShells()
+            closeAllAgentBridges()
             disconnectHandler = nil
             identity = nil
             if let oldClient {
@@ -322,6 +325,7 @@ actor HerdrConnection {
             return
         case let .invalidated(oldClient):
             closeAllLiveShells()
+            closeAllAgentBridges()
             disconnectHandler = nil
             if let oldClient {
                 Task.detached(priority: .utility) {
@@ -339,6 +343,7 @@ actor HerdrConnection {
             return
         case .invalidated:
             closeAllLiveShells()
+            closeAllAgentBridges()
             let handler = disconnectHandler
             disconnectHandler = nil
             Task.detached { handler?() }
@@ -357,6 +362,7 @@ actor HerdrConnection {
             return
         case let .invalidated(oldClient):
             closeAllLiveShells()
+            closeAllAgentBridges()
             let handler = notifyDisconnect ? disconnectHandler : nil
             disconnectHandler = nil
             if let oldClient {

@@ -515,6 +515,7 @@ private struct LiveInputRepresentable: UIViewRepresentable {
 
     func makeUIView(context: Context) -> LiveInputTextField {
         let textField = LiveInputTextField()
+        textField.keyboardAppearance = .dark
         textField.onEvent = onEvent
         textField.onCompositionChanged = onCompositionChanged
         textField.isUserInteractionEnabled = isEnabled

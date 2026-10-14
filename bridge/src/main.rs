@@ -1,0 +1,59 @@
+use herdcats_bridge::service::{Service, serve};
+use std::{path::PathBuf, time::Duration};
+fn run() -> std::result::Result<(), &'static str> {
+    let mut args = std::env::args().skip(1);
+    let command = args.next();
+    if command.as_deref() == Some("--version-json") {
+        if args.next().is_some() {
+            return Err("unknown_argument");
+        }
+        println!(
+            "{}",
+            serde_json::json!({
+                "name": "herdcats-bridge",
+                "version": env!("CARGO_PKG_VERSION"),
+                "protocol": 1,
+                "herdr_protocol": 22,
+                "agents": ["claude"]
+            })
+        );
+        return Ok(());
+    }
+    if command.as_deref() != Some("serve") || args.next().as_deref() != Some("--stdio") {
+        return Err(
+            "usage: herdcats-bridge serve --stdio [--socket PATH] [--claude-root PATH] [--poll-ms 50..5000]",
+        );
+    }
+    let mut socket = std::env::var_os("HERDR_SOCKET_PATH").map(PathBuf::from);
+    let mut root = std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".claude/projects"));
+    let mut poll = 300;
+    while let Some(flag) = args.next() {
+        let value = args.next().ok_or("missing_argument")?;
+        match flag.as_str() {
+            "--socket" => socket = Some(value.into()),
+            "--claude-root" => root = Some(value.into()),
+            "--poll-ms" => {
+                poll = value
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|n| (50..=5000).contains(n))
+                    .ok_or("invalid_poll_interval")?
+            }
+            _ => return Err("unknown_argument"),
+        }
+    }
+    serve(
+        Service::new(
+            socket.ok_or("socket_required")?,
+            root.ok_or("claude_root_required")?,
+        ),
+        Duration::from_millis(poll),
+    )
+    .map_err(|_| "stream_closed")
+}
+fn main() {
+    if let Err(code) = run() {
+        eprintln!("{code}");
+        std::process::exit(1);
+    }
+}

@@ -1,0 +1,15 @@
+{
+  "greeting": {
+    "type": "greeting",
+    "text": "\u732b \u2713"
+  },
+  "echo": {
+    "type": "echo",
+    "id": "probe"
+  },
+  "exit_code": 0,
+  "cancellation_exit_code": 255,
+  "reconnect_output": "alive",
+  "reconnect_exit_code": 0,
+  "client": "OpenSSH loopback; Citadel withExec source inspected, not live-tested"
+}

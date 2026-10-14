@@ -1,0 +1,112 @@
+name: Prepare bridge release
+on:
+  push:
+    tags: ['herdcats-bridge-v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Bridge package version (X.Y.Z)
+        required: true
+        default: '0.1.0'
+permissions:
+  contents: read
+concurrency:
+  group: bridge-release-${{ inputs.version || github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: darwin-arm64
+          - os: macos-15-intel
+            platform: darwin-x86_64
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+          - os: ubuntu-22.04-arm
+            platform: linux-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      BRIDGE_VERSION: ${{ inputs.version }}
+      BRIDGE_PLATFORM: ${{ matrix.platform }}
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Verify version and native architecture
+        run: |
+          python3 - <<'PY'
+          import os, platform, re
+          version = os.environ['BRIDGE_VERSION'] or os.environ['GITHUB_REF_NAME'].removeprefix('herdcats-bridge-v')
+          assert re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version)
+          with open('bridge/Cargo.toml') as source:
+              assert re.search(r'^version = "([^"]+)"$', source.read(), re.M)[1] == version
+          arch = {'aarch64': 'arm64', 'arm64': 'arm64', 'x86_64': 'x86_64'}[platform.machine()]
+          system = {'Darwin': 'darwin', 'Linux': 'linux'}[platform.system()]
+          assert system + '-' + arch == os.environ['BRIDGE_PLATFORM']
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write('BRIDGE_VERSION=' + version + '\n')
+          PY
+      - name: Test and build
+        run: |
+          cargo test --manifest-path bridge/Cargo.toml --locked
+          cargo clippy --manifest-path bridge/Cargo.toml --locked --all-targets -- -D warnings
+          cargo build --manifest-path bridge/Cargo.toml --release --locked
+          python3 bridge/tests/test_install.py
+          python3 bridge/tests/test_package.py
+          python3 bridge/tests/test_download_install.py
+      - name: Package native binary
+        run: python3 bridge/scripts/package.py --binary bridge/target/release/herdcats-bridge --platform "$BRIDGE_PLATFORM" --version "$BRIDGE_VERSION" --out release
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: bridge-${{ matrix.platform }}
+          path: release/*
+          if-no-files-found: error
+  draft:
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      BRIDGE_VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Resolve release version
+        run: |
+          python3 - <<'PY'
+          import os, re
+          version = os.environ['BRIDGE_VERSION'] or os.environ['GITHUB_REF_NAME'].removeprefix('herdcats-bridge-v')
+          assert re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version)
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write('BRIDGE_VERSION=' + version + '\n')
+          PY
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: bridge-*
+          path: release
+          merge-multiple: true
+      - name: Prepare checksums and installer
+        run: |
+          cat release/SHA256SUMS-* | sort -k2 > release/SHA256SUMS
+          test "$(wc -l < release/SHA256SUMS)" -eq 4
+          cd release
+          sha256sum --check SHA256SUMS
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          Path('notes.txt').write_text(Path('../bridge/release-notes.txt').read_text().replace('0.1.0', os.environ['BRIDGE_VERSION']))
+          PY
+      - name: Create draft only
+        run: |
+          gh release create "herdcats-bridge-v$BRIDGE_VERSION" \
+            release/herdcats-bridge-* release/SHA256SUMS release/install.sh \
+            --draft --verify-tag --target "$GITHUB_SHA" --title "Herdcats bridge $BRIDGE_VERSION" \
+            --notes-file release/notes.txt

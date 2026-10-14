@@ -1,0 +1,11 @@
+Optional host companion for Herdcats native Claude Timeline.
+
+Install on the direct SSH computer that owns Herdr and the Claude transcripts:
+
+curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v0.1.0/install.sh | sh -s -- --version 0.1.0
+
+Requires macOS 13+ or Linux with glibc 2.35+ (Ubuntu 22.04+), curl and SHA-256 tooling. Apple Silicon, Intel Mac, Linux arm64 and x86_64 binaries are included. Herdr protocol 22 and an exact Claude session reference are required. No root access, Rust, Python, hooks or persistent service required. Existing installation updates require --replace.
+
+Checksums detect damaged downloads; they are provided through the same HTTPS release channel. These binaries are not Developer ID signed/notarized. Native question/approval responses, Codex and saved-machine routing remain unavailable; use Terminal for those interactions.
+
+After installation, return to Herdcats and tap Check again.

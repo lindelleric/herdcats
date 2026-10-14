@@ -1,0 +1,116 @@
+{
+  "date": "2026-10-13",
+  "status": "default_timeline_with_native_composition_and_dark_terminal",
+  "scope": "Default native Claude timeline with existing Compose controls, toolbar mode switch beside the menu, and dark-only raw Terminal; optional host helper installation remains explicit.",
+  "features": [
+    "Protocol1 non-PTY Citadel client with request correlation and bounded Unicode NDJSON",
+    "Readiness/transport/view/native identity ownership; resets and unavailable clear memory-only state",
+    "Generation-bound history paging and stable entry upserts",
+    "Theme-native messages with inline Markdown and expandable bounded tool input/output",
+    "Terminal switch preserves same pane session, drafts and existing input delivery",
+    "Manual scrolling stops following; Latest resumes; Dynamic Type fonts and accessible controls",
+    "Background/departure/request timeout closes only owned bridge channel; routed hosts rejected",
+    "Timeline opens by default; Compose appears only in Timeline, with voice/photo controls preserved",
+    "Dark ANSI palette and raw keyboard/extra keys in Terminal; toolbar chat icon returns to Compose.",
+    "Prompt dispatch uses fresh native occupant verification and explicitly captured SSH generation; never falls back to shell or blocked request responses",
+    "Editing is disabled during send; delayed acknowledgements preserve any later draft edits",
+    "Icon-only mode switch in the top-right navigation toolbar beside Pane Options; opposite-mode glyph and accessibility label. Mode is scoped to pane and connection identity.",
+    "Missing helper classified separately from transport disconnection; setup sheet copies pinned prebuilt installer command and rechecks without installing from the app",
+    "Managed ~/.local/bin helper takes precedence over stale PATH installation",
+    "Initial write failure drains bootstrap output until stream completion/timeout so missing-helper setup reason survives"
+  ],
+  "validation": {
+    "ios_unit": {
+      "total": 374,
+      "passed": 373,
+      "skipped": 1,
+      "result": "passed_after_helper_onboarding_review_fixes",
+      "skipped_test": "liveCitadelFramesHistoryUpdatesIdleCancellationAndReconnect (ephemeral fixture not bundled in normal test builds)",
+      "command": "xcodebuild test -project ios/Herdcats.xcodeproj -scheme Herdcats -destination 'platform=iOS Simulator,id=<available simulator>' -only-testing:HerdcatsTests CODE_SIGN_IDENTITY=-",
+      "note": "Initial unsigned run had existing Keychain entitlement errors. Signed full-suite rerun passed."
+    },
+    "ios_ui": {
+      "tests": 4,
+      "result": "passed_after_helper_onboarding_review_fixes",
+      "target": "HerdcatsUITests/AgentTimelineUITests",
+      "coverage": [
+        "light/dark + tool expansion",
+        "empty/unsupported + Terminal fallback",
+        "output mode switch preserves compose draft",
+        "default Timeline Compose field",
+        "Compose absent from Terminal; fixed-dark Terminal captures from light/dark app",
+        "Toolbar icon location beside menu, opposite-mode accessibility labels and draft preservation",
+        "Missing-helper setup, copy acknowledgement, recheck dismissal and Terminal fallback"
+      ],
+      "note": "One earlier UI run was interrupted by overlapping unit tests on the same simulator. Sequential rerun passed.",
+      "log": "/private/tmp/hc-onboarding-final.log"
+    },
+    "live_citadel": {
+      "tests": 1,
+      "result": "passed",
+      "host": "loopback-only disposable OpenSSH server",
+      "host_key": "pinned disposable key",
+      "content": "owned synthetic Herdr22 socket and Claude transcript fixture",
+      "coverage": [
+        "bidirectional history paging",
+        "incremental split-safe Unicode updates",
+        "idle channel cancellation",
+        "parent SSH connection remains healthy",
+        "new helper epoch and snapshot on reconnect"
+      ],
+      "not_claimed": "Real iPhone performance or current user agent session. Separate prior host bridge live smoke used a disposable real Claude session."
+    },
+    "swift_format": "New implementation formatted/linted; no diagnostics in focused lint",
+    "review": {
+      "independent": "read-only review completed",
+      "findings_fixed": [
+        "Timeline automatic reconnect readiness key collision",
+        "Retired connection event delivery race",
+        "New composition dispatch crossed actor hops without captured-client guard",
+        "New composition field allowed edits erased by success acknowledgement",
+        "Empty opaque timeline overlay covered final entries",
+        "Installer destination loses priority to stale PATH helper",
+        "Initial write failure discards queued missing-helper bootstrap response"
+      ],
+      "regressions": [
+        "connectingAndConnectedHaveDifferentStreamKeys",
+        "delayedCallbackCannotCommitAfterTransportGenerationChanges",
+        "removedBridgeRegistryRejectsQueuedEventBeforeAsyncClose",
+        "replacedClientIsNeverSelectedForOldPrompt",
+        "laterDraftIsNotClearedByEarlierAcknowledgement",
+        "onlyMatchingUnblockedClaudeIdentityCanCompose"
+      ],
+      "result": "RED\u2192GREEN; full suite passed after fixes"
+    },
+    "screenshots": {
+      "source": "Verified UI test attachments; synthetic simulator fixtures",
+      "light": ".lavish/native-timeline-light.png",
+      "dark": ".lavish/native-timeline-dark.png",
+      "terminal": ".lavish/terminal-always-dark.png"
+    }
+  },
+  "limitations": [
+    "Claude only; Codex history/context adapter remains gated",
+    "Direct SSH default session only; saved-machine routing unsupported",
+    "Inline Markdown styling; no complete block Markdown renderer",
+    "Bounded inline output/history; no full-output fetch",
+    "Host helper must be installed explicitly; no auto-install",
+    "Simulator validation; hardware performance/background behavior still needs device testing",
+    "Questions/approvals remain Terminal-only. Native Compose uses the existing Herdr agent prompt command rather than a mutating bridge method.",
+    "Herdr22 exposes no atomic expected-native-session precondition on agent prompt. A fresh occupant check reduces replacement risk but cannot eliminate a host-side replacement between that check and command execution."
+  ],
+  "cleanup": [
+    "Disposable loopback SSH and synthetic socket servers stopped",
+    "Ephemeral credential source/resource removed and project regenerated",
+    "No user agent was started or prompted in this mobile stage",
+    "No global SSH keys/hooks or user credentials changed",
+    "No commit/push/deployment"
+  ],
+  "files": [
+    "ios/Herdcats/Networking/AgentBridgeClient.swift",
+    "ios/Herdcats/Models/AgentTimelineModels.swift",
+    "ios/Herdcats/Features/AgentTimeline/AgentTimelineState.swift",
+    "ios/Herdcats/Features/AgentTimeline/AgentTimelineView.swift"
+  ],
+  "onboarding_release_gate": "Four-platform draft release workflow prepared; no workflow dispatched, prebuilt asset published, or helper installed on a real host. Pinned install URL not live until publication."
+}

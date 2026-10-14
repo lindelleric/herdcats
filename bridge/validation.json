@@ -1,0 +1,69 @@
+{
+  "date": "2026-10-13",
+  "status": "claude_read_only_host_foundation_verified",
+  "tests": {
+    "rust": 27,
+    "rust_result": "passed",
+    "command": "cargo test --manifest-path bridge/Cargo.toml --offline",
+    "clippy": "all targets with -D warnings passed",
+    "phase0_evidence": 10,
+    "phase0_result": "passed",
+    "installer": 9,
+    "installer_result": "passed against debug and release binaries in temporary directories",
+    "release_build": "cargo build --manifest-path bridge/Cargo.toml --release --locked --offline passed",
+    "setup_distribution_python": 20,
+    "setup_distribution_result": "all passed; explicit installer, fake HTTPS release download, packaging and actual mobile launcher execution"
+  },
+  "independent_review": {
+    "findings_fixed": [
+      "request starvation and stale history",
+      "parent-directory symlink swap",
+      "evicted duplicate resurrection",
+      "replayed tool output truncation"
+    ],
+    "followup": "no remaining major issues identified; reviewer did not independently rerun tests",
+    "setup_findings_fixed": [
+      "--replace could overwrite nonregular destinations (FIFO regression RED\u2192GREEN)",
+      "Version probe captured unbounded stdout/stderr (both stream-limit regressions RED\u2192GREEN)",
+      "Shell link/move directory destination races (directory, symlink and replacement regressions RED\u2192GREEN)",
+      "Released installer default/test versions did not follow package version (future-version package test RED\u2192GREEN)"
+    ]
+  },
+  "live_smoke": {
+    "status": "passed",
+    "herdr": "0.9.3",
+    "herdr_protocol": 22,
+    "claude": "2.1.296",
+    "bridge_protocol": 1,
+    "native_session_mapping": "exact_disposable_resume",
+    "entry_count": 6,
+    "entry_kinds": [
+      "message",
+      "tool"
+    ],
+    "agent_status": "idle",
+    "prompt_submitted": false,
+    "private_transcript_saved": false,
+    "stdin_eof_exit": "passed"
+  },
+  "cleanup": "owned hc-bridge-smoke-20261013 session stopped",
+  "remaining": [
+    "Codex history and launch gates",
+    "routed host streaming",
+    "Git and native actions",
+    "prebuilt host releases and larger-history performance",
+    "real-device and real-host rollout"
+  ],
+  "production_ios_changed": true,
+  "committed_or_pushed": false,
+  "setup": {
+    "version_probe": "--version-json reports package version, bridge protocol, Herdr protocol and implemented adapter without socket access",
+    "installer": "Explicit trusted binary and destination; atomic copy; regular replacement requires --replace; nonregular destinations rejected; bounded timed probe with child reaping",
+    "instructions": "bridge/setup.json",
+    "installed_on_user_host": false,
+    "published_release": false,
+    "ci": "macOS/Linux bridge tests, installer tests, Clippy and release build configured; remote jobs not run",
+    "release_workflow": ".github/workflows/bridge-release.yml; four native builds, checksums, version-rendered installer and draft-only GitHub release; not dispatched",
+    "public_install_script": "bridge/scripts/install.sh; no Rust/Python requirement for users"
+  }
+}

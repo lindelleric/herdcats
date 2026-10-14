@@ -101,7 +101,7 @@ struct ScreenshotRootView: View {
     }()
     var body: some View {
         Group {
-            if ScreenshotFixtures.screen == "pane" || ScreenshotFixtures.screen == "agent-pane" || ["keys", "compose", "voice"].contains(ScreenshotFixtures.screen) {
+            if ScreenshotFixtures.screen == "pane" || ScreenshotFixtures.screen == "agent-pane" || ["keys", "compose", "voice"].contains(ScreenshotFixtures.screen) || ScreenshotFixtures.screen.hasPrefix("timeline") {
                 NavigationStack {
                     if let pane = try? JSONDecoder().decode(PaneEntry.self, from: Data(ScreenshotFixtures.json(ScreenshotFixtures.panes[0]).utf8)) {
                         PaneDetailView(pane: pane)
@@ -117,7 +117,7 @@ struct ScreenshotRootView: View {
             }
         }
         .environment(model)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(ProcessInfo.processInfo.arguments.contains("-hc.light") ? .light : .dark)
         .tint(Theme.accent)
         .foregroundStyle(Theme.text)
         .font(.jost(.body))

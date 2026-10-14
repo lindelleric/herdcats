@@ -4,7 +4,7 @@ import SwiftUI
 @MainActor
 @Observable
 final class AppModel {
-    enum Phase: Equatable {
+    enum Phase: Equatable, Sendable {
         case disconnected
         case connecting
         case connected(host: String, username: String)

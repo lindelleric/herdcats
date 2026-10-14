@@ -19,6 +19,7 @@ struct PaneDetailView: View {
     @State private var siblings: [PaneEntry]
     @State private var tabs: [TabEntry] = []
     @State private var selectedPaneID: String
+    @State private var timelineModes: [String: Bool] = [:]
     @State private var lastUpdatedByPaneID: [String: Date] = [:]
     /// Pane switcher shows chips instead of cards to give the output more room.
     @State private var isSwitcherCompact = false
@@ -76,10 +77,19 @@ struct PaneDetailView: View {
             ?? ConnectionIdentity(host: "unknown", port: 0, username: "unknown")
     }
 
+    private var timelineMode: Binding<Bool> {
+        let key = sessionIdentity
+        return Binding(
+            get: { timelineModes[key] ?? true },
+            set: { timelineModes[key] = $0 }
+        )
+    }
+
     private var selectedPaneSession: some View {
         PaneSessionView(
             pane: selectedPane,
             connectionScope: connectionScope,
+            showsTimeline: timelineMode,
             topOutputInset: paneSwitcherHeight,
             showLiveDiagnostics: $showLiveDiagnostics,
             onMarkedSeen: {
@@ -144,6 +154,17 @@ struct PaneDetailView: View {
                     status: selectedPane.status,
                     subtitle: selectedPane.shortCwd.isEmpty ? nil : selectedPane.shortCwd
                 )
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    timelineMode.wrappedValue.toggle()
+                } label: {
+                    Image(systemName: timelineMode.wrappedValue ? "terminal" : "text.bubble")
+                        .font(.jost(16, weight: .medium))
+                        .foregroundStyle(.primary)
+                }
+                .accessibilityLabel(timelineMode.wrappedValue ? "Terminal" : "Compose")
+                .accessibilityIdentifier(timelineMode.wrappedValue ? "timeline-open-terminal" : "terminal-open-timeline")
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -963,6 +984,9 @@ struct PaneSessionView: View {
     @State private var persistenceRevision: UInt64
     private let draftKey: String
     private let historyKey: String
+    @Binding private var showsTimeline: Bool
+    @State private var timeline = AgentTimelineState()
+    @State private var isTimelineSending = false
     @State private var shouldPinToBottom = true
     @State private var bottomDockHeight: CGFloat = 58
     @State private var draftSaveTask: Task<Void, Never>?
@@ -1024,7 +1048,7 @@ struct PaneSessionView: View {
     private var output: String { session.output }
     private var isLoading: Bool { session.isLoading }
     private var errorMessage: String? { session.errorMessage }
-    private var isSending: Bool { session.isSending }
+    private var isSending: Bool { session.isSending || isTimelineSending }
 
     // Observable queue projections so SwiftUI tracks Live delivery state.
     private var liveQueueState: PaneLiveInputQueueState? { liveQueue?.state }
@@ -1055,6 +1079,7 @@ struct PaneSessionView: View {
     init(
         pane: PaneEntry,
         connectionScope: ConnectionIdentity,
+        showsTimeline: Binding<Bool>,
         topOutputInset: CGFloat = 0,
         showLiveDiagnostics: Binding<Bool>? = nil,
         onMarkedSeen: (() -> Void)? = nil,
@@ -1062,6 +1087,7 @@ struct PaneSessionView: View {
     ) {
         self.pane = pane
         self.connectionScope = connectionScope
+        self._showsTimeline = showsTimeline
         self.topOutputInset = topOutputInset
         self.showLiveDiagnostics = showLiveDiagnostics
         self.onMarkedSeen = onMarkedSeen
@@ -1093,7 +1119,7 @@ struct PaneSessionView: View {
     }
 
     private var terminalPalette: TerminalPalette {
-        let dark = colorScheme == .dark
+        let dark = true
         let preferences = AppThemePreferences.shared
         return TerminalPalette(palette: dark ? preferences.dark : preferences.light, dark: dark)
     }
@@ -1110,7 +1136,8 @@ struct PaneSessionView: View {
     /// image-only message past the hidden button).
     private var canSend: Bool {
         !trimmedDraft.isEmpty
-            && !isSending
+            && !isSending && !isTimelineSending
+            && (!showsTimeline || TimelineComposePolicy.canSend(identity:timeline.identity,paneId:pane.paneId,status:timeline.agentStatus,connected:AgentTimelineConnectionState(phase:appModel.phase,generation:appModel.ownership.transportGeneration).isReady))
             && !dictation.isBusy
             && !(attachment?.isUploading ?? false)
     }
@@ -1143,7 +1170,7 @@ struct PaneSessionView: View {
             isOffline: appModel.isOffline,
             isLoading: isLoading,
             reservesMarkAsReadSpace: showsMarkAsReadButton,
-            topOverlayInset: topOutputInset,
+            topOverlayInset: 0,
             bottomOverlayInset: bottomDockHeight,
             paneId: pane.paneId,
             shouldPinToBottom: $shouldPinToBottom,
@@ -1253,9 +1280,13 @@ struct PaneSessionView: View {
     /// remote effect is owned by this view through `PaneInputSurfaceModel`,
     /// `PaneLiveModifierComposer`, and the ordered Live queue.
     private var voiceComposeBar: some View {
-        PaneVoiceComposeBar(
+        var bar = PaneVoiceComposeBar(
             mode: Binding(
-                get: { surfaceModel.surface.barMode },
+                get: {
+                    showsTimeline
+                        ? (surfaceModel.isLiveKeyboardSurface ? .compose : surfaceModel.surface.barMode)
+                        : .live
+                },
                 set: { _ in }
             ),
             draft: $draft,
@@ -1268,13 +1299,14 @@ struct PaneSessionView: View {
             },
             onLiveModifier: { modifier in
                 applyLiveModifierOutcome(
-                    liveModifierComposer.toggle({
-                        switch modifier {
-                        case .ctrl: return .control
-                        case .alt: return .alt
-                        case .shift: return .shift
-                        }
-                    }())
+                    liveModifierComposer.toggle(
+                        {
+                            switch modifier {
+                            case .ctrl: return .control
+                            case .alt: return .alt
+                            case .shift: return .shift
+                            }
+                        }())
                 )
             },
             onLiveEvent: { event in
@@ -1285,7 +1317,7 @@ struct PaneSessionView: View {
             dictationError: $dictationError,
             onStartVoice: startVoice,
             onFinishVoice: finishVoice,
-            onOpenCompose: openCompose,
+            onOpenCompose: { if showsTimeline { openCompose() } else { liveInputFocused = true } },
             photoItem: $photoItem,
             isPhotoPickerPresented: $isPhotoPickerPresented,
             attachment: attachment.map(PaneAttachmentInfo.init),
@@ -1296,6 +1328,10 @@ struct PaneSessionView: View {
             isSending: isSending,
             onSend: handleSend
         )
+        bar.terminalMode = !showsTimeline
+        bar.composeFieldIdentifier = showsTimeline ? "timeline-compose-field" : "pane-compose-field"
+        bar.composeSendIdentifier = showsTimeline ? "timeline-compose-send" : "pane-compose-send-button"
+        return bar
     }
 
     private var liveInputEnabled: Bool {
@@ -1316,21 +1352,50 @@ struct PaneSessionView: View {
         )
     }
 
-    private var outputWithInputDock: some View {
-        outputScrollView
-        .overlay(alignment: .bottom) {
-            VStack(spacing: 0) {
-                liveStatusRow
-                voiceComposeBar
+    private var timelineComposeDock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let sessionError {
+                Text(sessionError).font(.jost(.caption)).foregroundStyle(Theme.destructive)
             }
-            .background {
-                GeometryReader { geometry in
-                    Color.clear.preference(
-                        key: PaneBottomDockHeightPreferenceKey.self,
-                        value: geometry.size.height
-                    )
+            voiceComposeBar
+        }
+        .foregroundStyle(Theme.text).padding(16).frame(maxWidth: .infinity)
+        .background(Theme.cardBackground)
+    }
+
+    private var outputWithInputDock: some View {
+        VStack(spacing: 0) {
+            Color.clear.frame(height: topOutputInset)
+            if showsTimeline {
+                AgentTimelineView(paneId: pane.paneId, connection: appModel.connection, timeline: timeline)
+                    .safeAreaInset(edge: .bottom) { timelineComposeDock }
+            } else {
+                outputScrollView
+                    .environment(\.colorScheme, .dark)
+                    .background(Color(uiColor: UIColor(hex: terminalPalette.background)))
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if !showsTimeline {
+                VStack(spacing: 0) {
+                    liveStatusRow
+                    voiceComposeBar
+                }
+                .environment(\.colorScheme, .dark)
+                .padding(.top, 8)
+                .background(Color(uiColor: UIColor(hex: terminalPalette.background)))
+                .background {
+                    GeometryReader { geometry in
+                        Color.clear.preference(
+                            key: PaneBottomDockHeightPreferenceKey.self, value: geometry.size.height)
+                    }
                 }
             }
+        }
+        .onChange(of: showsTimeline) { _, timelineMode in
+            dismissLiveKeyboard(); composeFieldFocused = false; dictation.cancel()
+            surfaceModel.collapseToLiveToolbar()
+            updateSessionParsedOutput()
         }
         .onPreferenceChange(PaneBottomDockHeightPreferenceKey.self) { height in
             if height > 0 { bottomDockHeight = height }
@@ -1339,23 +1404,25 @@ struct PaneSessionView: View {
 
     private var outputWithLiveTasks: some View {
         outputWithInputDock
-        .task(id: pane.id) {
-            locallyClearedDone = false
-            autoMarkedPaneID = nil
-            await reload()
-            updateSessionParsedOutput()
-            await considerImplicitMarkSeen()
-            while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(5)) } catch { return }
-                let auto = spacesModel?.autoRefreshEnabled ?? true
-                guard PaneRefreshPolicy.shouldAutoPoll(
-                    autoRefreshEnabled: auto,
-                    isSceneActive: appModel.isSceneActive
-                ) else { continue }
+            .task(id: pane.id) {
+                locallyClearedDone = false
+                autoMarkedPaneID = nil
                 await reload()
                 updateSessionParsedOutput()
+                await considerImplicitMarkSeen()
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: .seconds(5)) } catch { return }
+                    let auto = spacesModel?.autoRefreshEnabled ?? true
+                    guard
+                        PaneRefreshPolicy.shouldAutoPoll(
+                            autoRefreshEnabled: auto,
+                            isSceneActive: appModel.isSceneActive
+                        )
+                    else { continue }
+                    await reload()
+                    updateSessionParsedOutput()
+                }
             }
-        }
         .task(id: liveSessionTaskKey) {
             var retryDelay = 2.0
             while !Task.isCancelled && !appModel.isOffline && appModel.isSceneActive {
@@ -1493,6 +1560,7 @@ struct PaneSessionView: View {
 
     var body: some View {
         outputWithLifecycle
+        .preferredColorScheme(showsTimeline ? nil : .dark)
         .animation(.easeInOut(duration: 0.2), value: surfaceModel.surface)
         .onChange(of: composeFieldFocused) { _, focused in
             if focused {
@@ -1871,15 +1939,20 @@ struct PaneSessionView: View {
 
         let sendRevision = persistenceRevision
         let sentDraft = trimmedDraft
+        let originalDraft = draft
         do {
-            try await session.send(
-                text: text,
-                connection: appModel.connection
-            )
+            if showsTimeline {
+                guard let identity=timeline.identity,let owned=appModel.ownership.transportGeneration else {throw HerdrError.notConnected}
+                isTimelineSending=true
+                defer {isTimelineSending=false}
+                try await appModel.connection.submitTimelinePrompt(text:text,identity:identity,owned:owned)
+            } else {
+                try await session.send(text:text,connection:appModel.connection)
+            }
             guard persistence.revision == sendRevision else { return }
             // Remember what the user typed (not image-path wrappers) for reuse.
             persistence.record(sentDraft, key: historyKey, revision: sendRevision)
-            draft = ""
+            if TimelineComposePolicy.shouldClearDraft(current:draft,sent:originalDraft) { draft = "" }
             clearAttachment()
             shouldPinToBottom = true
             // Return to the preferred idle surface only after a successful send,

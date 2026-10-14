@@ -1,0 +1,188 @@
+use crate::Result;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashSet;
+
+pub const MAX_ENTRIES: usize = 1000;
+const TEXT_LIMIT: usize = 8192;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Entry {
+    pub id: String,
+    pub kind: String,
+    pub text: String,
+    pub role: Option<String>,
+    pub tool_name: Option<String>,
+    pub status: Option<String>,
+    pub details: Option<String>,
+    pub truncated: bool,
+}
+#[derive(Default, Clone)]
+pub struct Transcript {
+    pub entries: Vec<Entry>,
+    pub unknown_records: usize,
+    pub dropped_entries: usize,
+    seen: HashSet<String>,
+}
+fn bounded(text: &str) -> (String, bool) {
+    let mut end = text.len().min(TEXT_LIMIT);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (text[..end].to_owned(), end < text.len())
+}
+fn text_content(value: &Value) -> String {
+    if let Some(text) = value.as_str() {
+        return text.to_owned();
+    }
+    value
+        .as_array()
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter(|b| b["type"] == "text")
+                .filter_map(|b| b["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+impl Transcript {
+    fn upsert(&mut self, entry: Entry) -> Result<()> {
+        if let Some(old) = self.entries.iter_mut().find(|old| old.id == entry.id) {
+            *old = entry;
+        } else {
+            if self.seen.contains(&entry.id) {
+                return Ok(());
+            }
+            if self.seen.len() >= 100_000 {
+                return Err("transcript_identity_limit");
+            }
+            self.seen.insert(entry.id.clone());
+            self.entries.push(entry);
+        }
+        if self.entries.len() > MAX_ENTRIES {
+            self.entries.remove(0);
+            self.dropped_entries += 1;
+        }
+        Ok(())
+    }
+    pub fn apply(&mut self, record: &Value, session: &str) -> Result<()> {
+        let kind = record["type"].as_str().unwrap_or("");
+        if !matches!(kind, "user" | "assistant") {
+            if !matches!(
+                kind,
+                "attachment"
+                    | "system"
+                    | "file-history-snapshot"
+                    | "last-prompt"
+                    | "ai-title"
+                    | "mode"
+                    | "permission-mode"
+                    | "atis-latch"
+            ) {
+                self.unknown_records += 1;
+            }
+            return Ok(());
+        }
+        if record["isSidechain"] == true || record["isMeta"] == true {
+            return Ok(());
+        }
+        if record["sessionId"].as_str() != Some(session) {
+            return Err("session_mismatch");
+        }
+        let source_id = record["uuid"]
+            .as_str()
+            .filter(|s| !s.is_empty() && s.len() <= 256)
+            .ok_or("invalid_transcript")?;
+        let content = &record["message"]["content"];
+        if !content.is_string() && !content.is_array() {
+            return Err("invalid_transcript");
+        }
+        if let Some(blocks) = content.as_array() {
+            for block in blocks {
+                if !block.is_object() || block["type"].as_str().is_none() {
+                    return Err("invalid_transcript");
+                }
+                if block["type"] == "text" && !block["text"].is_string() {
+                    return Err("invalid_transcript");
+                }
+            }
+        }
+        let text = text_content(content);
+        if !text.is_empty() {
+            let (text, truncated) = bounded(&text);
+            self.upsert(Entry {
+                id: format!("message:{source_id}"),
+                kind: "message".into(),
+                text,
+                role: Some(kind.into()),
+                tool_name: None,
+                status: None,
+                details: None,
+                truncated,
+            })?;
+        }
+        if let Some(blocks) = content.as_array() {
+            for block in blocks {
+                match block["type"].as_str() {
+                    Some("tool_use") => {
+                        let id = block["id"]
+                            .as_str()
+                            .filter(|s| !s.is_empty() && s.len() <= 256)
+                            .ok_or("invalid_transcript")?;
+                        let name = block["name"]
+                            .as_str()
+                            .filter(|s| !s.is_empty() && s.len() <= 256)
+                            .ok_or("invalid_transcript")?;
+                        let (name, name_truncated) = bounded(name);
+                        let (details, truncated) = bounded(&block["input"].to_string());
+                        let key = format!("tool:{id}");
+                        // A repeated call record must not revert a completed tool.
+                        let old = self.entries.iter().find(|e| e.id == key);
+                        let status = old
+                            .and_then(|e| e.status.clone())
+                            .unwrap_or_else(|| "running".into());
+                        let text = old.map(|e| e.text.clone()).unwrap_or_default();
+                        let output_truncated = old.is_some_and(|e| e.truncated);
+                        self.upsert(Entry {
+                            id: key,
+                            kind: "tool".into(),
+                            text,
+                            role: None,
+                            tool_name: Some(name),
+                            status: Some(status),
+                            details: Some(details),
+                            truncated: truncated || name_truncated || output_truncated,
+                        })?;
+                    }
+                    Some("tool_result") => {
+                        let id = block["tool_use_id"]
+                            .as_str()
+                            .filter(|s| !s.is_empty() && s.len() <= 256)
+                            .ok_or("invalid_transcript")?;
+                        if let Some(old) = self
+                            .entries
+                            .iter_mut()
+                            .find(|e| e.id == format!("tool:{id}"))
+                        {
+                            let (text, truncated) = bounded(&text_content(&block["content"]));
+                            old.text = text;
+                            old.status = Some(
+                                if block["is_error"] == true {
+                                    "failed"
+                                } else {
+                                    "completed"
+                                }
+                                .into(),
+                            );
+                            old.truncated |= truncated;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    }
+}

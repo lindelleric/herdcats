@@ -1,0 +1,80 @@
+{
+  "component": "herdcats-bridge",
+  "version": "0.1.0",
+  "protocol": 1,
+  "herdr_protocol": 22,
+  "supported_agent": "Claude with exact herdr:claude session reference",
+  "install_scope": "Explicit user-selected directory on the direct SSH host that owns Herdr and the Claude transcripts. No auto-install, hooks or persistent service.",
+  "requirements": [
+    "Rust 1.85 or later for a source build",
+    "Python 3.8 or later for installer",
+    "Herdr 0.9.3 protocol 22",
+    "Unix host with Claude transcript root readable by the SSH user"
+  ],
+  "steps": [
+    {
+      "description": "Build on the target host; Cargo.lock fixes dependency versions",
+      "command": "cargo build --manifest-path bridge/Cargo.toml --release --locked"
+    },
+    {
+      "description": "Probe without opening Herdr or reading transcripts",
+      "command": "bridge/target/release/herdcats-bridge --version-json"
+    },
+    {
+      "description": "Install explicitly; executes the selected trusted binary for compatibility checking",
+      "command": "python3 bridge/scripts/install.py --binary bridge/target/release/herdcats-bridge --bin-dir \"$HOME/.local/bin\""
+    },
+    {
+      "description": "For updates, use the same install command with --replace; symlink destinations are rejected",
+      "command": "python3 bridge/scripts/install.py --binary bridge/target/release/herdcats-bridge --bin-dir \"$HOME/.local/bin\" --replace"
+    },
+    {
+      "description": "Verify the installed companion",
+      "command": "\"$HOME/.local/bin/herdcats-bridge\" --version-json"
+    },
+    {
+      "description": "Open a Claude pane in Herdcats over direct SSH; Timeline launches the helper on demand",
+      "command": null
+    }
+  ],
+  "discovery": [
+    "$HOME/.local/bin/herdcats-bridge",
+    "SSH PATH",
+    "$HOME/.cargo/bin/herdcats-bridge",
+    "/opt/homebrew/bin/herdcats-bridge",
+    "/usr/local/bin/herdcats-bridge"
+  ],
+  "default_socket": "HERDR_SOCKET_PATH, otherwise ${XDG_CONFIG_HOME:-$HOME/.config}/herdr/herdr.sock",
+  "default_transcripts": "$HOME/.claude/projects",
+  "failure_behavior": "Missing helper, unsupported protocol, unmapped session or unreadable transcripts leave Terminal available. Installation is never triggered by opening Timeline.",
+  "removal": "Remove only the installed herdcats-bridge file. No daemon, hooks or config are created by this installer.",
+  "limits": [
+    "Prebuilt release workflow prepared but not run/published",
+    "Linux and Intel-Mac builds await CI; only Apple-Silicon build tested locally",
+    "Binaries not Developer ID signed/notarized",
+    "Codex, saved-machine routing and native approvals/questions remain gated"
+  ],
+  "onboarding": {
+    "status": "implemented; release publication pending",
+    "app_flow": [
+      "Missing-helper state offers Set up Timeline; Terminal remains available",
+      "Copy pinned one-command installer; run on the direct SSH host",
+      "Installer downloads matching native binary, verifies SHA-256, probes protocol/version and installs to ~/.local/bin",
+      "Return to app and tap Check again; installed location takes priority over older PATH copies"
+    ],
+    "command": "curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v0.1.0/install.sh | sh -s -- --version 0.1.0",
+    "user_dependencies": [
+      "POSIX shell utilities including link",
+      "curl",
+      "sha256sum or shasum"
+    ],
+    "platforms": [
+      "macOS13+ arm64/x86_64",
+      "Linux glibc2.35+ arm64/x86_64"
+    ],
+    "release_workflow": ".github/workflows/bridge-release.yml",
+    "publication": "Manual workflow prepares draft release only; it has not been run or published",
+    "download_boundary": "HTTPS release assets and same-channel SHA256SUMS; checksums are integrity checks, not independent signing",
+    "build_dependencies": "Rust and Python are required only for source-build/development path below"
+  }
+}
