@@ -55,7 +55,7 @@
     "Codex, saved-machine routing and native approvals/questions remain gated"
   ],
   "onboarding": {
-    "status": "0.1.3 publication pending (helper 0.1.2 published and public installer verified)",
+    "status": "0.1.3 published and public installer verified",
     "app_flow": [
       "Missing-helper state offers Set up Timeline; Terminal remains available",
       "Copy pinned one-command installer; run on the direct SSH host",
@@ -73,7 +73,7 @@
       "Linux glibc2.35+ arm64/x86_64"
     ],
     "release_workflow": ".github/workflows/bridge-release.yml",
-    "publication": "0.1.3 publication pending; native CI/builds pending release tag (helper 0.1.2 published and public HTTPS installer verified in an owned temporary directory)",
+    "publication": "Native four-platform CI38535142834 passed; helper0.1.3 published and public HTTPS installer verified in owned temporary directory",
     "download_boundary": "HTTPS release assets and same-channel SHA256SUMS; checksums are integrity checks, not independent signing",
     "build_dependencies": "Rust and Python are required only for source-build/development path below"
   }

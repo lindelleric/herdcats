@@ -10,7 +10,7 @@
     "phase0_result": "passed",
     "installer": 9,
     "installer_result": "passed against debug and release binaries in temporary directories",
-    "release_build": "0.1.3 release --locked --offline passed; native CI pending",
+    "release_build": "0.1.3 release --locked --offline passed; all four native CI jobs passed",
     "setup_distribution_python": 24,
     "setup_distribution_result": "all passed; explicit installer, fake HTTPS release download, packaging and actual mobile launcher execution"
   },
@@ -63,12 +63,12 @@
     "installed_on_user_host": false,
     "published_release": true,
     "ci": "macOS Apple Silicon/Intel and Linux arm64/x86_64 native tests, Clippy, builds and packaging passed",
-    "release_workflow": "Four native builds and draft assembly passed in CI38525092098; release published after checksum and binary validation",
+    "release_workflow": "Four native builds and draft assembly passed in CI38535142834 attempt2; published after checksum/platform checks",
     "public_install_script": "bridge/scripts/install.sh; no Rust/Python requirement for users"
   },
-  "release_evidence": "compatibility/release/v0.1.2.json",
+  "release_evidence": "compatibility/release/v0.1.3.json",
   "patch_review_fixes": {
-    "status": "0.1.3 implementation complete; publication pending until published",
+    "status": "0.1.3 published and installer verified; final Claude P0/P1 review pending",
     "findings": [
       "oversized image payloads skipped while preserving text, tool completion and foreign-session rejection",
       "same-session read race retains verified cache and cursors",

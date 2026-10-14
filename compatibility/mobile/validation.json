@@ -20,18 +20,19 @@
     "Initial write failure drains bootstrap output until stream completion/timeout so missing-helper setup reason survives",
     "Compose uses existing pane input when native history is absent; verified Claude identities retain native preflight guards",
     "Eviction updates remove only retired IDs, preserve generation/loaded history, and suppress stale-history resurrection",
-    "Disconnected helper has Check again while SSH remains connected; errors explain actual source failures"
+    "Disconnected helper has Check again while SSH remains connected; errors explain actual source failures",
+    "Repeated source-changing reads show Delayed while retaining verified history; recovery clears the signal"
   ],
   "validation": {
     "ios_unit": {
-      "total": 376,
-      "passed": 375,
+      "total": 377,
+      "passed": 376,
       "skipped": 1,
       "result": "passed_after_claude_review_fixes",
       "skipped_test": "liveCitadelFramesHistoryUpdatesIdleCancellationAndReconnect (ephemeral fixture not bundled in normal test builds)",
       "command": "xcodebuild test -project ios/Herdcats.xcodeproj -scheme Herdcats -destination 'platform=iOS Simulator,id=<available simulator>' -only-testing:HerdcatsTests CODE_SIGN_IDENTITY=-",
       "note": "Initial unsigned run had existing Keychain entitlement errors. Signed full-suite rerun passed.",
-      "release_recheck": "375 executed passed,1 opt-in skipped; /private/tmp/hc-012-ios.log"
+      "release_recheck": "376 executed passed,1 opt-in skipped; /private/tmp/hc-013-ios.log (before remote dependency merge; combined-state CI separate)"
     },
     "ios_ui": {
       "tests": 6,
@@ -48,7 +49,7 @@
       ],
       "note": "One earlier UI run was interrupted by overlapping unit tests on the same simulator. Sequential rerun passed.",
       "log": "/private/tmp/hc-review-fixes-final-ios.log",
-      "release_recheck": "6 passed; /private/tmp/hc-012-ios.log"
+      "release_recheck": "6 passed; /private/tmp/hc-013-ios.log"
     },
     "live_citadel": {
       "tests": 1,
@@ -117,5 +118,5 @@
     "ios/Herdcats/Features/AgentTimeline/AgentTimelineState.swift",
     "ios/Herdcats/Features/AgentTimeline/AgentTimelineView.swift"
   ],
-  "onboarding_release_gate": "Helper 0.1.3 publication pending; installer command pins 0.1.3 (0.1.2 was previously published and verified). App not merged or deployed."
+  "onboarding_release_gate": "Helper0.1.3 published after four native CI builds passed; public installer verified. App not merged or deployed."
 }
