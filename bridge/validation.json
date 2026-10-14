@@ -51,19 +51,20 @@
     "Codex history and launch gates",
     "routed host streaming",
     "Git and native actions",
-    "prebuilt host releases and larger-history performance",
-    "real-device and real-host rollout"
+    "real-device and real-host rollout",
+    "larger-history performance and release signing"
   ],
   "production_ios_changed": true,
-  "committed_or_pushed": false,
+  "committed_or_pushed": true,
   "setup": {
     "version_probe": "--version-json reports package version, bridge protocol, Herdr protocol and implemented adapter without socket access",
     "installer": "Explicit trusted binary and destination; atomic copy; regular replacement requires --replace; nonregular destinations rejected; bounded timed probe with child reaping",
     "instructions": "bridge/setup.json",
     "installed_on_user_host": false,
-    "published_release": false,
-    "ci": "macOS/Linux bridge tests, installer tests, Clippy and release build configured; remote jobs not run",
-    "release_workflow": ".github/workflows/bridge-release.yml; four native builds, checksums, version-rendered installer and draft-only GitHub release; not dispatched",
+    "published_release": true,
+    "ci": "macOS Apple Silicon/Intel and Linux arm64/x86_64 native tests, Clippy, builds and packaging passed",
+    "release_workflow": "Four native builds and draft assembly passed in CI38505344824; release published after checksum and binary validation",
     "public_install_script": "bridge/scripts/install.sh; no Rust/Python requirement for users"
-  }
+  },
+  "release_evidence": "compatibility/release/v0.1.0.json"
 }
