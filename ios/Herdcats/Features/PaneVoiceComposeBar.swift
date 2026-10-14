@@ -136,7 +136,6 @@ struct PaneVoiceComposeBar: View {
     // Live row state & modifier routing to Pi/Cursor's PaneLiveModifierComposer
     var isLiveEnabled: Bool
     @Binding var armedModifiers: Set<PaneLiveModifier>
-    var terminalMode: Bool = false
     var composeFieldIdentifier = "pane-compose-field"
     var composeSendIdentifier = "pane-compose-send-button"
     var onLiveKey: (String) -> Void
@@ -330,7 +329,6 @@ struct PaneVoiceComposeBar: View {
 
             liveDivider
 
-            if !terminalMode {
             Button {
                 HapticFeedback.impact(.light)
                 onStartVoice()
@@ -345,8 +343,6 @@ struct PaneVoiceComposeBar: View {
             .accessibilityLabel("Start voice recording")
             .accessibilityIdentifier("pane-live-voice-button")
 
-            }
-
             // The keyboard icon opens an editable Compose draft. A tap on pane
             // output is the separate gesture for direct terminal typing.
             Button {
@@ -360,7 +356,7 @@ struct PaneVoiceComposeBar: View {
                     .frame(height: 42)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(terminalMode ? "Terminal keyboard" : "Compose message")
+            .accessibilityLabel("Compose message")
             .accessibilityIdentifier("pane-live-keyboard-button")
         }
         .frame(height: 42)

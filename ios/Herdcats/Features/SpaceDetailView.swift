@@ -1285,7 +1285,7 @@ struct PaneSessionView: View {
                 get: {
                     showsTimeline
                         ? (surfaceModel.isLiveKeyboardSurface ? .compose : surfaceModel.surface.barMode)
-                        : .live
+                        : surfaceModel.surface.barMode
                 },
                 set: { _ in }
             ),
@@ -1317,7 +1317,7 @@ struct PaneSessionView: View {
             dictationError: $dictationError,
             onStartVoice: startVoice,
             onFinishVoice: finishVoice,
-            onOpenCompose: { if showsTimeline { openCompose() } else { liveInputFocused = true } },
+            onOpenCompose: openCompose,
             photoItem: $photoItem,
             isPhotoPickerPresented: $isPhotoPickerPresented,
             attachment: attachment.map(PaneAttachmentInfo.init),
@@ -1328,7 +1328,6 @@ struct PaneSessionView: View {
             isSending: isSending,
             onSend: handleSend
         )
-        bar.terminalMode = !showsTimeline
         bar.composeFieldIdentifier = showsTimeline ? "timeline-compose-field" : "pane-compose-field"
         bar.composeSendIdentifier = showsTimeline ? "timeline-compose-send" : "pane-compose-send-button"
         return bar
@@ -1352,23 +1351,13 @@ struct PaneSessionView: View {
         )
     }
 
-    private var timelineComposeDock: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let sessionError {
-                Text(sessionError).font(.jost(.caption)).foregroundStyle(Theme.destructive)
-            }
-            voiceComposeBar
-        }
-        .foregroundStyle(Theme.text).padding(16).frame(maxWidth: .infinity)
-        .background(Theme.cardBackground)
-    }
-
     private var outputWithInputDock: some View {
         VStack(spacing: 0) {
             Color.clear.frame(height: topOutputInset)
             if showsTimeline {
                 AgentTimelineView(
                     paneId: pane.paneId, connection: appModel.connection, timeline: timeline,
+                    bottomOverlayInset: bottomDockHeight,
                     onUseTerminal: {
                         UserDefaults.standard.set(true, forKey: TimelineSetupPreference.key(scope: connectionScope))
                         showsTimeline = false
@@ -1378,7 +1367,6 @@ struct PaneSessionView: View {
                         if UserDefaults.standard.bool(forKey: key) { UserDefaults.standard.removeObject(forKey: key) }
                     }
                 )
-                    .safeAreaInset(edge: .bottom) { timelineComposeDock }
             } else {
                 outputScrollView
                     .environment(\.colorScheme, .dark)
@@ -1386,25 +1374,27 @@ struct PaneSessionView: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if !showsTimeline {
-                VStack(spacing: 0) {
-                    liveStatusRow
-                    voiceComposeBar
-                }
-                .environment(\.colorScheme, .dark)
-                .padding(.top, 8)
-                .background(Color(uiColor: UIColor(hex: terminalPalette.background)))
-                .background {
-                    GeometryReader { geometry in
-                        Color.clear.preference(
-                            key: PaneBottomDockHeightPreferenceKey.self, value: geometry.size.height)
+            VStack(spacing: 0) {
+                if showsTimeline {
+                    if let sessionError {
+                        Text(sessionError).font(.jost(.caption)).foregroundStyle(Theme.destructive)
+                            .padding(.horizontal, 16)
                     }
+                } else {
+                    liveStatusRow
+                }
+                voiceComposeBar
+            }
+            .background {
+                GeometryReader { geometry in
+                    Color.clear.preference(
+                        key: PaneBottomDockHeightPreferenceKey.self, value: geometry.size.height)
                 }
             }
         }
-        .onChange(of: showsTimeline) { _, timelineMode in
+        .onChange(of: showsTimeline) { _, _ in
             dismissLiveKeyboard(); composeFieldFocused = false; dictation.cancel()
-            surfaceModel.collapseToLiveToolbar()
+            surfaceModel.resetToDefaultSurface()
             updateSessionParsedOutput()
         }
         .onPreferenceChange(PaneBottomDockHeightPreferenceKey.self) { height in

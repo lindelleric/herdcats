@@ -6,6 +6,7 @@ struct AgentTimelineView: View {
     let paneId: String
     let connection: HerdrConnection
     let timeline: AgentTimelineState
+    let bottomOverlayInset: CGFloat
     let onUseTerminal: () -> Void
     let onSetupComplete: () -> Void
     @Environment(AppModel.self) private var appModel
@@ -88,6 +89,11 @@ struct AgentTimelineView: View {
                     } else {
                         availability
                     }
+                    // Clear scroll space lets the final entry sit above the
+                    // floating Compose bubble without an opaque dock panel.
+                    Color.clear
+                        .frame(height: bottomOverlayInset + (following ? 0 : 44))
+                        .id("timeline-bottom")
                 }
                 .scrollTargetLayout()
                 .padding(DesignSystem.Spacing.base)
@@ -97,22 +103,28 @@ struct AgentTimelineView: View {
             .scrollDismissesKeyboard(.interactively)
             .simultaneousGesture(DragGesture().onChanged { _ in following = false })
             .onChange(of: timeline.revision) { _, _ in
-                guard following, let last = timeline.entries.last else { return }
-                proxy.scrollTo(last.id, anchor: .bottom)
+                guard following, !timeline.entries.isEmpty else { return }
+                proxy.scrollTo("timeline-bottom", anchor: .bottom)
             }
             .onChange(of: timeline.identity) { _, _ in
                 scrollPosition = nil
                 following = true
             }
-            .safeAreaInset(edge: .bottom) {
+            .onChange(of: bottomOverlayInset) { _, _ in
+                if following && !timeline.entries.isEmpty {
+                    proxy.scrollTo("timeline-bottom", anchor: .bottom)
+                }
+            }
+            .overlay(alignment: .bottom) {
                 if !following && timeline.phase == .ready {
                     Button("Latest", systemImage: "arrow.down") {
                         following = true
-                        if let last = timeline.entries.last { proxy.scrollTo(last.id, anchor: .bottom) }
+                        proxy.scrollTo("timeline-bottom", anchor: .bottom)
                     }
                     .accessibilityIdentifier("timeline-latest")
                     .font(.jost(.subheadline)).padding(8)
-                    .frame(maxWidth: .infinity).background(Theme.cardBackground)
+                    .background(Theme.cardBackground, in: Capsule())
+                    .padding(.bottom, bottomOverlayInset + 8)
                 }
             }
         }

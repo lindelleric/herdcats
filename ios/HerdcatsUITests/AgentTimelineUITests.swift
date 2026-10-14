@@ -20,7 +20,7 @@ final class AgentTimelineUITests: XCTestCase {
             app.buttons["timeline-open-terminal"].tap()
             XCTAssertTrue(app.scrollViews["pane-output-scroll-view"].waitForExistence(timeout: 5))
             XCTAssertFalse(app.descendants(matching: .any)["timeline-compose-field"].firstMatch.exists)
-            XCTAssertFalse(app.buttons["pane-live-voice-button"].exists)
+            XCTAssertTrue(app.buttons["pane-live-voice-button"].exists)
             let terminalScreenshot = XCTAttachment(screenshot: app.screenshot())
             terminalScreenshot.name = light ? "Terminal dark from light app" : "Terminal dark from dark app"
             terminalScreenshot.lifetime = .keepAlways
@@ -130,6 +130,17 @@ final class AgentTimelineUITests: XCTestCase {
         app.launchArguments += ["-hc.timeline-intro-reset"]
         app.launch()
     }
+    func testTerminalHonorsComposeByDefault() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-hc.screenshots", "-hc.screen", "compose", "-paneShowComposeByDefault", "YES"]
+        launch(app)
+        XCTAssertTrue(app.buttons["timeline-open-terminal"].waitForExistence(timeout: 5))
+        app.buttons["timeline-open-terminal"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["pane-compose-field"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["pane-compose-voice-button"].exists)
+        XCTAssertTrue(app.buttons["pane-compose-attach-button"].exists)
+        app.terminate()
+    }
     func testSwitchingOutputModesPreservesComposeDraft() {
         let app = XCUIApplication()
         app.launchArguments = ["-hc.screenshots", "-hc.screen", "compose", "-paneShowComposeByDefault", "NO"]
@@ -138,6 +149,7 @@ final class AgentTimelineUITests: XCTestCase {
         // The fixture opens Compose with a deterministic draft.
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         let draft = field.value as? String
+        let timelineFieldWidth = field.frame.width
         let terminalButton = app.buttons["timeline-open-terminal"]
         XCTAssertTrue(terminalButton.waitForExistence(timeout: 5))
         XCTAssertTrue(terminalButton.label.contains("Terminal"))
@@ -148,7 +160,20 @@ final class AgentTimelineUITests: XCTestCase {
         XCTAssertLessThan(terminalButton.frame.midX, menu.frame.midX)
         terminalButton.tap()
         XCTAssertFalse(field.exists)
-        XCTAssertFalse(app.descendants(matching: .any)["pane-compose-field"].firstMatch.exists)
+        app.buttons["pane-live-keyboard-button"].tap()
+        let terminalField = app.descendants(matching: .any)["pane-compose-field"].firstMatch
+        let terminalComposeExists = terminalField.waitForExistence(timeout: 5)
+        XCTAssertTrue(terminalComposeExists)
+        guard terminalComposeExists else { app.terminate(); return }
+        XCTAssertEqual(terminalField.value as? String, draft)
+        XCTAssertTrue(app.buttons["pane-compose-voice-button"].exists)
+        XCTAssertTrue(app.buttons["pane-compose-attach-button"].exists)
+        XCTAssertEqual(terminalField.frame.width, timelineFieldWidth, accuracy: 2,
+                       "Both modes use the same floating Compose layout")
+        let terminalCompose = XCTAttachment(screenshot: app.screenshot())
+        terminalCompose.name = "Terminal floating Compose"
+        terminalCompose.lifetime = .keepAlways
+        add(terminalCompose)
         let composeButton = app.buttons["terminal-open-timeline"]
         XCTAssertTrue(composeButton.label.contains("Timeline"))
         composeButton.tap()

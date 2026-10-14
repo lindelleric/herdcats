@@ -1,7 +1,7 @@
 {
   "date": "2026-10-14",
-  "status": "first_use_timeline_setup_drawer_with_terminal_deferral",
-  "scope": "Default native Claude timeline with existing Compose controls, toolbar mode switch beside the menu, and dark-only raw Terminal; optional host helper installation remains explicit.",
+  "status": "native_timeline_and_terminal_share_floating_compose",
+  "scope": "Native Claude Timeline and dark Terminal share the original floating Compose overlay with voice/photo controls; raw Terminal input remains available.",
   "features": [
     "Protocol1 non-PTY Citadel client with request correlation and bounded Unicode NDJSON",
     "Readiness/transport/view/native identity ownership; resets and unavailable clear memory-only state",
@@ -10,8 +10,8 @@
     "Terminal switch preserves same pane session, drafts and existing input delivery",
     "Manual scrolling stops following; Latest resumes; Dynamic Type fonts and accessible controls",
     "Background/departure/request timeout closes only owned bridge channel; routed hosts rejected",
-    "Timeline opens by default; Compose appears only in Timeline, with voice/photo controls preserved",
-    "Dark ANSI palette and raw keyboard/extra keys in Terminal; toolbar chat icon returns to Compose.",
+    "Timeline opens by default; both Timeline and Terminal offer the original floating Compose field with voice/photo controls",
+    "Dark ANSI palette, raw keyboard/extra keys and Compose in Terminal; toolbar Timeline icon returns to native history.",
     "Prompt dispatch uses fresh native occupant verification and explicitly captured SSH generation; never falls back to shell or blocked request responses",
     "Editing is disabled during send; delayed acknowledgements preserve any later draft edits",
     "Icon-only mode switch in the top-right navigation toolbar beside Pane Options; opposite-mode glyph and accessibility label. Mode is scoped to pane and connection identity.",
@@ -25,7 +25,10 @@
     "Missing helper automatically opens large-detent setup drawer explaining Timeline benefits and on-demand host helper",
     "Button or swipe dismissal returns to dark Terminal and remembers deferral per SSH connection scope",
     "Timeline toolbar icon retries helper and reopens setup while missing; success stays in Timeline and clears deferral",
-    "Setup retry remains in drawer with missing-helper feedback; revision observation handles identical immediate failure"
+    "Setup retry remains in drawer with missing-helper feedback; revision observation handles identical immediate failure",
+    "Both modes use PaneVoiceComposeBar in one transparent bottom overlay, without an opaque full-width dock background",
+    "Terminal keyboard toolbar button opens Compose; Show Compose by Default remains honored on mode changes",
+    "Timeline clear footer reserves scroll space above floating Compose; Latest remains accessible above the bubble"
   ],
   "validation": {
     "ios_unit": {
@@ -36,27 +39,29 @@
       "skipped_test": "liveCitadelFramesHistoryUpdatesIdleCancellationAndReconnect (ephemeral fixture not bundled in normal test builds)",
       "command": "xcodebuild test -project ios/Herdcats.xcodeproj -scheme Herdcats -destination 'platform=iOS Simulator,id=<available simulator>' -only-testing:HerdcatsTests CODE_SIGN_IDENTITY=-",
       "note": "Initial unsigned run had existing Keychain entitlement errors. Signed full-suite rerun passed.",
-      "release_recheck": "376 passed,1 opt-in skipped; /private/tmp/hc-onboarding-final.log"
+      "release_recheck": "376 passed,1 opt-in skipped; /private/tmp/hc-compose-overlay-green.log"
     },
     "ios_ui": {
-      "tests": 7,
-      "result": "passed_after_first_use_onboarding",
+      "tests": 8,
+      "result": "passed_after_restoring_shared_floating_compose",
       "target": "HerdcatsUITests/AgentTimelineUITests",
       "coverage": [
         "light/dark + tool expansion",
         "empty/unsupported + Terminal fallback",
         "output mode switch preserves compose draft",
         "default Timeline Compose field",
-        "Compose absent from Terminal; fixed-dark Terminal captures from light/dark app",
+        "Terminal Compose and voice/photo controls restored; fixed-dark Terminal captures from light/dark app",
         "Toolbar icon location beside menu, opposite-mode accessibility labels and draft preservation",
         "Missing-helper setup, copy acknowledgement, recheck dismissal and Terminal fallback",
         "automatic near-full-screen guidance, copying install command and identical missing-helper retry",
         "button and swipe dismissal to Terminal; explicit Timeline re-entry; deferral survives app relaunch",
-        "successful helper check closes guidance, stays in Timeline and clears host deferral"
+        "successful helper check closes guidance, stays in Timeline and clears host deferral",
+        "Terminal Compose opens from keyboard toolbar and preserves the Timeline draft",
+        "Identical field widths in both modes and Terminal Compose by Default preference"
       ],
       "note": "One earlier UI run was interrupted by overlapping unit tests on the same simulator. Sequential rerun passed.",
-      "log": "/private/tmp/hc-onboarding-final.log",
-      "release_recheck": "7 passed; /private/tmp/hc-onboarding-final.log"
+      "log": "/private/tmp/hc-compose-overlay-green.log",
+      "release_recheck": "8 passed; /private/tmp/hc-compose-overlay-green.log"
     },
     "live_citadel": {
       "tests": 1,
@@ -97,9 +102,10 @@
     },
     "screenshots": {
       "source": "Verified UI test attachments; synthetic simulator fixtures",
-      "light": ".lavish/native-timeline-light.png",
+      "light": ".lavish/timeline-floating-compose-light.png",
       "dark": ".lavish/native-timeline-dark.png",
-      "terminal": ".lavish/terminal-always-dark.png"
+      "terminal": ".lavish/terminal-always-dark.png",
+      "terminal_compose": ".lavish/terminal-floating-compose.png"
     }
   },
   "limitations": [
