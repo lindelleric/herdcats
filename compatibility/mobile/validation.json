@@ -174,5 +174,16 @@
       "suite_total": 33,
       "log": "/private/tmp/hc-oneclick-python-final.log"
     }
+  },
+  "keyboard_background": {
+    "scope": "Active pane background extends through keyboard safe area; Terminal Compose forces dark input traits; Timeline Compose follows theme",
+    "red": "Screenshot pixel regression showed mint app background under dark Terminal; second regression showed light keyboard in Terminal Compose",
+    "green": "21 input surface unit tests and2 focused UI tests passed",
+    "log": "/private/tmp/hc-keyboard-final-green.log",
+    "screenshots": [
+      ".lavish/terminal-keyboard.png",
+      ".lavish/timeline-keyboard.png"
+    ],
+    "platform_limit": "System keyboard supports light/dark appearance; iOS owns exact key colors"
   }
 }

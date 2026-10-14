@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 final class AgentTimelineUITests: XCTestCase {
     func testTimelineLightAndDarkRenderToolCardsAndKeepTerminalAvailable() {
@@ -181,6 +182,55 @@ final class AgentTimelineUITests: XCTestCase {
             app.terminate()
         }
     }
+    func testKeyboardSurroundFollowsActivePaneBackground() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-hc.screenshots", "-hc.screen", "compose", "-hc.light", "-paneShowComposeByDefault", "NO"]
+        launch(app)
+        for timeline in [true, false] {
+            if !timeline {
+                app.buttons["timeline-open-terminal"].tap()
+                app.buttons["pane-live-keyboard-button"].tap()
+            }
+            let field = app.descendants(matching: .any)[timeline ? "timeline-compose-field" : "pane-compose-field"].firstMatch
+            XCTAssertTrue(field.waitForExistence(timeout: 5))
+            field.tap()
+            XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+            let screenshot = app.screenshot()
+            let attachment = XCTAttachment(screenshot: screenshot)
+            attachment.name = timeline ? "Timeline keyboard surround" : "Terminal keyboard surround"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            guard let image = screenshot.image.cgImage else { return XCTFail("Missing screenshot") }
+            let output = pixel(image, x: 5, y: image.height / 3)
+            let surround = pixel(image, x: 5, y: image.height - 5)
+            let keyboard = pixel(image, x: 5, y: image.height * 4 / 5)
+            if timeline {
+                XCTAssertGreaterThan(keyboard.prefix(3).reduce(0, +), 400)
+            } else {
+                XCTAssertLessThan(keyboard.prefix(3).reduce(0, +), 300,
+                                  "Terminal Compose must use a dark keyboard even in a light app")
+            }
+            for channel in 0..<3 {
+                XCTAssertEqual(output[channel], surround[channel], accuracy: 6,
+                               "Keyboard safe-area background must match the active pane")
+            }
+        }
+        app.terminate()
+    }
+
+    private func pixel(_ image: CGImage, x: Int, y: Int) -> [Double] {
+        var bytes = [UInt8](repeating: 0, count: 4)
+        let cropped = image.cropping(to: CGRect(x: x, y: y, width: 1, height: 1))!
+        bytes.withUnsafeMutableBytes { buffer in
+            let context = CGContext(data: buffer.baseAddress, width: 1, height: 1,
+                                    bitsPerComponent: 8, bytesPerRow: 4,
+                                    space: CGColorSpaceCreateDeviceRGB(),
+                                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            context.draw(cropped, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        }
+        return bytes.map(Double.init)
+    }
+
     private func launch(_ app: XCUIApplication) {
         app.launchArguments += ["-hc.timeline-intro-reset"]
         app.launch()

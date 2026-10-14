@@ -94,10 +94,29 @@ enum PlainTextInput {
 
 /// Marks only the Compose TextField, including SwiftUI's multiline UITextView.
 struct ComposeTextInputMarker: UIViewRepresentable {
-    func makeUIView(context: Context) -> MarkerView { MarkerView() }
-    func updateUIView(_ uiView: MarkerView, context: Context) { uiView.configureInput() }
+    @Environment(\.colorScheme) private var colorScheme
+
+    func makeUIView(context: Context) -> MarkerView {
+        let view = MarkerView()
+        view.keyboardAppearance = colorScheme == .dark ? .dark : .light
+        return view
+    }
+    func updateUIView(_ uiView: MarkerView, context: Context) {
+        uiView.keyboardAppearance = colorScheme == .dark ? .dark : .light
+        uiView.configureInput()
+    }
 
     final class MarkerView: UIView {
+        var keyboardAppearance: UIKeyboardAppearance = .default
+
+        private func configure(_ input: some PlainTextConfigurable) {
+            PlainTextInput.apply(to: input)
+            if input.keyboardAppearance != keyboardAppearance {
+                input.keyboardAppearance = keyboardAppearance
+                input.reloadInputViews()
+            }
+        }
+
         override func didMoveToWindow() {
             super.didMoveToWindow()
             configureInput()
@@ -116,8 +135,8 @@ struct ComposeTextInputMarker: UIViewRepresentable {
                     let inputs = PlainTextInput.textInputs(in: view)
                     if !inputs.isEmpty {
                         if let input = inputs.first(where: PlainTextInput.isComposeInput) {
-                            if let field = input as? UITextField { PlainTextInput.apply(to: field) }
-                            if let field = input as? UITextView { PlainTextInput.apply(to: field) }
+                            if let field = input as? UITextField { self?.configure(field) }
+                            if let field = input as? UITextView { self?.configure(field) }
                             return
                         }
                     }
@@ -132,6 +151,7 @@ struct ComposeTextInputMarker: UIViewRepresentable {
 /// rather than `UITextInputTraits`' optional requirements.
 @MainActor
 protocol PlainTextConfigurable: UIResponder {
+    var keyboardAppearance: UIKeyboardAppearance { get set }
     var autocorrectionType: UITextAutocorrectionType { get set }
     var spellCheckingType: UITextSpellCheckingType { get set }
     var inlinePredictionType: UITextInlinePredictionType { get set }

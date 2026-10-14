@@ -1384,6 +1384,7 @@ struct PaneSessionView: View {
                     liveStatusRow
                 }
                 voiceComposeBar
+                    .environment(\.colorScheme, showsTimeline ? colorScheme : .dark)
             }
             .background {
                 GeometryReader { geometry in
@@ -1391,6 +1392,12 @@ struct PaneSessionView: View {
                         key: PaneBottomDockHeightPreferenceKey.self, value: geometry.size.height)
                 }
             }
+        }
+        // Extend the active output surface behind the keyboard and home
+        // indicator; the enclosing screen otherwise exposes its app theme.
+        .background {
+            (showsTimeline ? Theme.background : Color(uiColor: UIColor(hex: terminalPalette.background)))
+                .ignoresSafeArea()
         }
         .onChange(of: showsTimeline) { _, _ in
             dismissLiveKeyboard(); composeFieldFocused = false; dictation.cancel()
