@@ -118,4 +118,20 @@ struct AgentBridgeFramingTests {
         try s.mergeHistory(old, owner: owner, generation: 1)
         #expect(s.entries.map(\.text) == ["new"])
     }
+    @Test func delayedSignalPreservesHistoryAndClearsOnRecovery() throws {
+        let s = store()
+        try s.consume(frame("timeline.snapshot", entries: ["msg1", "msg2"]), owner: owner)
+        #expect(!s.delayed)
+        #expect(s.entries.map(\.text) == ["msg1", "msg2"])
+
+        let delayedUpdate = try AgentBridgeFrame.decode(Data("{\"event\":\"timeline.updated\",\"epoch\":\"epoch-a\",\"seq\":2,\"data\":{\"identity\":{\"pane_id\":\"w1:p1\",\"terminal_id\":\"t1\",\"agent\":\"claude\",\"native_session_id\":\"session-a\"},\"generation\":1,\"entries\":[],\"delayed\":true}}".utf8))
+        try s.consume(delayedUpdate, owner: owner)
+        #expect(s.delayed)
+        #expect(s.entries.map(\.text) == ["msg1", "msg2"])
+
+        let recoveredUpdate = try AgentBridgeFrame.decode(Data("{\"event\":\"timeline.updated\",\"epoch\":\"epoch-a\",\"seq\":3,\"data\":{\"identity\":{\"pane_id\":\"w1:p1\",\"terminal_id\":\"t1\",\"agent\":\"claude\",\"native_session_id\":\"session-a\"},\"generation\":1,\"entries\":[],\"delayed\":false}}".utf8))
+        try s.consume(recoveredUpdate, owner: owner)
+        #expect(!s.delayed)
+        #expect(s.entries.map(\.text) == ["msg1", "msg2"])
+    }
 }

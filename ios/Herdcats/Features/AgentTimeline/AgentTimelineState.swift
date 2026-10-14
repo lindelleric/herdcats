@@ -18,6 +18,7 @@ import Observation
     private(set) var agentStatus: String?
     private(set) var unknownRecords = 0
     private(set) var droppedEntries = 0
+    private(set) var delayed = false
     private(set) var revision: UInt64 = 0
     private var owner: UUID?
     private var paneId = ""
@@ -64,6 +65,7 @@ import Observation
             agentStatus = data.agentStatus
             unknownRecords = data.unknownRecords ?? 0
             droppedEntries = data.droppedEntries ?? 0
+            delayed = data.delayed ?? false
             phase = .ready
             revision += 1
         case "timeline.updated":
@@ -100,6 +102,7 @@ import Observation
             agentStatus = data.agentStatus ?? agentStatus
             unknownRecords = data.unknownRecords ?? unknownRecords
             droppedEntries = data.droppedEntries ?? droppedEntries
+            delayed = data.delayed ?? delayed
             revision += 1
         default: throw AgentBridgeError.invalidFrame
         }
@@ -136,6 +139,7 @@ import Observation
         agentStatus = nil
         unknownRecords = 0
         droppedEntries = 0
+        delayed = false
         revision += 1
     }
     private func validate(_ rows: [AgentTimelineEntry]) throws {

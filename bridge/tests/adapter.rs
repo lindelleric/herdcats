@@ -279,6 +279,104 @@ fn complete_oversized_image_records_are_counted_once_and_later_text_is_visible()
 }
 
 #[test]
+fn oversized_record_with_text_and_image_preserves_text_and_counts_omission() {
+    let temp = Temp::new();
+    let path = temp.0.join("log.jsonl");
+    let rec = line(&json!({
+        "type": "user",
+        "uuid": "u-text-img",
+        "sessionId": SESSION,
+        "message": {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Why is this button misaligned?"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "A".repeat(1024 * 1024)}}
+            ]
+        }
+    }));
+    fs::write(&path, &rec).unwrap();
+    let mut follower = Follower::default();
+    assert!(follower.refresh(&path, SESSION).unwrap());
+    assert_eq!(follower.transcript.entries.len(), 1);
+    assert_eq!(
+        follower.transcript.entries[0].text,
+        "Why is this button misaligned?"
+    );
+    assert_eq!(follower.transcript.entries[0].kind, "message");
+    assert_eq!(follower.transcript.unknown_records, 1);
+}
+
+#[test]
+fn tool_use_followed_by_oversized_image_tool_result_completes_tool() {
+    let temp = Temp::new();
+    let path = temp.0.join("log.jsonl");
+    let tool_call = line(&json!({
+        "type": "assistant",
+        "uuid": "a-tool-call",
+        "sessionId": SESSION,
+        "message": {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "t1", "name": "Read", "input": {"path": "screenshot.png"}}
+            ]
+        }
+    }));
+    let tool_res = line(&json!({
+        "type": "user",
+        "uuid": "u-tool-res",
+        "sessionId": SESSION,
+        "message": {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "t1",
+                    "content": [
+                        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "A".repeat(1024 * 1024)}}
+                    ],
+                    "is_error": false
+                }
+            ]
+        }
+    }));
+    fs::write(&path, format!("{tool_call}{tool_res}")).unwrap();
+    let mut follower = Follower::default();
+    assert!(follower.refresh(&path, SESSION).unwrap());
+    assert_eq!(follower.transcript.entries.len(), 1);
+    assert_eq!(follower.transcript.entries[0].id, "tool:t1");
+    assert_eq!(
+        follower.transcript.entries[0].status.as_deref(),
+        Some("completed")
+    );
+    assert_eq!(follower.transcript.unknown_records, 1);
+}
+
+#[test]
+fn foreign_session_oversized_record_fails_closed() {
+    let temp = Temp::new();
+    let path = temp.0.join("log.jsonl");
+    let image = line(&json!({
+        "type": "user",
+        "uuid": "foreign-img",
+        "sessionId": "foreign-session-uuid",
+        "message": {
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "A".repeat(1024 * 1024)}}
+            ]
+        }
+    }));
+    let before = line(&message("before", "before image"));
+    fs::write(&path, format!("{before}{image}")).unwrap();
+    let mut follower = Follower::default();
+    assert_eq!(
+        follower.refresh(&path, SESSION).unwrap_err(),
+        "session_mismatch"
+    );
+    assert!(follower.transcript.entries.is_empty());
+}
+
+#[test]
 fn incomplete_oversized_image_records_wait_for_newline_without_counting() {
     let temp = Temp::new();
     let path = temp.0.join("log.jsonl");
@@ -362,4 +460,190 @@ fn append(path: &std::path::Path, bytes: &str) {
         .unwrap()
         .write_all(bytes.as_bytes())
         .unwrap();
+}
+
+#[test]
+fn unknown_progress_content_object_tolerated_in_normal_and_oversized() {
+    let mut t = Transcript::default();
+    let row = json!({
+        "type": "assistant",
+        "uuid": "prog-normal",
+        "sessionId": SESSION,
+        "message": {
+            "role": "assistant",
+            "content": [
+                {"type": "progress", "content": {"stage": "thinking", "depth": 3}}
+            ]
+        }
+    });
+    assert!(t.apply(&row, SESSION).is_ok());
+
+    let temp = Temp::new();
+    let path = temp.0.join("log.jsonl");
+    let oversized_prog = line(&json!({
+        "type": "assistant",
+        "uuid": "prog-oversized",
+        "sessionId": SESSION,
+        "message": {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "progress",
+                    "content": {"stage": "thinking", "payload": "P".repeat(1024 * 1024 + 10)}
+                }
+            ]
+        }
+    }));
+    fs::write(&path, oversized_prog).unwrap();
+    let mut follower = Follower::default();
+    assert!(follower.refresh(&path, SESSION).unwrap());
+    assert_eq!(follower.transcript.unknown_records, 1);
+    assert_eq!(follower.transcript.entries.len(), 0);
+}
+
+#[test]
+fn web_search_tool_result_error_object_tolerated_in_normal_and_oversized() {
+    let mut t = Transcript::default();
+    let row = json!({
+        "type": "assistant",
+        "uuid": "search-normal",
+        "sessionId": SESSION,
+        "message": {
+            "role": "assistant",
+            "content": [
+                {"type": "web_search_tool_result", "error": {"code": 500, "message": "fail"}}
+            ]
+        }
+    });
+    assert!(t.apply(&row, SESSION).is_ok());
+
+    let temp = Temp::new();
+    let path = temp.0.join("log.jsonl");
+    let oversized_search = line(&json!({
+        "type": "assistant",
+        "uuid": "search-oversized",
+        "sessionId": SESSION,
+        "message": {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "web_search_tool_result",
+                    "error": {"code": 500, "message": "S".repeat(1024 * 1024 + 10)}
+                }
+            ]
+        }
+    }));
+    fs::write(&path, oversized_search).unwrap();
+    let mut follower = Follower::default();
+    assert!(follower.refresh(&path, SESSION).unwrap());
+    assert_eq!(follower.transcript.unknown_records, 1);
+    assert_eq!(follower.transcript.entries.len(), 0);
+}
+
+#[test]
+fn tool_result_content_string_array_tolerated_in_normal_and_oversized() {
+    let mut t = Transcript::default();
+    let call = json!({
+        "type": "assistant",
+        "uuid": "call-1",
+        "sessionId": SESSION,
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "t1", "name": "shell", "input": {}}]
+        }
+    });
+    t.apply(&call, SESSION).unwrap();
+    let res = json!({
+        "type": "user",
+        "uuid": "res-1",
+        "sessionId": SESSION,
+        "message": {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": ["line 1", "line 2"]}
+            ]
+        }
+    });
+    assert!(t.apply(&res, SESSION).is_ok());
+    assert_eq!(t.entries[0].status.as_deref(), Some("completed"));
+
+    let temp = Temp::new();
+    let path = temp.0.join("log.jsonl");
+    let call_over = line(&json!({
+        "type": "assistant",
+        "uuid": "call-over",
+        "sessionId": SESSION,
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "t2", "name": "shell", "input": {}}]
+        }
+    }));
+    let res_over = line(&json!({
+        "type": "user",
+        "uuid": "res-over",
+        "sessionId": SESSION,
+        "message": {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "t2",
+                    "content": ["line 1", "A".repeat(1024 * 1024 + 10)]
+                }
+            ]
+        }
+    }));
+    fs::write(&path, format!("{call_over}{res_over}")).unwrap();
+    let mut follower = Follower::default();
+    assert!(follower.refresh(&path, SESSION).unwrap());
+    assert_eq!(follower.transcript.entries.len(), 1);
+    assert_eq!(follower.transcript.entries[0].status.as_deref(), Some("completed"));
+}
+
+#[test]
+fn oversized_text_only_message_and_tool_input_do_not_count_omission() {
+    let temp = Temp::new();
+    let path = temp.0.join("log.jsonl");
+
+    // Pure oversized text message (> 1MB)
+    let big_text = "Words in a long document. ".repeat(45_000);
+    let msg = line(&json!({
+        "type": "user",
+        "uuid": "big-text",
+        "sessionId": SESSION,
+        "message": {
+            "role": "user",
+            "content": big_text
+        }
+    }));
+    fs::write(&path, &msg).unwrap();
+    let mut follower = Follower::default();
+    assert!(follower.refresh(&path, SESSION).unwrap());
+    assert_eq!(follower.transcript.unknown_records, 0, "text-only oversized message must not count as omission");
+    assert_eq!(follower.transcript.entries.len(), 1);
+    assert!(follower.transcript.entries[0].truncated);
+    assert_eq!(follower.transcript.entries[0].text.len(), 8192);
+
+    // Oversized tool_use input (> 1MB)
+    let tool_call = line(&json!({
+        "type": "assistant",
+        "uuid": "big-tool",
+        "sessionId": SESSION,
+        "message": {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "t-big",
+                    "name": "large_input",
+                    "input": {"big_param": "X".repeat(1024 * 1024 + 10)}
+                }
+            ]
+        }
+    }));
+    append(&path, &tool_call);
+    assert!(follower.refresh(&path, SESSION).unwrap());
+    assert_eq!(follower.transcript.unknown_records, 0, "fully represented tool input must not count as omission");
+    assert_eq!(follower.transcript.entries.len(), 2);
+    assert!(follower.transcript.entries[1].truncated);
 }

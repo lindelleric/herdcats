@@ -46,6 +46,7 @@ struct AgentBridgePayload: Codable, Sendable {
     var agentStatus: String?
     var unknownRecords: Int?
     var droppedEntries: Int?
+    var delayed: Bool?
     var paneId: String?
     var code: String?
 }

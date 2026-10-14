@@ -30,6 +30,7 @@ pub struct Follower {
     stamp: Option<Stamp>,
     bytes: Vec<u8>,
     session: String,
+    buf: Vec<u8>,
 }
 impl Follower {
     pub fn refresh(&mut self, path: &Path, session: &str) -> Result<bool> {
@@ -45,12 +46,20 @@ impl Follower {
         // Equal metadata stamps can hide same-length rewrites on filesystems with
         // coarse timestamps, so every poll rereads up to MAX_SOURCE bytes. This
         // bounded I/O cost is necessary to verify the cached content is current.
-        let mut bytes = Vec::new();
+        // Reusing a preallocated buffer avoids bounded allocator churn across
+        // frequent idle polls (which drove resident memory up to ~1.28 GB when
+        // allocating and discarding large buffers repeatedly under the allocator,
+        // rather than an unbounded memory leak). Steady-state memory footprint is
+        // bounded by two retained buffers: `buf` (for reading) and `bytes` (prefix
+        // cache). Their lengths are capped at MAX_SOURCE (64 MiB); Vec capacity may
+        // round upward. Temporary parsing allocations add to that footprint.
+        self.buf.clear();
+        self.buf.reserve((before.len as usize).saturating_add(1));
         (&mut file)
             .take(MAX_SOURCE + 1)
-            .read_to_end(&mut bytes)
+            .read_to_end(&mut self.buf)
             .map_err(|_| "transcript_unavailable")?;
-        if bytes.len() as u64 > MAX_SOURCE {
+        if self.buf.len() as u64 > MAX_SOURCE {
             return Err("source_too_large");
         }
         let after = Stamp::of(&file.metadata().map_err(|_| "transcript_unavailable")?);
@@ -62,7 +71,13 @@ impl Follower {
             .as_ref()
             .is_none_or(|old| old.dev != before.dev || old.ino != before.ino)
             || self.session != session
-            || !bytes.starts_with(&self.bytes);
+            || !self.buf.starts_with(&self.bytes);
+
+        if !reset && self.buf.len() == self.bytes.len() {
+            self.stamp = Some(before);
+            return Ok(false);
+        }
+
         let mut transcript = if reset {
             Transcript::default()
         } else {
@@ -70,15 +85,15 @@ impl Follower {
         };
         let start = if reset { 0 } else { self.offset as usize };
         let mut offset = start;
-        for part in bytes[start..].split_inclusive(|b| *b == b'\n') {
+        for part in self.buf[start..].split_inclusive(|b| *b == b'\n') {
             if part.last() != Some(&b'\n') {
                 break;
             }
             if part.len() > MAX_RECORD {
-                // Image tool results can exceed the normal record limit. Count
-                // their omission without deserializing them, then keep following
-                // the transcript. Partial lines stay uncommitted until complete.
-                transcript.unknown_records += 1;
+                // Image tool results can exceed the normal record limit. Use
+                // bounded minimal deserialization to keep text and complete
+                // tool calls while skipping bulky image payloads.
+                transcript.apply_oversized(part, session)?;
             } else if part != b"\n" {
                 let row = serde_json::from_slice(part).map_err(|_| "invalid_transcript")?;
                 transcript.apply(&row, session)?;
@@ -90,10 +105,13 @@ impl Follower {
             || transcript.unknown_records != self.transcript.unknown_records;
         if reset {
             self.generation += 1;
+            self.bytes.clear();
+            self.bytes.extend_from_slice(&self.buf[..offset]);
+        } else {
+            self.bytes.extend_from_slice(&self.buf[self.bytes.len()..offset]);
         }
         self.offset = offset as u64;
         self.transcript = transcript;
-        self.bytes = bytes;
         self.stamp = Some(before);
         self.session = session.to_owned();
         Ok(changed)

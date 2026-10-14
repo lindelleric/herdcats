@@ -1,6 +1,6 @@
 {
   "component": "herdcats-bridge",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "protocol": 1,
   "herdr_protocol": 22,
   "supported_agent": "Claude with exact herdr:claude session reference",
@@ -55,14 +55,14 @@
     "Codex, saved-machine routing and native approvals/questions remain gated"
   ],
   "onboarding": {
-    "status": "0.1.2 published and public installer verified",
+    "status": "0.1.3 publication pending (helper 0.1.2 published and public installer verified)",
     "app_flow": [
       "Missing-helper state offers Set up Timeline; Terminal remains available",
       "Copy pinned one-command installer; run on the direct SSH host",
       "Installer downloads matching native binary, verifies SHA-256, probes protocol/version and installs to ~/.local/bin",
       "Return to app and tap Check again; installed location takes priority over older PATH copies"
     ],
-    "command": "curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v0.1.2/install.sh | sh -s -- --version 0.1.2",
+    "command": "curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v0.1.3/install.sh | sh -s -- --version 0.1.3",
     "user_dependencies": [
       "POSIX shell utilities including link",
       "curl",
@@ -73,7 +73,7 @@
       "Linux glibc2.35+ arm64/x86_64"
     ],
     "release_workflow": ".github/workflows/bridge-release.yml",
-    "publication": "Native four-platform CI passed; helper0.1.2 release published and public HTTPS installer verified in an owned temporary directory",
+    "publication": "0.1.3 publication pending; native CI/builds pending release tag (helper 0.1.2 published and public HTTPS installer verified in an owned temporary directory)",
     "download_boundary": "HTTPS release assets and same-channel SHA256SUMS; checksums are integrity checks, not independent signing",
     "build_dependencies": "Rust and Python are required only for source-build/development path below"
   }

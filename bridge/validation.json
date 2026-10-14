@@ -2,7 +2,7 @@
   "date": "2026-10-14",
   "status": "claude_read_only_host_foundation_verified",
   "tests": {
-    "rust": 33,
+    "rust": 41,
     "rust_result": "passed",
     "command": "cargo test --manifest-path bridge/Cargo.toml --offline",
     "clippy": "all targets with -D warnings passed",
@@ -10,7 +10,7 @@
     "phase0_result": "passed",
     "installer": 9,
     "installer_result": "passed against debug and release binaries in temporary directories",
-    "release_build": "0.1.2 release --locked --offline passed",
+    "release_build": "0.1.3 release --locked --offline passed; native CI pending",
     "setup_distribution_python": 24,
     "setup_distribution_result": "all passed; explicit installer, fake HTTPS release download, packaging and actual mobile launcher execution"
   },
@@ -68,19 +68,24 @@
   },
   "release_evidence": "compatibility/release/v0.1.2.json",
   "patch_review_fixes": {
-    "status": "all review findings addressed;0.1.2 published and public installer verified",
+    "status": "0.1.3 implementation complete; publication pending until published",
     "findings": [
-      "oversized source records omitted/counted without disabling subsequent history",
+      "oversized image payloads skipped while preserving text, tool completion and foreign-session rejection",
       "same-session read race retains verified cache and cursors",
       "retention emits evicted_ids updates without generation reset",
       "release source verified against exact version tag for every trigger",
       "installer probes on destination volume; main invocation only at EOF",
-      "same-size rewrite with colliding metadata detected by bounded content verification every poll"
+      "same-size rewrite with colliding metadata detected by bounded content verification every poll",
+      "reusable buffer eliminates bounded allocator churn on idle polls",
+      "minimal streaming deserialization omits bulky image payloads while preserving text and tool results",
+      "omission counting accurately restricted to unrepresented skipped blocks",
+      "unknown payload shapes tolerated without invalidating transcripts",
+      "repeated source_changing signals delay while keeping verified history"
     ],
     "logs": [
-      "/private/tmp/hc-012-rust.log",
-      "/private/tmp/hc-012-python.log",
-      "/private/tmp/hc-012-clippy.log"
+      "/private/tmp/hc-013-rust.log",
+      "/private/tmp/hc-013-python.log",
+      "/private/tmp/hc-013-clippy.log"
     ],
     "failed_release": {
       "version": "0.1.1",

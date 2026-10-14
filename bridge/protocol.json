@@ -1,6 +1,6 @@
 {
   "protocol": 1,
-  "bridge_version": "0.1.2",
+  "bridge_version": "0.1.3",
   "transport": "non-PTY stdio NDJSON; one watched pane per process",
   "launch": {
     "command": "herdcats-bridge serve --stdio",
@@ -107,7 +107,8 @@
         "before",
         "agent_status",
         "unknown_records",
-        "dropped_entries"
+        "dropped_entries",
+        "delayed"
       ],
       "effect": "replace state; recent page only; fetch earlier retained entries separately"
     },
@@ -119,7 +120,8 @@
         "agent_status",
         "evicted_ids",
         "unknown_records",
-        "dropped_entries"
+        "dropped_entries",
+        "delayed"
       ],
       "effect": "Remove evicted_ids before stable-ID upserts; retention does not reset generation. Do not resurrect evicted IDs from delayed history. Counters may update with no entries; frames remain bounded."
     },
@@ -155,7 +157,7 @@
     "entry_identities": 100000,
     "project_directories": 10000,
     "request_queue": 16,
-    "oversized_source_record_behavior": "Complete source lines exceeding parsed record limit are omitted and counted once; incomplete lines wait for newline. The 64MiB source bound remains hard.",
+    "oversized_source_record_behavior": "Complete source lines exceeding parsed record limit use bounded typed deserialization to preserve text and complete tool calls while omitting bulky image payloads and enforcing session bounds; incomplete lines wait for newline. The 64MiB source bound remains hard.",
     "evicted_ids_per_update": 1000
   },
   "source_policy": "Herdr22 Claude reference source herdr:claude; native UUID exact filename/path beneath pinned transcript root; ambiguity, symlinks, missing reference or foreign main-session records fail closed.",
@@ -208,5 +210,5 @@
     "unsupported_herdr_protocol",
     "unsupported_session_source"
   ],
-  "transient_read_behavior": "source_changing retries without clearing verified cache for the same identity. A changed occupant still clears old state."
+  "transient_read_behavior": "source_changing retries without clearing verified cache for the same identity; after repeated retries (threshold 10), emits timeline.updated with delayed: true while keeping verified history until recovery clears it. A changed occupant still clears old state."
 }

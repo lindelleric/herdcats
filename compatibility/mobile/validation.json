@@ -117,5 +117,5 @@
     "ios/Herdcats/Features/AgentTimeline/AgentTimelineState.swift",
     "ios/Herdcats/Features/AgentTimeline/AgentTimelineView.swift"
   ],
-  "onboarding_release_gate": "Helper0.1.2 published after all four native CI builds passed; public installer verified. App not merged or deployed."
+  "onboarding_release_gate": "Helper 0.1.3 publication pending; installer command pins 0.1.3 (0.1.2 was previously published and verified). App not merged or deployed."
 }

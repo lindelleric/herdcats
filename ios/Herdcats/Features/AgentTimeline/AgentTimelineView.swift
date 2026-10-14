@@ -38,7 +38,11 @@ struct AgentTimelineView: View {
                         HStack {
                             Label("Conversation", systemImage: "text.bubble")
                             Spacer()
-                            if let status = timeline.agentStatus { Text(status.capitalized) }
+                            if timeline.delayed {
+                                Text("Delayed")
+                            } else if let status = timeline.agentStatus {
+                                Text(status.capitalized)
+                            }
                         }
                         .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
                         if timeline.hasMore {
@@ -63,6 +67,10 @@ struct AgentTimelineView: View {
                                 description: Text("Messages from this Claude session will appear here."))
                         }
                         ForEach(timeline.entries) { entry in AgentTimelineEntryView(entry: entry).id(entry.id)
+                        }
+                        if timeline.delayed {
+                            Text("Source update delayed; showing verified history.")
+                                .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
                         }
                         if timeline.unknownRecords > 0 {
                             Text("Some session records are not displayed.")
@@ -295,7 +303,7 @@ private struct AgentBridgeSetupView: View {
     let onCheckAgain: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var copied = false
-    private let command = "curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v0.1.2/install.sh | sh -s -- --version 0.1.2"
+    private let command = "curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v0.1.3/install.sh | sh -s -- --version 0.1.3"
 
     var body: some View {
         NavigationStack {

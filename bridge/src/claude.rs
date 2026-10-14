@@ -1,7 +1,7 @@
 use crate::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::{borrow::Cow, collections::HashSet};
 
 pub const MAX_ENTRIES: usize = 1000;
 const TEXT_LIMIT: usize = 8192;
@@ -185,4 +185,245 @@ impl Transcript {
         }
         Ok(())
     }
+
+    pub fn apply_oversized(&mut self, part: &[u8], session: &str) -> Result<()> {
+        let header: RecordHeader =
+            serde_json::from_slice(part).map_err(|_| "invalid_transcript")?;
+        let kind = header.kind.unwrap_or("");
+        if !matches!(kind, "user" | "assistant") {
+            if !matches!(
+                kind,
+                "attachment"
+                    | "system"
+                    | "file-history-snapshot"
+                    | "last-prompt"
+                    | "ai-title"
+                    | "mode"
+                    | "permission-mode"
+                    | "atis-latch"
+            ) {
+                self.unknown_records += 1;
+            }
+            return Ok(());
+        }
+        if header.is_sidechain == Some(true) || header.is_meta == Some(true) {
+            return Ok(());
+        }
+        if header.session_id != Some(session) {
+            return Err("session_mismatch");
+        }
+        let source_id = header
+            .uuid
+            .filter(|s| !s.is_empty() && s.len() <= 256)
+            .ok_or("invalid_transcript")?;
+
+        let payload: OversizedRecordPayload =
+            serde_json::from_slice(part).map_err(|_| "invalid_transcript")?;
+
+        let mut has_omission = false;
+        let mut msg_text_parts = Vec::new();
+        let trimmed_content = payload.message.content.get().trim();
+
+        let blocks_opt: Option<Vec<OversizedBlockPayload>> = if trimmed_content.starts_with('"') {
+            let text: Cow<'_, str> =
+                serde_json::from_str(trimmed_content).map_err(|_| "invalid_transcript")?;
+            msg_text_parts.push(text);
+            None
+        } else if trimmed_content.starts_with('[') {
+            let blocks: Vec<OversizedBlockPayload> =
+                serde_json::from_str(trimmed_content).map_err(|_| "invalid_transcript")?;
+            for block in &blocks {
+                if block.block_type == "text" {
+                    if let Some(t) = &block.text {
+                        msg_text_parts.push(t.clone());
+                    } else {
+                        return Err("invalid_transcript");
+                    }
+                }
+            }
+            Some(blocks)
+        } else {
+            return Err("invalid_transcript");
+        };
+
+        let full_text = msg_text_parts.join("\n");
+        if !full_text.is_empty() {
+            let (text, truncated) = bounded(&full_text);
+            self.upsert(Entry {
+                id: format!("message:{source_id}"),
+                kind: "message".into(),
+                text,
+                role: Some(kind.into()),
+                tool_name: None,
+                status: None,
+                details: None,
+                truncated,
+            })?;
+        }
+
+        if let Some(blocks) = blocks_opt {
+            for block in blocks {
+                match block.block_type {
+                    "text" => {}
+                    "tool_use" => {
+                        let id = block
+                            .id
+                            .filter(|s| !s.is_empty() && s.len() <= 256)
+                            .ok_or("invalid_transcript")?;
+                        let name = block
+                            .name
+                            .filter(|s| !s.is_empty() && s.len() <= 256)
+                            .ok_or("invalid_transcript")?;
+                        let (name, name_truncated) = bounded(name);
+                        let input_str = block.input.map(|v| v.get()).unwrap_or("null");
+                        let (details, truncated) = bounded(input_str);
+                        let key = format!("tool:{id}");
+                        let old = self.entries.iter().find(|e| e.id == key);
+                        let status = old
+                            .and_then(|e| e.status.clone())
+                            .unwrap_or_else(|| "running".into());
+                        let text = old.map(|e| e.text.clone()).unwrap_or_default();
+                        let output_truncated = old.is_some_and(|e| e.truncated);
+                        self.upsert(Entry {
+                            id: key,
+                            kind: "tool".into(),
+                            text,
+                            role: None,
+                            tool_name: Some(name),
+                            status: Some(status),
+                            details: Some(details),
+                            truncated: truncated || name_truncated || output_truncated,
+                        })?;
+                    }
+                    "tool_result" => {
+                        let id = block
+                            .tool_use_id
+                            .filter(|s| !s.is_empty() && s.len() <= 256)
+                            .ok_or("invalid_transcript")?;
+                        let (res_text, sub_omission) = block
+                            .content
+                            .map(|r| parse_tool_result_content(r.get()))
+                            .unwrap_or_default();
+                        if sub_omission {
+                            has_omission = true;
+                        }
+                        if let Some(old) = self
+                            .entries
+                            .iter_mut()
+                            .find(|e| e.id == format!("tool:{id}"))
+                        {
+                            let (text, truncated) = bounded(&res_text);
+                            old.text = text;
+                            let is_error = block
+                                .is_error
+                                .map(|r| r.get() == "true")
+                                .unwrap_or(false);
+                            old.status =
+                                Some(if is_error { "failed" } else { "completed" }.into());
+                            old.truncated |= truncated;
+                        }
+                    }
+                    "image" => {
+                        has_omission = true;
+                    }
+                    _ => {
+                        // Tolerates unknown block kinds (e.g. progress, web_search_tool_result)
+                        // without failing the transcript, counting them as omitted blocks.
+                        has_omission = true;
+                    }
+                }
+            }
+        }
+
+        if has_omission {
+            self.unknown_records += 1;
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Deserialize)]
+struct RecordHeader<'a> {
+    #[serde(rename = "type", default, borrow)]
+    kind: Option<&'a str>,
+    #[serde(default, borrow)]
+    uuid: Option<&'a str>,
+    #[serde(rename = "sessionId", default, borrow)]
+    session_id: Option<&'a str>,
+    #[serde(rename = "isSidechain", default)]
+    is_sidechain: Option<bool>,
+    #[serde(rename = "isMeta", default)]
+    is_meta: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct OversizedRecordPayload<'a> {
+    #[serde(borrow)]
+    message: OversizedMessagePayload<'a>,
+}
+
+#[derive(Deserialize)]
+struct OversizedMessagePayload<'a> {
+    #[serde(borrow)]
+    content: &'a serde_json::value::RawValue,
+}
+
+#[derive(Deserialize)]
+struct OversizedBlockPayload<'a> {
+    #[serde(rename = "type", borrow)]
+    block_type: &'a str,
+    #[serde(default, borrow)]
+    text: Option<Cow<'a, str>>,
+    #[serde(default, borrow)]
+    id: Option<&'a str>,
+    #[serde(default, borrow)]
+    name: Option<&'a str>,
+    #[serde(default, borrow)]
+    input: Option<&'a serde_json::value::RawValue>,
+    #[serde(default, borrow)]
+    tool_use_id: Option<&'a str>,
+    #[serde(default, borrow)]
+    content: Option<&'a serde_json::value::RawValue>,
+    #[serde(default, borrow)]
+    is_error: Option<&'a serde_json::value::RawValue>,
+}
+
+fn parse_tool_result_content(raw: &str) -> (String, bool) {
+    let trimmed = raw.trim();
+    if trimmed.starts_with('"') {
+        if let Ok(s) = serde_json::from_str::<Cow<'_, str>>(trimmed) {
+            return (s.into_owned(), false);
+        }
+    } else if trimmed.starts_with('[') {
+        let mut texts = Vec::new();
+        let mut has_omission = false;
+        if let Ok(values) = serde_json::from_str::<Vec<&serde_json::value::RawValue>>(trimmed) {
+            for v in values {
+                let v_trimmed = v.get().trim();
+                if v_trimmed.starts_with('{') {
+                    #[derive(Deserialize)]
+                    struct SubBlock<'a> {
+                        #[serde(rename = "type", default, borrow)]
+                        block_type: Option<&'a str>,
+                        #[serde(default, borrow)]
+                        text: Option<Cow<'a, str>>,
+                    }
+                    if let Ok(sub) = serde_json::from_str::<SubBlock>(v_trimmed) {
+                        if sub.block_type == Some("text") {
+                            if let Some(t) = sub.text {
+                                texts.push(t.into_owned());
+                            }
+                        } else {
+                            has_omission = true;
+                        }
+                    } else {
+                        has_omission = true;
+                    }
+                }
+            }
+            return (texts.join("\n"), has_omission);
+        }
+    }
+    (String::new(), false)
 }

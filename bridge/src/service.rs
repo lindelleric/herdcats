@@ -32,6 +32,8 @@ struct Watch {
     status: String,
     unknown_records: usize,
     dropped_entries: usize,
+    source_changing_count: u32,
+    delayed: bool,
 }
 pub struct Service {
     pub client: Client,
@@ -157,10 +159,30 @@ impl Service {
         };
         match self.poll_inner(&mut watch, &mut refresh) {
             Err("source_changing") if watch.identity.is_some() && watch.unavailable.is_none() => {
-                // The follower commits only verified reads; retry on the next
-                // poll while keeping this session's verified page and cursors.
+                watch.source_changing_count += 1;
+                if watch.source_changing_count >= 10 && !watch.delayed {
+                    watch.delayed = true;
+                    let identity = watch.identity.clone().unwrap();
+                    let status = watch.status.clone();
+                    self.event(
+                        out,
+                        "timeline.updated",
+                        json!({
+                            "identity": identity,
+                            "generation": self.generation,
+                            "entries": [],
+                            "evicted_ids": [],
+                            "agent_status": status,
+                            "unknown_records": watch.unknown_records,
+                            "dropped_entries": watch.dropped_entries,
+                            "delayed": true
+                        }),
+                    )?;
+                }
             }
             Err(code) => {
+                watch.source_changing_count = 0;
+                watch.delayed = false;
                 if watch.unavailable != Some(code) {
                     self.generation += 1;
                     watch.identity = None;
@@ -175,6 +197,9 @@ impl Service {
                 }
             }
             Ok((identity, reset, status)) => {
+                let was_delayed = watch.delayed;
+                watch.source_changing_count = 0;
+                watch.delayed = false;
                 let data = &watch.follower.transcript;
                 let evicted: Vec<_> = watch
                     .previous
@@ -190,6 +215,7 @@ impl Service {
                     body["agent_status"] = json!(status);
                     body["unknown_records"] = json!(data.unknown_records);
                     body["dropped_entries"] = json!(data.dropped_entries);
+                    body["delayed"] = json!(false);
                     self.event(out, "timeline.snapshot", body)?;
                 } else {
                     let changed: Vec<_> = data
@@ -205,6 +231,7 @@ impl Service {
                         || status != watch.status
                         || data.unknown_records != watch.unknown_records
                         || data.dropped_entries != watch.dropped_entries
+                        || was_delayed
                     {
                         // Each batch reserves half the frame for the envelope.
                         // Evictions precede inserts, with <=1000 IDs in total.
@@ -213,7 +240,7 @@ impl Service {
                         for id in evicted {
                             let encoded = serde_json::to_vec(&id)?.len() + 1;
                             if !evictions.is_empty() && size + encoded > MAX_RECORD / 2 {
-                                self.event(out, "timeline.updated", json!({"identity":identity,"generation":self.generation,"entries":[],"evicted_ids":evictions,"agent_status":status,"unknown_records":data.unknown_records,"dropped_entries":data.dropped_entries}))?;
+                                self.event(out, "timeline.updated", json!({"identity":identity,"generation":self.generation,"entries":[],"evicted_ids":evictions,"agent_status":status,"unknown_records":data.unknown_records,"dropped_entries":data.dropped_entries,"delayed":false}))?;
                                 evictions.clear();
                                 size = 0;
                             }
@@ -226,7 +253,7 @@ impl Service {
                             if (!batch.is_empty() || !evictions.is_empty())
                                 && size + encoded > MAX_RECORD / 2
                             {
-                                self.event(out, "timeline.updated", json!({"identity":identity,"generation":self.generation,"entries":batch,"evicted_ids":evictions,"agent_status":status,"unknown_records":data.unknown_records,"dropped_entries":data.dropped_entries}))?;
+                                self.event(out, "timeline.updated", json!({"identity":identity,"generation":self.generation,"entries":batch,"evicted_ids":evictions,"agent_status":status,"unknown_records":data.unknown_records,"dropped_entries":data.dropped_entries,"delayed":false}))?;
                                 batch.clear();
                                 evictions.clear();
                                 size = 0;
@@ -234,7 +261,7 @@ impl Service {
                             batch.push(entry);
                             size += encoded;
                         }
-                        self.event(out, "timeline.updated", json!({"identity":identity,"generation":self.generation,"entries":batch,"evicted_ids":evictions,"agent_status":status,"unknown_records":data.unknown_records,"dropped_entries":data.dropped_entries}))?;
+                        self.event(out, "timeline.updated", json!({"identity":identity,"generation":self.generation,"entries":batch,"evicted_ids":evictions,"agent_status":status,"unknown_records":data.unknown_records,"dropped_entries":data.dropped_entries,"delayed":false}))?;
                     }
                 }
                 watch.unknown_records = data.unknown_records;
@@ -306,6 +333,8 @@ impl Service {
                     status: String::new(),
                     unknown_records: 0,
                     dropped_entries: 0,
+                    source_changing_count: 0,
+                    delayed: false,
                 });
                 Self::write(out, &json!({"id":id,"result":{"watching":pane}}))?;
                 self.poll(out)
@@ -531,6 +560,70 @@ mod tests {
         assert_eq!(replies[0]["data"]["entries"], json!([]));
         assert_eq!(replies[0]["data"]["unknown_records"], 1);
         assert_eq!(replies[0]["data"]["generation"], generation);
+        cleanup(&service, root);
+    }
+    #[test]
+    fn repeated_source_changing_signals_delay_while_keeping_history_and_recovers() {
+        let (mut service, root, identity) = fixture();
+        let generation = service.generation;
+        let entries = service.watch.as_ref().unwrap().previous.clone();
+        assert!(!entries.is_empty());
+
+        for _ in 0..9 {
+            let mut output = Vec::new();
+            service
+                .poll_with_refresh(&mut output, |_, _, _| Err("source_changing"))
+                .unwrap();
+            assert!(output.is_empty());
+            assert_eq!(service.generation, generation);
+            assert_eq!(service.watch.as_ref().unwrap().previous, entries);
+        }
+
+        let mut output = Vec::new();
+        service
+            .poll_with_refresh(&mut output, |_, _, _| Err("source_changing"))
+            .unwrap();
+        let replies = frames(output);
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0]["event"], "timeline.updated");
+        assert_eq!(replies[0]["data"]["delayed"], true);
+        assert_eq!(replies[0]["data"]["generation"], generation);
+        assert_eq!(replies[0]["data"]["entries"], json!([]));
+        assert_eq!(service.watch.as_ref().unwrap().previous, entries);
+
+        let mut output = Vec::new();
+        service
+            .request_with_refresh(
+                json!({"id":"h","method":"history","params":{"generation":generation,"before":"message:m7"}}).to_string().as_bytes(),
+                &mut output,
+                |_, _, _| Err("source_changing"),
+            )
+            .unwrap();
+        let replies = frames(output);
+        assert_eq!(replies[0]["result"]["entries"].as_array().unwrap().len(), 7);
+        assert_eq!(replies[0]["result"]["generation"], generation);
+
+        let mut output = Vec::new();
+        service
+            .poll_with_refresh(&mut output, |_, _, _| Ok(false))
+            .unwrap();
+        let replies = frames(output);
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0]["event"], "timeline.updated");
+        assert_eq!(replies[0]["data"]["delayed"], false);
+        assert_eq!(service.generation, generation);
+
+        *identity.lock().unwrap() = OTHER.to_owned();
+        let mut output = Vec::new();
+        service
+            .poll_with_refresh(&mut output, |_, _, _| Err("source_changing"))
+            .unwrap();
+        let replies = frames(output);
+        assert_eq!(replies[0]["event"], "timeline.unavailable");
+        assert_eq!(replies[0]["data"]["code"], "source_changing");
+        assert!(service.watch.as_ref().unwrap().identity.is_none());
+        assert!(service.watch.as_ref().unwrap().previous.is_empty());
+
         cleanup(&service, root);
     }
 }
