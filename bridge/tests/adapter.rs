@@ -704,3 +704,85 @@ fn referenced_content_is_exact_chunked_and_restricted_to_published_entries() {
         Err("content_unavailable")
     );
 }
+
+#[test]
+fn system_task_notifications_are_activity_and_human_quotes_stay_messages() {
+    let text = "<task-notification><task-id>t1</task-id><status>completed</status><summary>Review finished</summary></task-notification>";
+    for oversized in [false, true] {
+        for as_blocks in [false, true] {
+            let mut row = message("notice", text);
+            row["origin"] = json!({"kind":"task-notification","producer":"session-task"});
+            row["promptSource"] = json!("system");
+            row["turnOrigin"] = json!("task_notification");
+            if as_blocks {
+                row["message"]["content"] = json!([{"type":"text","text":text}]);
+            }
+            let mut transcript = Transcript::default();
+            if oversized {
+                transcript
+                    .apply_oversized(&serde_json::to_vec(&row).unwrap(), SESSION)
+                    .unwrap();
+            } else {
+                transcript.apply(&row, SESSION).unwrap();
+            }
+            let entry = &transcript.entries[0];
+            assert_eq!(entry.kind, "tool");
+            assert_eq!(entry.tool_name.as_deref(), Some("Background task"));
+            assert_eq!(entry.status.as_deref(), Some("completed"));
+            assert_eq!(entry.text, "Review finished");
+            assert!(entry.role.is_none());
+        }
+    }
+    let mut transcript = Transcript::default();
+    let mut human = message("human", text);
+    human["origin"] = json!({"kind":"human"});
+    transcript.apply(&human, SESSION).unwrap();
+    assert_eq!(transcript.entries[0].role.as_deref(), Some("user"));
+    assert_eq!(transcript.entries[0].text, text);
+}
+
+#[test]
+fn failed_task_notification_keeps_error_status_and_no_xml() {
+    let mut row = message(
+        "failed-notice",
+        "<task-notification><status>failed</status><summary>Build failed</summary></task-notification>",
+    );
+    row["turnOrigin"] = json!("task_notification");
+    let mut transcript = Transcript::default();
+    transcript.apply(&row, SESSION).unwrap();
+    assert_eq!(transcript.entries[0].status.as_deref(), Some("failed"));
+    assert_eq!(transcript.entries[0].text, "Build failed");
+}
+
+#[test]
+fn large_file_inputs_have_exact_fetchable_references_after_completion() {
+    let row = json!({"type":"assistant","uuid":"edit-message","sessionId":SESSION,
+        "message":{"content":[{"type":"tool_use","id":"write-one","name":"Write",
+            "input":{"file_path":"/project/PaywallView.swift","content":"let value = 1;\n".repeat(1000)}}]}});
+    let bytes = serde_json::to_vec(&row).unwrap();
+    let mut transcript = Transcript::default();
+    transcript.apply(&row, SESSION).unwrap();
+    transcript.preserve_record(&bytes, SESSION, 37).unwrap();
+    let entry = transcript
+        .entries
+        .iter()
+        .find(|entry| entry.id == "tool:write-one")
+        .unwrap();
+    assert!(entry.truncated);
+    let reference = entry.content_ref.clone().unwrap();
+    let parts: Vec<_> = reference.split(':').collect();
+    let start = parts[1].parse::<usize>().unwrap() - 37;
+    let length = parts[2].parse::<usize>().unwrap();
+    let input: Value = serde_json::from_slice(&bytes[start..start + length]).unwrap();
+    assert_eq!(input, row["message"]["content"][0]["input"]);
+    let result = json!({"type":"user","uuid":"result","sessionId":SESSION,
+        "message":{"content":[{"type":"tool_result","tool_use_id":"write-one","content":"Written"}]}});
+    transcript.apply(&result, SESSION).unwrap();
+    let entry = transcript
+        .entries
+        .iter()
+        .find(|entry| entry.id == "tool:write-one")
+        .unwrap();
+    assert_eq!(entry.status.as_deref(), Some("completed"));
+    assert_eq!(entry.content_ref.as_deref(), Some(reference.as_str()));
+}

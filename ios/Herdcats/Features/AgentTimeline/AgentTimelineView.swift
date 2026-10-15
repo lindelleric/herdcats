@@ -9,7 +9,9 @@ struct AgentTimelineView: View {
     let paneId: String
     let connection: HerdrConnection
     let timeline: AgentTimelineState
+    let topOverlayInset: CGFloat
     let bottomOverlayInset: CGFloat
+    let onOutputInteraction: () -> Void
     let setupTarget: ConnectionIdentity
     let onUseTerminal: () -> Void
     let onSetupComplete: () -> Void
@@ -30,11 +32,18 @@ struct AgentTimelineView: View {
     @State private var helperMayHaveInstalled = false
     @State private var retry = 0
     @State private var contentFiles = TimelineContentFiles()
+    @State private var historyLoader = TimelineHistoryLoader()
     @State private var isPaging = false
     @State private var pageError: String?
     @State private var following = true
     @State private var atBottom = true
-    @State private var scrollPosition: String?
+    @State private var entryFrames: [String: CGRect] = [:]
+    @State private var viewportHeight: CGFloat = 0
+    @State private var historyScrollAnchor: TimelineHistoryScrollAnchor?
+
+    private var conversationItems: [TimelineConversationItem] {
+        TimelineConversationItem.group(timeline.entries)
+    }
 
     private var connectionState: AgentTimelineConnectionState {
         AgentTimelineConnectionState(
@@ -55,49 +64,43 @@ struct AgentTimelineView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 16) {
                         if timeline.phase == .ready {
-                            HStack {
-                                Label("Conversation", systemImage: "text.bubble")
-                                Spacer()
-                                if timeline.delayed {
-                                    Text("Delayed")
-                                } else if let status = timeline.agentStatus {
-                                    Text(status.capitalized)
-                                }
-                            }
-                            .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
                             if timeline.hasMore {
-                                Button {
-                                    following = false
-                                    Task { await loadOlder() }
-                                } label: {
-                                    HStack {
-                                        if isPaging { ProgressView() }
-                                        Text("Load earlier messages")
-                                    }
+                                Text(isPaging ? "Loading earlier messages…" : (pageError ?? "Pull down to load earlier messages"))
+                                    .font(.jost(.caption))
+                                    .foregroundStyle(Theme.textMuted)
                                     .frame(maxWidth: .infinity)
-                                }
-                                .disabled(isPaging).buttonStyle(.herdrSecondary)
+                                    .accessibilityIdentifier("timeline-history-hint")
+                                    .accessibilityAction(named: "Load earlier messages") {
+                                        Task { await refreshHistory() }
+                                    }
                             }
-                            if let pageError {
-                                Text(pageError).font(.jost(.caption)).foregroundStyle(Theme.textMuted)
-                            }
-                            if timeline.entries.isEmpty {
+                            if conversationItems.isEmpty {
                                 ContentUnavailableView(
                                     "No messages yet", systemImage: "text.bubble",
                                     description: Text("Messages from this session will appear here."))
                             }
-                            ForEach(timeline.entries) { entry in
+                            ForEach(conversationItems) { item in
                                 let scope = contentScope
-                                AgentTimelineEntryView(entry: entry, files: contentFiles, scope: scope,
-                                    loadContent: { reference in try await loadContent(reference, scope: scope) })
-                                    .id("\(scope):\(entry.id)")
+                                Group {
+                                    if item.isActivity {
+                                        TimelineActivityView(entries: item.entries,
+                                            loadContent: { reference in try await loadContent(reference, scope: scope) })
+                                    } else if let entry = item.entries.first {
+                                        AgentTimelineEntryView(entry: entry, files: contentFiles, scope: scope,
+                                            loadContent: { reference in try await loadContent(reference, scope: scope) })
+                                    }
+                                }
+                                .id("\(scope):\(item.id)")
+                                .background {
+                                    GeometryReader { row in
+                                        Color.clear.preference(
+                                            key: TimelineEntryFramesPreferenceKey.self,
+                                            value: [item.id: row.frame(in: .named("timeline-viewport"))])
+                                    }
+                                }
                             }
                             if timeline.delayed {
                                 Text("Source update delayed; showing verified history.")
-                                    .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
-                            }
-                            if timeline.droppedEntries > 0 {
-                                Text("Showing recent session history.")
                                     .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
                             }
                         } else {
@@ -112,36 +115,62 @@ struct AgentTimelineView: View {
                     }
                     .scrollTargetLayout()
                     .padding([.horizontal, .top], DesignSystem.Spacing.base)
+                    .padding(.top, topOverlayInset)
+                    .frame(minHeight: viewport.size.height + 1, alignment: .top)
                     .background {
                         GeometryReader { content in
-                            Color.clear.preference(
-                                key: TimelineAtBottomPreferenceKey.self,
+                            Color.clear.preference(key: TimelineAtBottomPreferenceKey.self,
                                 value: content.frame(in: .named("timeline-viewport")).maxY <= viewport.size.height + 8)
                         }
                     }
                 }
                 .coordinateSpace(name: "timeline-viewport")
+                .onChange(of: viewport.size.height, initial: true) { _, height in viewportHeight = height }
+                .onPreferenceChange(TimelineEntryFramesPreferenceKey.self) { entryFrames = $0 }
+                .onChange(of: historyScrollAnchor) { _, anchor in
+                    guard let anchor else { return }
+                    following = false
+                    var transaction = Transaction(animation: nil)
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) {
+                        proxy.scrollTo("\(contentScope):\(anchor.id)", anchor: UnitPoint(x: 0, y: anchor.unitY))
+                    }
+                }
                 .onPreferenceChange(TimelineAtBottomPreferenceKey.self) { bottom in
                     atBottom = bottom
                     if bottom { following = true }
                 }
                 .accessibilityIdentifier("agent-timeline-scroll")
-                .scrollPosition(id: $scrollPosition, anchor: .top)
                 .scrollDismissesKeyboard(.interactively)
                 .simultaneousGesture(
-                    DragGesture().onChanged { _ in following = false }
-                        .onEnded { _ in if atBottom { following = true } }
+                    DragGesture()
+                        .onChanged { _ in
+                            following = false
+                            onOutputInteraction()
+                        }
+                        .onEnded { value in
+                            let firstFrame = conversationItems.first.flatMap { entryFrames[$0.id] }
+                            let atHistoryTop = conversationItems.isEmpty || (firstFrame.map { $0.minY >= topOverlayInset - 8 } ?? false)
+                            let loadHistory = atHistoryTop && value.translation.height > 60
+                            if loadHistory && timeline.hasMore {
+                                Task { await refreshHistory() }
+                            } else if atBottom { following = true }
+                        }
                 )
                 .onChange(of: timeline.revision) { _, _ in
-                    guard following, !timeline.entries.isEmpty else { return }
+                    guard following, !conversationItems.isEmpty else { return }
                     proxy.scrollTo("timeline-bottom", anchor: .bottom)
                 }
                 .onChange(of: timeline.identity) { _, _ in
-                    scrollPosition = nil
                     following = true
+                    #if DEBUG && targetEnvironment(simulator)
+                        if ScreenshotFixtures.enabled && ScreenshotFixtures.screen == "timeline-history-position" {
+                            following = false
+                        }
+                    #endif
                 }
                 .onChange(of: bottomOverlayInset) { _, _ in
-                    if following && !timeline.entries.isEmpty {
+                    if following && !conversationItems.isEmpty {
                         proxy.scrollTo("timeline-bottom", anchor: .bottom)
                     }
                 }
@@ -168,6 +197,9 @@ struct AgentTimelineView: View {
                 }
             }
         }
+        // Let messages scroll behind the pane cards, but keep them below
+        // the navigation bar and status area.
+        .clipped()
         .background(Theme.background)
         .task(id: taskKey) { await run() }
         .onChange(of: timeline.revision, initial: true) { _, _ in
@@ -197,8 +229,14 @@ struct AgentTimelineView: View {
         }
         .onChange(of: connectionState) { _, _ in cancelHelperInstallation() }
         .onChange(of: scenePhase) { _, phase in if phase != .active { cancelHelperInstallation() } }
-        .onChange(of: contentScope) { _, _ in contentFiles.reset() }
-        .onDisappear { cancelHelperInstallation(); contentFiles.reset() }
+        .onChange(of: contentScope) { _, _ in
+            historyLoader.cancel()
+            entryFrames = [:]
+            historyScrollAnchor = nil
+            contentFiles.reset()
+        }
+        .onChange(of: taskKey) { _, _ in historyLoader.cancel() }
+        .onDisappear { historyLoader.cancel(); cancelHelperInstallation(); contentFiles.reset() }
         .sheet(isPresented: $showsSetup, onDismiss: {
             cancelHelperInstallation()
             if setupShouldUseTerminal { onUseTerminal() }
@@ -255,7 +293,7 @@ struct AgentTimelineView: View {
     private func beginSetup() {
         setupShouldUseTerminal = true
         setupFeedback = timeline.phase == .unavailable("helper_update_required")
-            ? "Update the host helper to display images and inspect complete session records." : nil
+            ? "Update the host helper to display session images." : nil
         showsSetup = true
     }
     @MainActor private func startHelperInstallation() {
@@ -405,7 +443,7 @@ struct AgentTimelineView: View {
         case "helper_missing":
             return "Install the small host helper to see this session as native messages. Terminal is available now."
         case "helper_update_required":
-            return "Update the host helper to display images and inspect complete session records."
+            return "Update the host helper to display session images."
         case "unsupported_agent":
             return "Timeline is not available for this agent yet. You can still send messages below or use Terminal."
         case "routed_host_unsupported": return "Native history is not available through saved machines yet. Messages can still be sent below."
@@ -426,6 +464,7 @@ struct AgentTimelineView: View {
         }
     }
     @MainActor private func run() async {
+        historyLoader.cancel()
         let owner = UUID()
         activeOwner = owner
         timeline.begin(owner: owner, paneId: paneId)
@@ -437,6 +476,7 @@ struct AgentTimelineView: View {
         }
         #if DEBUG && targetEnvironment(simulator)
             if ScreenshotFixtures.enabled {
+                if ScreenshotFixtures.screen == "timeline-history-position" { following = false }
                 do {
                     try timeline.consume(AgentTimelineScreenshotFixture.frame(
                         paneId: paneId,
@@ -474,22 +514,315 @@ struct AgentTimelineView: View {
         try owned.requireCurrent(connectionState)
         try timeline.consume(frame, owner: owner)
     }
-    @MainActor private func loadOlder() async {
-        guard !isPaging, let client = activeClient, let owner = activeOwner,
-            let generation = timeline.generation, let before = timeline.before
+    @MainActor private func mergeHistoryPreservingPosition(
+        _ page: AgentBridgePayload, owner: UUID, generation: UInt64
+    ) throws {
+        // Capture at response time so scrolling while a page is in flight is respected.
+        let visible = entryFrames
+            .filter { $0.value.maxY > topOverlayInset && $0.value.minY < viewportHeight - bottomOverlayInset }
+            .min { $0.value.minY < $1.value.minY }
+        try timeline.mergeHistory(page, owner: owner, generation: generation)
+        guard activeOwner == owner, timeline.generation == generation, let visible,
+              let item = conversationItems.first(where: { $0.entries.contains { $0.id == visible.key } })
         else { return }
+        historyScrollAnchor = TimelineHistoryScrollAnchor(
+            id: item.id, top: visible.value.minY, height: visible.value.height, viewportHeight: viewportHeight)
+    }
+
+    @MainActor private func refreshHistory() async {
+        await historyLoader.load { await loadOlder() }
+    }
+
+    @MainActor private func loadOlder() async {
+        guard timeline.phase == .ready, timeline.hasMore, !isPaging,
+            let owner = activeOwner, let generation = timeline.generation, let before = timeline.before
+        else {
+            TimelineHistoryDiagnostics.record("history.skipped ready=\(timeline.phase == .ready) has_more=\(timeline.hasMore) paging=\(isPaging) owner_present=\(activeOwner != nil) generation_present=\(timeline.generation != nil) cursor_present=\(timeline.before != nil)")
+            return
+        }
+        let attempt = UUID().uuidString
+        let started = ContinuousClock.now
+        var stage = "request"
+        TimelineHistoryDiagnostics.record("history.start attempt=\(attempt) client=\(activeClient?.id.uuidString ?? "none") generation=\(generation) loaded_entries=\(timeline.entries.count) cursor_in_loaded_entries=\(timeline.entries.contains { $0.id == before }) task_cancelled=\(Task.isCancelled)")
+        following = false
         isPaging = true
         pageError = nil
+        defer { if activeOwner == owner { isPaging = false } }
         let ownedConnection = connectionState
         do {
+            #if DEBUG && targetEnvironment(simulator)
+                if ScreenshotFixtures.enabled {
+                    if ScreenshotFixtures.screen == "timeline-history-position" {
+                        try await Task.sleep(for: .seconds(5))
+                    } else if ProcessInfo.processInfo.arguments.contains("-hc.timeline-history-delay") {
+                        try await Task.sleep(for: .seconds(2))
+                    }
+                    let page = try AgentTimelineScreenshotFixture.historyPage(paneId: paneId, generation: generation)
+                    try mergeHistoryPreservingPosition(page, owner: owner, generation: generation)
+                    TimelineHistoryDiagnostics.record("history.fixture_merged attempt=\(attempt) loaded_entries=\(timeline.entries.count)")
+                    return
+                }
+            #endif
+            guard let client = activeClient else { throw AgentBridgeError.closed }
             let page = try await client.request(
-                .history, params: AgentBridgeParams(generation: generation, before: before))
+                .history, params: AgentBridgeParams(generation: generation, before: before), timeout: 15)
+            try Task.checkCancellation()
+            stage = "connection_validation"
+            TimelineHistoryDiagnostics.record("history.response attempt=\(attempt) elapsed=\(started.duration(to: .now)) response_generation=\(page.generation.map(String.init) ?? "missing") entries=\(page.entries?.count ?? -1) has_more=\(page.hasMore.map(String.init) ?? "missing") identity_present=\(page.identity != nil) pane_match=\(page.identity?.paneId == timeline.identity?.paneId) terminal_match=\(page.identity?.terminalId == timeline.identity?.terminalId) agent_match=\(page.identity?.agent == timeline.identity?.agent) session_match=\(page.identity?.nativeSessionId == timeline.identity?.nativeSessionId)")
             try ownedConnection.requireCurrent(connectionState)
-            try timeline.mergeHistory(page, owner: owner, generation: generation)
+            stage = "merge"
+            try mergeHistoryPreservingPosition(page, owner: owner, generation: generation)
+            TimelineHistoryDiagnostics.record("history.merged attempt=\(attempt) elapsed=\(started.duration(to: .now)) loaded_entries=\(timeline.entries.count) has_more=\(timeline.hasMore) owner_current=\(activeOwner == owner) generation_current=\(timeline.generation == generation)")
         } catch {
-            if activeOwner == owner { pageError = "History changed or could not load. Try again." }
+            TimelineHistoryDiagnostics.record("history.failed attempt=\(attempt) stage=\(stage) reason=\(TimelineHistoryDiagnostics.reason(error)) elapsed=\(started.duration(to: .now)) task_cancelled=\(Task.isCancelled) owner_current=\(activeOwner == owner) generation_current=\(timeline.generation == generation) connection_current=\(ownedConnection == connectionState)", failure: true)
+            if !Task.isCancelled, activeOwner == owner, timeline.generation == generation {
+                pageError = "Earlier messages could not load. Pull down to try again."
+            }
         }
-        if activeOwner == owner { isPaging = false }
+    }
+}
+
+private struct TimelineActivityView: View {
+    let entries: [AgentTimelineEntry]
+    let loadContent: @MainActor (String) async throws -> Data
+    private struct PreviewKey: Equatable { let entries: [AgentTimelineEntry]; let retry: Int }
+    @State private var previewRetry = 0
+    @State private var previewFailed = false
+    @State private var previewLoading = false
+    @State private var showsDetails = false
+    @State private var fileChanges: [TimelineFileChange] = []
+    private var failures: Int { entries.filter { $0.status == "failed" }.count }
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Button { showsDetails = true } label: {
+                HStack(spacing: 12) {
+                    if entries.contains(where: TimelineActivitySummary.isRunning) {
+                        ProgressView()
+                    } else {
+                        Image(systemName: failures > 0 ? "exclamationmark.circle" : "wrench.and.screwdriver")
+                            .foregroundStyle(failures > 0 ? Theme.destructive : Theme.textMuted)
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(TimelineActivitySummary.title(entries))
+                            .font(.jost(.subheadline, weight: .medium))
+                        if failures > 0 {
+                            Text("\(failures) failed or interrupted")
+                                .font(.jost(.caption)).foregroundStyle(Theme.destructive)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Image(systemName: "chevron.right").font(.jost(.caption, weight: .medium))
+                        .foregroundStyle(Theme.textMuted)
+                }
+                .foregroundStyle(Theme.text).padding(.vertical, 16)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("timeline-tool-\(entries[0].id)")
+            .sheet(isPresented: $showsDetails) {
+                TimelineActivityDrawer(entries: entries)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+                    .presentationCornerRadius(20)
+            }
+            ForEach(fileChanges) { change in
+                TimelineDiffCard(change: change)
+            }
+            if previewLoading && fileChanges.isEmpty {
+                Text("Loading code preview…").font(.jost(.caption)).foregroundStyle(Theme.textMuted)
+            }
+            if previewFailed {
+                HStack {
+                    Text("Some code previews couldn’t load.").foregroundStyle(Theme.textMuted)
+                    Button("Retry") { previewRetry += 1 }.tint(Theme.accent)
+                }.font(.jost(.caption))
+            }
+        }
+        .task(id: PreviewKey(entries: entries, retry: previewRetry)) {
+            let snapshot = entries
+            var changes: [TimelineFileChange] = []
+            var failed = false
+            previewLoading = true
+            defer { if !Task.isCancelled { previewLoading = false } }
+            for entry in snapshot where entry.status == "completed" && ["edit", "multiedit", "write"].contains(entry.toolName?.lowercased() ?? "") {
+                let preview = await Task.detached(priority: .userInitiated) { TimelineFileChange.from(entry) }.value
+                if !preview.isEmpty { changes += preview; continue }
+                guard entry.truncated else { continue }
+                guard let reference = entry.contentRef, let length = TimelineContentReference.length(reference), length <= 512 * 1024 else {
+                    failed = true
+                    continue
+                }
+                do {
+                    let input = try await loadContent(reference)
+                    try Task.checkCancellation()
+                    let complete = await Task.detached(priority: .userInitiated) { TimelineFileChange.from(entry, inputData: input) }.value
+                    changes += complete
+                    if complete.isEmpty { failed = true }
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    failed = true
+                    TimelineHistoryDiagnostics.record("code.preview_failed reason=\(TimelineHistoryDiagnostics.reason(error))", failure: true)
+                }
+            }
+            guard !Task.isCancelled else { return }
+            fileChanges = changes
+            previewFailed = failed
+        }
+    }
+}
+
+private struct TimelineDiffCard: View {
+    let change: TimelineFileChange
+    @State private var showsDiff = false
+    var body: some View {
+        Button { showsDiff = true } label: {
+            VStack(alignment: .leading, spacing: 10) {
+                TimelineDiffHeading(change: change)
+                TimelineDiffCode(lines: Array(change.previewLines.prefix(12)))
+                    .frame(maxHeight: 260)
+            }
+            .padding(14).foregroundStyle(Theme.text)
+            .background(Theme.cardBackground)
+            .overlay {
+                Rectangle().strokeBorder(Theme.hairline, lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("timeline-diff-\(change.id)")
+        .sheet(isPresented: $showsDiff) {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        TimelineDiffHeading(change: change)
+                        TimelineDiffCode(lines: change.previewLines)
+                    }.padding(16)
+                }
+                .background(Theme.background)
+                .navigationTitle(change.writtenContent ? "Written content" : "Code changes")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button { showsDiff = false } label: { Image(systemName: "xmark") }
+                            .accessibilityLabel("Close").accessibilityIdentifier("timeline-diff-close")
+                    }
+                }
+            }
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+            .presentationCornerRadius(20)
+        }
+    }
+}
+
+private struct TimelineDiffHeading: View {
+    let change: TimelineFileChange
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(change.displayPath).font(.jost(.subheadline, weight: .semibold)).lineLimit(2)
+                Spacer()
+                if !change.writtenContent {
+                    Text("+\(change.additions)").foregroundStyle(Theme.successGreen)
+                    Text("−\(change.deletions)").foregroundStyle(Theme.destructive)
+                }
+            }.font(.system(.caption, design: .monospaced, weight: .medium))
+            if change.previewShortened {
+                Text("Showing the first \(change.lines.count) lines").font(.jost(.caption2)).foregroundStyle(Theme.textMuted)
+            }
+        }
+    }
+}
+
+private struct TimelineDiffCode: View {
+    let lines: [TimelineDiffLine]
+    var body: some View {
+        ScrollView(.horizontal) {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(lines) { line in
+                    HStack(alignment: .top, spacing: 8) {
+                        Text(line.kind == .added ? "+" : line.kind == .removed ? "−" : " ")
+                            .frame(width: 14).foregroundStyle(tint(line))
+                        Text(highlight(line.text, omitted: line.kind == .omitted))
+                            .fixedSize(horizontal: true, vertical: true)
+                        Spacer(minLength: 8)
+                    }
+                    .font(.system(.caption, design: .monospaced))
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(tint(line).opacity(line.kind == .context ? 0 : 0.13))
+                }
+            }
+        }
+        .background(Theme.subtleFill)
+        .clipped()
+    }
+    private func tint(_ line: TimelineDiffLine) -> Color {
+        switch line.kind {
+        case .added: Theme.successGreen
+        case .removed: Theme.destructive
+        default: Theme.textMuted
+        }
+    }
+    private func highlight(_ text: String, omitted: Bool) -> AttributedString {
+        let result = NSMutableAttributedString(string: text, attributes: [.foregroundColor: UIColor(omitted ? Theme.textMuted : Theme.text)])
+        guard !omitted else { return AttributedString(result) }
+        let rules: [(String, UIColor)] = [
+            (#"\b(let|var|const|func|function|return|if|else|for|while|class|struct|enum|import|from|true|false|null|nil|async|await|try|throw|public|private|static)\b"#, .systemPurple),
+            (#"\b[0-9]+(?:\.[0-9]+)?\b"#, .systemOrange),
+            (#""(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'"#, .systemGreen),
+            (#"//.*$"#, .secondaryLabel)
+        ]
+        for (pattern, color) in rules {
+            guard let expression = try? NSRegularExpression(pattern: pattern) else { continue }
+            for match in expression.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+                result.addAttribute(.foregroundColor, value: color, range: match.range)
+            }
+        }
+        return AttributedString(result)
+    }
+}
+
+private struct TimelineActivityDrawer: View {
+    let entries: [AgentTimelineEntry]
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    ForEach(entries) { entry in
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: "wrench.and.screwdriver")
+                                .font(.jost(.body))
+                                .foregroundStyle(entry.status == "failed" ? Theme.destructive : Theme.textMuted)
+                                .accessibilityLabel(entry.status == "failed" ? "Failed or interrupted" : "Tool activity")
+                                .accessibilityIdentifier("timeline-activity-icon-\(entry.id)")
+                            Text(TimelineActivitySummary.purpose(entry))
+                                .font(.jost(.body, weight: .medium))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .foregroundStyle(Theme.text)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(16)
+                        .background(Theme.cardBackground, in: .rect(cornerRadius: DesignSystem.CornerRadius.lg))
+                    }
+                }
+                .padding(16)
+            }
+            .background(Theme.background)
+            .navigationTitle("Activity")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .accessibilityLabel("Close")
+                    .accessibilityIdentifier("timeline-activity-close")
+                }
+            }
+        }
     }
 }
 
@@ -503,77 +836,34 @@ private struct AgentTimelineEntryView: View {
     @State private var previewURL: URL?
     @State private var imageLink: URL?
     @State private var imageError: String?
-    @State private var selectedSource: TimelineSourceSelection?
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if entry.kind == "image" {
                 imageContent
-            } else if entry.kind == "record" {
-                Label(entry.text.isEmpty ? "Session record" : entry.text, systemImage: "doc.text")
-                    .font(.jost(.subheadline, weight: .semibold))
-                DisclosureGroup("Record details") {
-                    Text(entry.details ?? entry.text).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                }
-                if let reference = entry.contentRef {
-                    Button("View full record") { selectedSource = TimelineSourceSelection(reference: reference) }
-                        .accessibilityIdentifier("timeline-source-\(entry.id)")
-                }
-            } else if entry.kind == "tool" {
-                DisclosureGroup {
-                    if let input = entry.details, !input.isEmpty {
-                        Text("Input").font(.jost(.caption, weight: .semibold))
-                        Text(input).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                    }
-                    if !entry.text.isEmpty {
-                        Text("Output").font(.jost(.caption, weight: .semibold))
-                        Text(entry.text).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                    }
-                } label: {
-                    VStack(alignment: .leading) {
-                        Label(entry.toolName ?? "Tool", systemImage: "wrench.and.screwdriver")
-                            .font(.jost(.subheadline, weight: .semibold))
-                        Text(toolStatus).font(.jost(.caption)).foregroundStyle(Theme.textMuted)
-                    }
-                }
-                .tint(Theme.accent)
-                .accessibilityIdentifier("timeline-tool-\(entry.id)")
             } else {
-                Text(entry.role == "user" ? "You" : "Agent")
-                    .font(.jost(.caption, weight: .semibold)).foregroundStyle(Theme.textMuted)
                 Text(markdown).font(.jost(.body)).textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if entry.truncated {
-                Text("Preview shortened. Open the original record for complete content.")
+                Text("Preview shortened.")
                     .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
-            }
-            if let references = entry.recordRefs, !references.isEmpty {
-                DisclosureGroup("Original records") {
-                    ForEach(Array(references.enumerated()), id: \.offset) { index, reference in
-                        Button(references.count == 1 ? "View original record" : "View original record \(index + 1)") {
-                            selectedSource = TimelineSourceSelection(reference: reference)
-                        }
-                    }
-                }
-                .font(.jost(.caption))
             }
         }
         .foregroundStyle(Theme.text).frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16).background(entry.role == "user" ? Theme.subtleFill : Theme.cardBackground)
-        .clipShape(.rect(cornerRadius: DesignSystem.CornerRadius.lg))
-        .overlay {
-            RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.lg).strokeBorder(
-                Theme.hairline, lineWidth: 1)
+        .padding(entry.role == "user" ? 16 : 0)
+        .padding(.vertical, entry.role == "user" ? 0 : 8)
+        .background {
+            if entry.role == "user" {
+                RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.lg)
+                    .fill(Theme.subtleFill)
+            }
         }
+        .padding(.leading, entry.role == "user" ? 32 : 0)
         .task(id: entry.contentRef) { if entry.kind == "image" { await loadImage() } }
         .onDisappear { thumbnail = nil }
         .quickLookPreview($previewURL)
-        .sheet(item: $selectedSource) { source in
-            TimelineSourceView(reference: source.reference, scope: scope, files: files, loadContent: loadContent)
-        }
     }
     @ViewBuilder private var imageContent: some View {
-        Text(entry.role == "user" ? "You" : "Agent").font(.jost(.caption, weight: .semibold)).foregroundStyle(Theme.textMuted)
         if let thumbnail {
             Button { previewURL = originalURL } label: {
                 Image(uiImage: thumbnail).resizable().scaledToFit().frame(maxHeight: 320)
@@ -608,14 +898,7 @@ private struct AgentTimelineEntryView: View {
             case .link(let url): imageLink = url
             }
         } catch {
-            if !Task.isCancelled { imageError = "This image could not be displayed. Its complete original record is available below." }
-        }
-    }
-    private var toolStatus: String {
-        switch entry.status {
-        case "completed": "Completed"
-        case "failed": "Failed or interrupted"
-        default: "No result recorded yet"
+            if !Task.isCancelled { imageError = "This image could not be displayed. Try loading it again." }
         }
     }
     private var markdown: AttributedString {
@@ -762,6 +1045,25 @@ private struct AgentBridgeSetupView: View {
     }
 }
 
+private struct TimelineHistoryScrollAnchor: Equatable {
+    let token = UUID()
+    let id: String
+    let top: CGFloat
+    let height: CGFloat
+    let viewportHeight: CGFloat
+    var unitY: CGFloat {
+        let available = viewportHeight - height
+        return abs(available) > 1 ? top / available : 0
+    }
+}
+
+private struct TimelineEntryFramesPreferenceKey: PreferenceKey {
+    static var defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, next in next })
+    }
+}
+
 private struct TimelineAtBottomPreferenceKey: PreferenceKey {
     static var defaultValue: Bool { true }
     static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value && nextValue() }
@@ -790,66 +1092,6 @@ private struct TimelineAtBottomPreferenceKey: PreferenceKey {
     }
     func reset() { cache.removeAllObjects(); files.removeAll(); try? FileManager.default.removeItem(at: directory) }
     deinit { try? FileManager.default.removeItem(at: directory) }
-}
-
-private struct TimelineSourceSelection: Identifiable { let reference: String; var id: String { reference } }
-private struct TimelineSourceView: View {
-    let reference: String
-    let scope: String
-    let files: TimelineContentFiles
-    let loadContent: @MainActor (String) async throws -> Data
-    @Environment(\.dismiss) private var dismiss
-    @State private var bytes: Data?
-    @State private var exportURL: URL?
-    @State private var page = 0
-    @State private var error: String?
-    private var ranges: [Range<Int>] { bytes.map(TimelineSourcePages.ranges) ?? [] }
-    var body: some View {
-        NavigationStack {
-            Group {
-                if let bytes, !ranges.isEmpty {
-                    VStack(spacing: 12) {
-                        ScrollView {
-                            Text(String(decoding: bytes[ranges[min(page, ranges.count - 1)]], as: UTF8.self))
-                                .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading).padding()
-                        }
-                        if ranges.count > 1 {
-                            HStack {
-                                Button("Previous") { page -= 1 }.disabled(page == 0)
-                                Spacer()
-                                Text("Page \(page + 1) of \(ranges.count)").font(.jost(.caption))
-                                Spacer()
-                                Button("Next") { page += 1 }.disabled(page >= ranges.count - 1)
-                            }.padding()
-                        }
-                    }
-                } else if let error {
-                    ContentUnavailableView("Record unavailable", systemImage: "doc.text", description: Text(error))
-                } else { ProgressView("Loading complete record…") }
-            }
-            .background(Theme.background)
-            .navigationTitle("Session record").navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("Done") { dismiss() } }
-                ToolbarItem(placement: .topBarTrailing) {
-                    if let exportURL {
-                        ShareLink(item: exportURL).accessibilityIdentifier("timeline-source-share")
-                    }
-                }
-            }
-            .task(id: reference) {
-                do {
-                    let data = try await loadContent(reference)
-                    try Task.checkCancellation()
-                    exportURL = try files.file(data: data, key: "\(scope):\(reference):record", name: "Session record.json")
-                    bytes = data
-                } catch {
-                    if !Task.isCancelled { self.error = "The source may have changed or disconnected. Reopen this record after Timeline reconnects." }
-                }
-            }
-        }
-    }
 }
 
 enum TimelineImagePayload: Sendable {

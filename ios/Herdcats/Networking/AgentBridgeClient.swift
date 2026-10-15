@@ -19,6 +19,7 @@ enum AgentBridgeMethod: String, Sendable { case initialize, watch, history, cont
 actor AgentBridgeClient {
     nonisolated let id: UUID
     private struct Pending {
+        let method: AgentBridgeMethod
         let continuation: CheckedContinuation<AgentBridgePayload, Error>
         let timeout: Task<Void, Never>
     }
@@ -31,7 +32,7 @@ actor AgentBridgeClient {
     private var closeTransport: (@Sendable () async -> Void)?
     private let onEvent: @Sendable (AgentBridgeFrame) async throws -> Void
     private var pending: [String: Pending] = [:]
-    private var retiredContentRequests: Set<String> = []
+    private var retiredReadRequests: Set<String> = []
     private var framer = AgentBridgeFramer()
     private var streamTask: Task<Void, Never>?
     private var opening: CheckedContinuation<Void, Error>?
@@ -132,17 +133,25 @@ actor AgentBridgeClient {
         try Task.checkCancellation()
         return bytes
     }
-    private func retireContentRequest(_ id: String, error: AgentBridgeError) async {
+    // History and image reads may outlive their UI task. Retire only the RPC;
+    // keep the live watch open and drain its eventual response.
+    private func retireReadRequest(_ id: String, error: AgentBridgeError) async {
         guard let request = pending.removeValue(forKey: id) else { return }
         request.timeout.cancel()
+        if request.method == .history {
+            TimelineHistoryDiagnostics.record("history.rpc.retired client=\(self.id) request=\(id) reason=\(error == .timeout ? "timeout" : "cancelled") pending=\(pending.count)", failure: true)
+        }
         request.continuation.resume(throwing: error)
-        guard retiredContentRequests.count < 64 else { await stop(.closed); return }
-        retiredContentRequests.insert(id)
+        guard retiredReadRequests.count < 64 else { await stop(.closed); return }
+        retiredReadRequests.insert(id)
     }
     func request(_ method: AgentBridgeMethod, params: AgentBridgeParams, timeout: TimeInterval = 5)
         async throws -> AgentBridgePayload
     {
         let id = UUID().uuidString
+        if method == .history {
+            TimelineHistoryDiagnostics.record("history.rpc.start client=\(self.id) request=\(id) generation=\(params.generation.map(String.init) ?? "missing") cursor_present=\(params.before != nil) timeout_seconds=\(timeout) pending=\(pending.count)")
+        }
         return try await withTaskCancellationHandler {
             try Task.checkCancellation()
             guard closedError == nil, let write else { throw closedError ?? .closed }
@@ -155,12 +164,15 @@ actor AgentBridgeClient {
             return try await withCheckedThrowingContinuation { continuation in
                 let timeoutTask = Task {
                     do { try await Task.sleep(for: .seconds(timeout)) } catch { return }
-                    if method == .content { await self.retireContentRequest(id, error: .timeout) }
+                    if method == .content || method == .history { await self.retireReadRequest(id, error: .timeout) }
                     else { await self.stop(.timeout) }
                 }
-                pending[id] = Pending(continuation: continuation, timeout: timeoutTask)
+                pending[id] = Pending(method: method, continuation: continuation, timeout: timeoutTask)
                 Task {
                     do { try await write(bytes) } catch {
+                        if method == .history {
+                            TimelineHistoryDiagnostics.record("history.rpc.write_failed client=\(self.id) request=\(id) reason=\(TimelineHistoryDiagnostics.reason(error))", failure: true)
+                        }
                         // Startup stdout can already contain helper_missing when
                         // the remote process exits. Drain it before classifying;
                         // stream completion or the request timeout still closes.
@@ -170,7 +182,7 @@ actor AgentBridgeClient {
             }
         } onCancel: {
             Task {
-                if method == .content { await self.retireContentRequest(id, error: .closed) }
+                if method == .content || method == .history { await self.retireReadRequest(id, error: .closed) }
                 else { await self.close() }
             }
         }
@@ -181,14 +193,23 @@ actor AgentBridgeClient {
             for frame in try framer.append(bytes) {
                 guard closedError == nil else { return }
                 if let id = frame.id {
-                    if retiredContentRequests.remove(id) != nil { continue }
+                    if retiredReadRequests.remove(id) != nil {
+                        TimelineHistoryDiagnostics.record("timeline.rpc.late_reply_ignored client=\(self.id) request=\(id)")
+                        continue
+                    }
                     guard frame.event == nil, let request = pending.removeValue(forKey: id) else {
                         throw AgentBridgeError.invalidFrame
                     }
                     request.timeout.cancel()
                     if let error = frame.error {
+                        if request.method == .history {
+                            TimelineHistoryDiagnostics.record("history.rpc.remote_error client=\(self.id) request=\(id) reason=\(TimelineHistoryDiagnostics.reason(AgentBridgeError.unavailable(error.code)))", failure: true)
+                        }
                         request.continuation.resume(throwing: AgentBridgeError.unavailable(error.code))
                     } else if let result = frame.result {
+                        if request.method == .history {
+                            TimelineHistoryDiagnostics.record("history.rpc.response client=\(self.id) request=\(id) entries=\(result.entries?.count ?? -1) generation=\(result.generation.map(String.init) ?? "missing")")
+                        }
                         request.continuation.resume(returning: result)
                     } else {
                         request.continuation.resume(throwing: AgentBridgeError.invalidFrame)
@@ -218,6 +239,7 @@ actor AgentBridgeClient {
     func close() async { await stop(.closed) }
     private func stop(_ error: AgentBridgeError) async {
         guard closedError == nil else { return }
+        TimelineHistoryDiagnostics.record("timeline.channel.closed client=\(self.id) reason=\(TimelineHistoryDiagnostics.reason(error)) pending=\(pending.count)")
         closedError = error
         openTimeout?.cancel()
         openTimeout = nil

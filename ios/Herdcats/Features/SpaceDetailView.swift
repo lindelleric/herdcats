@@ -1175,7 +1175,7 @@ struct PaneSessionView: View {
             isOffline: appModel.isOffline,
             isLoading: isLoading,
             reservesMarkAsReadSpace: showsMarkAsReadButton,
-            topOverlayInset: 0,
+            topOverlayInset: topOutputInset,
             bottomOverlayInset: bottomDockHeight,
             paneId: pane.paneId,
             shouldPinToBottom: $shouldPinToBottom,
@@ -1358,12 +1358,12 @@ struct PaneSessionView: View {
 
     private var outputWithInputDock: some View {
         VStack(spacing: 0) {
-            Color.clear.frame(height: topOutputInset)
             Group {
                 if showsTimeline {
                     AgentTimelineView(
                         paneId: pane.paneId, connection: appModel.connection, timeline: timeline,
-                        bottomOverlayInset: bottomDockHeight, setupTarget: connectionScope,
+                        topOverlayInset: topOutputInset, bottomOverlayInset: bottomDockHeight,
+                        onOutputInteraction: { onOutputInteraction?() }, setupTarget: connectionScope,
                         onUseTerminal: {
                             UserDefaults.standard.set(true, forKey: TimelineSetupPreference.key(scope: connectionScope))
                             showsTimeline = false
@@ -1376,11 +1376,14 @@ struct PaneSessionView: View {
                 } else {
                     outputScrollView
                         .environment(\.colorScheme, .dark)
-                        .background(Color(uiColor: UIColor(hex: terminalPalette.background)))
+                        .background(
+                            Color(uiColor: UIColor(hex: terminalPalette.background)),
+                            ignoresSafeAreaEdges: .bottom
+                        )
                 }
             }
-            // Keep the header transparent to the app theme; extend only the
-            // output surface behind the keyboard and home indicator.
+            // Extend only the output surface behind the keyboard and home
+            // indicator; the navigation bar keeps the app theme.
             .background {
                 (showsTimeline ? Theme.background : Color(uiColor: UIColor(hex: terminalPalette.background)))
                     .ignoresSafeArea(edges: .bottom)

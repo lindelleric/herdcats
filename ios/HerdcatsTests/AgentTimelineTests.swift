@@ -185,3 +185,100 @@ struct TimelineSourcePagingTests {
         }
     }
 }
+
+@Suite("Conversation activity summaries")
+struct TimelineActivityTests {
+    private func entry(_ id: String, kind: String = "tool", name: String = "Bash",
+                       status: String = "completed", details: String? = nil) -> AgentTimelineEntry {
+        AgentTimelineEntry(id: id, kind: kind, text: "", role: nil, toolName: name,
+                           status: status, details: details, truncated: false)
+    }
+    @Test func groupsAdjacentToolsWithoutCrossingMessages() {
+        let items = TimelineConversationItem.group([
+            entry("a"), entry("b", name: "Read"), entry("hidden", kind: "record"),
+            entry("message", kind: "message"), entry("c"), entry("image", kind: "image"), entry("d")
+        ])
+        #expect(items.map(\.id) == ["a", "message", "c", "image", "d"])
+        #expect(items[0].entries.map(\.id) == ["a", "b"])
+        #expect(items[0].isActivity)
+        #expect(!items[1].isActivity)
+    }
+    @Test func countsCommandsSeparatelyAndReflectsRunningStatus() {
+        #expect(TimelineActivitySummary.title([entry("a"), entry("b", name: "Read"), entry("c", name: "Edit")])
+                == "Ran a command · Used 2 tools")
+        #expect(TimelineActivitySummary.title([entry("a", status: "running")]) == "Running a command")
+        #expect(TimelineActivitySummary.title([entry("a", name: "Read")]) == "Used a tool")
+        #expect(TimelineActivitySummary.status(entry("a", status: "failed")) == "Failed or interrupted")
+    }
+    @Test func summariesDescribeIntentRatherThanInventingResults() {
+        let push = entry("a", status: "failed", details: #"{"description":"Push changes to pull request #11","command":"git push"}"#)
+        #expect(TimelineActivitySummary.purpose(push) == "Push changes to pull request #11")
+        #expect(TimelineActivitySummary.purpose(entry("b", name: "Read", details: #"{"file_path":"/project/README.md"}"#)) == "Read README.md")
+        #expect(TimelineActivitySummary.purpose(entry("c", details: "incomplete JSON")) == "Run a shell command")
+    }
+}
+
+@Suite("Recorded code changes")
+struct TimelineFileChangeTests {
+    private func entry(name: String = "Edit", status: String = "completed", input: [String: Any]) throws -> AgentTimelineEntry {
+        let details = String(decoding: try JSONSerialization.data(withJSONObject: input), as: UTF8.self)
+        return AgentTimelineEntry(id: "tool:edit", kind: "tool", text: "", role: nil, toolName: name,
+                                  status: status, details: details, truncated: false)
+    }
+    @Test func replacementPreservesContextAndCountsOnlyChangedLines() throws {
+        let e = try entry(input: ["file_path": "/project/src/triage.ts", "old_string": "start\nold\nend\n", "new_string": "start\nnew\nextra\nend\n"])
+        let change = try #require(TimelineFileChange.from(e).first)
+        #expect(change.additions == 2)
+        #expect(change.deletions == 1)
+        #expect(change.lines.map(\.text) == ["start", "old", "new", "extra", "end"])
+        #expect(change.displayPath == "src/triage.ts")
+    }
+    @Test func repeatedUnicodeAndBlankLinesDiffCorrectly() throws {
+        let e = try entry(input: ["file_path": "a.swift", "old_string": "猫\n\n猫\n", "new_string": "猫\n🐈\n猫\n"])
+        let change = try #require(TimelineFileChange.from(e).first)
+        #expect(change.additions == 1)
+        #expect(change.deletions == 1)
+        #expect(change.lines.filter { $0.kind == .removed }.map(\.text) == [""])
+        #expect(change.lines.filter { $0.kind == .added }.map(\.text) == ["🐈"])
+    }
+    @Test func multiEditsStaySeparateAndFailedEditsDoNotClaimChanges() throws {
+        let input: [String: Any] = ["file_path": "a.swift", "edits": [
+            ["old_string": "one", "new_string": "two"], ["old_string": "three", "new_string": "four", "replace_all": true]
+        ]]
+        let changes = TimelineFileChange.from(try entry(name: "MultiEdit", input: input))
+        #expect(changes.count == 2)
+        #expect(changes[1].replacesAll)
+        #expect(TimelineFileChange.from(try entry(name: "MultiEdit", status: "failed", input: input)).isEmpty)
+        #expect(TimelineFileChange.from(try entry(name: "MultiEdit", status: "running", input: input)).isEmpty)
+    }
+    @Test func fileWritesAreContentPreviewsWithoutInventingThePreviousVersion() throws {
+        let change = try #require(TimelineFileChange.from(try entry(name: "Write", input: ["file_path": "config.json", "content": "{\"enabled\":true}\n"])).first)
+        #expect(change.writtenContent)
+        #expect(change.additions == 0 && change.deletions == 0)
+    }
+    @Test func longUnchangedSectionsCollapseAndInvalidInputsAreIgnored() throws {
+        let context = (0..<20).map { "line \($0)" }.joined(separator: "\n")
+        let change = try #require(TimelineFileChange.from(try entry(input: ["file_path": "a", "old_string": context + "\nold", "new_string": context + "\nnew"])).first)
+        #expect(change.previewLines.contains { $0.kind == .omitted && $0.text == "14 unchanged lines" })
+        var invalid = try entry(input: ["file_path": "a", "old_string": "old", "new_string": "new"])
+        invalid = AgentTimelineEntry(id: invalid.id, kind: "tool", text: "", role: nil, toolName: "Edit", status: "completed", details: "{incomplete", truncated: true)
+        #expect(TimelineFileChange.from(invalid).isEmpty)
+    }
+    @Test func fullRecordedInputRecoversATruncatedPreview() throws {
+        let input: [String: Any] = ["file_path": "/project/PaywallView.swift", "content": String(repeating: "let value = 1;\n", count: 1000)]
+        let data = try JSONSerialization.data(withJSONObject: input)
+        let row = AgentTimelineEntry(id: "tool:large", kind: "tool", text: "", role: nil, toolName: "Write", status: "completed",
+                                    details: String(decoding: data.prefix(8192), as: UTF8.self), truncated: true, contentRef: "source:0:\(data.count)")
+        #expect(TimelineFileChange.from(row).isEmpty)
+        let change = try #require(TimelineFileChange.from(row, inputData: data).first)
+        #expect(change.lines.count == 1000)
+        #expect(change.previewLines.count == 1000)
+        #expect(change.writtenContent)
+    }
+    @Test func backgroundNotificationsUseTheirSummary() {
+        let entry = AgentTimelineEntry(id: "task:one", kind: "tool", text: "Background review finished", role: nil,
+                                      toolName: "Background task", status: "completed", details: nil, truncated: false)
+        #expect(TimelineActivitySummary.purpose(entry) == "Background review finished")
+        #expect(TimelineActivitySummary.title([entry]) == "Background task update")
+    }
+}

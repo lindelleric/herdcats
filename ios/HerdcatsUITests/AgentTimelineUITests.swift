@@ -10,10 +10,20 @@ final class AgentTimelineUITests: XCTestCase {
                 + (light ? ["-hc.light"] : [])
             launch(app)
             XCTAssertTrue(app.buttons["timeline-open-terminal"].waitForExistence(timeout: 5))
-            XCTAssertTrue(app.staticTexts["Conversation"].exists)
+            XCTAssertLessThan(
+                app.scrollViews["agent-timeline-scroll"].frame.minY,
+                app.buttons["pane-add-button"].frame.minY,
+                "Conversation content must scroll behind the floating pane cards")
+            XCTAssertFalse(app.staticTexts["Conversation"].exists)
+            XCTAssertFalse(app.staticTexts["Idle"].exists)
             XCTAssertTrue(app.buttons["timeline-tool-tool:read"].exists)
             app.buttons["timeline-tool-tool:read"].tap()
-            XCTAssertTrue(app.staticTexts["Input"].waitForExistence(timeout: 3))
+            XCTAssertTrue(app.navigationBars["Activity"].waitForExistence(timeout: 3))
+            XCTAssertTrue(app.staticTexts["Read HostKeyVerificationView.swift"].exists)
+            XCTAssertFalse(app.staticTexts["Input"].exists)
+            XCTAssertFalse(app.buttons["Technical details"].exists)
+            XCTAssertFalse(app.staticTexts["Completed"].exists)
+            app.buttons["timeline-activity-close"].tap()
             let screenshot = XCTAttachment(screenshot: app.screenshot())
             screenshot.name = light ? "Native timeline light" : "Native timeline dark"
             screenshot.lifetime = .keepAlways
@@ -128,13 +138,13 @@ final class AgentTimelineUITests: XCTestCase {
         app.buttons["terminal-open-timeline"].tap()
         XCTAssertTrue(app.staticTexts["A clearer view of your agent"].waitForExistence(timeout: 5))
         app.buttons["timeline-helper-check-again"].tap()
-        XCTAssertTrue(app.staticTexts["Conversation"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["timeline-tool-tool:read"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts["A clearer view of your agent"].exists)
         XCTAssertTrue(app.buttons["timeline-open-terminal"].exists)
         app.terminate()
         app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline", "-hc.light"]
         app.launch()
-        XCTAssertTrue(app.staticTexts["Conversation"].waitForExistence(timeout: 5), "Successful setup restores Timeline as the default for this host")
+        XCTAssertTrue(app.buttons["timeline-tool-tool:read"].waitForExistence(timeout: 5), "Successful setup restores Timeline as the default for this host")
         app.terminate()
     }
     func testOneClickInstallIsExplicitAndReturnsToTimeline() {
@@ -150,7 +160,7 @@ final class AgentTimelineUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["~/.local/bin/herdcats-bridge"].exists)
         XCTAssertTrue(app.staticTexts["A clearer view of your agent"].exists, "Opening the drawer must not install automatically")
         install.tap()
-        XCTAssertTrue(app.staticTexts["Conversation"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["timeline-tool-tool:read"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["timeline-open-terminal"].exists)
         XCTAssertFalse(app.staticTexts["A clearer view of your agent"].exists)
         app.terminate()
@@ -165,15 +175,15 @@ final class AgentTimelineUITests: XCTestCase {
             install.tap()
             let feedback = app.staticTexts["timeline-setup-feedback"]
             XCTAssertTrue(feedback.waitForExistence(timeout: 5))
-            XCTAssertFalse(app.staticTexts["Conversation"].exists)
+            XCTAssertFalse(app.buttons["timeline-tool-tool:read"].exists)
             if scenario == "replacement" {
                 XCTAssertEqual(install.label, "Replace helper with 0.1.4")
                 install.tap()
-                XCTAssertTrue(app.staticTexts["Conversation"].waitForExistence(timeout: 5))
+                XCTAssertTrue(app.buttons["timeline-tool-tool:read"].waitForExistence(timeout: 5))
             } else if scenario == "uncertain" {
                 XCTAssertEqual(install.label, "Check installation")
                 install.tap()
-                XCTAssertTrue(app.staticTexts["Conversation"].waitForExistence(timeout: 5))
+                XCTAssertTrue(app.buttons["timeline-tool-tool:read"].waitForExistence(timeout: 5))
             } else {
                 XCTAssertTrue(feedback.label.contains(scenario == "failure" ? "could not download" : "No installation was started"))
                 XCTAssertEqual(install.label, "Install Timeline helper")
@@ -302,7 +312,7 @@ final class AgentTimelineUITests: XCTestCase {
         app.terminate()
     }
 
-    func testImagesRenderAndUnfamiliarRecordsKeepTheirFullContents() {
+    func testImagesRenderWithoutOriginalRecordControls() {
         let app = XCUIApplication()
         app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-rich-content", "-hc.light", "-paneShowComposeByDefault", "NO"]
         launch(app)
@@ -312,7 +322,7 @@ final class AgentTimelineUITests: XCTestCase {
         let image = app.descendants(matching: .any)["timeline-image-content:image"].firstMatch
         XCTAssertTrue(image.waitForExistence(timeout: 5))
         let screenshot = XCTAttachment(screenshot: app.screenshot())
-        screenshot.name = "Timeline image and unfamiliar record"
+        screenshot.name = "Timeline image without original records"
         screenshot.lifetime = .keepAlways
         add(screenshot)
         image.tap()
@@ -323,18 +333,137 @@ final class AgentTimelineUITests: XCTestCase {
         preview.name = "Original session image"
         preview.lifetime = .keepAlways
         add(preview)
-        // Quick Look may hide its chrome. Reopen the fixture for the separate
-        // source-record assertion instead of depending on a system button label.
+        // Reopen after Quick Look to inspect the conversation controls.
         app.terminate()
         launch(app)
         XCTAssertTrue(scroll.waitForExistence(timeout: 5))
         for _ in 0..<4 { scroll.swipeUp() }
-        let original = app.buttons["timeline-source-content:unfamiliar"]
-        XCTAssertTrue(original.waitForExistence(timeout: 5))
-        original.tap()
-        XCTAssertTrue(app.navigationBars["Session record"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Every field is preserved")).firstMatch.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["timeline-source-share"].exists)
+        XCTAssertFalse(app.staticTexts["future_block"].exists)
+        XCTAssertFalse(app.staticTexts["Original records"].exists)
+        XCTAssertFalse(app.buttons["View original record"].exists)
+        XCTAssertFalse(app.buttons["timeline-source-content:unfamiliar"].exists)
+        app.terminate()
+    }
+
+    func testConsecutiveToolsOpenSummarizedActivityDrawer() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-tool-activity", "-hc.light", "-paneShowComposeByDefault", "NO"]
+        launch(app)
+        let activity = app.buttons["timeline-tool-tool:read"]
+        XCTAssertTrue(activity.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Ran a command · Used 2 tools"].exists)
+        XCTAssertFalse(app.buttons["timeline-tool-tool:push"].exists)
+        activity.tap()
+        XCTAssertTrue(app.navigationBars["Activity"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Read HostKeyVerificationView.swift"].exists)
+        XCTAssertTrue(app.staticTexts["Push changes to pull request #11"].exists)
+        XCTAssertTrue(app.staticTexts["Edit README.md"].exists)
+        XCTAssertFalse(app.staticTexts["Input"].exists)
+        XCTAssertFalse(app.staticTexts["Push rejected."].exists)
+        XCTAssertFalse(app.staticTexts["Bash"].exists)
+        XCTAssertFalse(app.staticTexts["Completed"].exists)
+        XCTAssertFalse(app.buttons["Technical details"].exists)
+        XCTAssertEqual(app.images["timeline-activity-icon-tool:push"].label, "Failed or interrupted")
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Summarized activity drawer"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        app.buttons["timeline-activity-close"].tap()
+        XCTAssertTrue(activity.exists)
+        app.terminate()
+    }
+
+    func testPullingLoadsEarlierMessagesWithoutAButton() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-history", "-hc.timeline-history-delay", "-hc.light", "-paneShowComposeByDefault", "NO"]
+        launch(app)
+        let scroll = app.scrollViews["agent-timeline-scroll"]
+        XCTAssertTrue(scroll.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Load earlier messages"].exists)
+        // Start below the floating pane cards so the gesture reaches history.
+        let start = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45))
+        let end = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95))
+        for _ in 0..<4 { start.press(forDuration: 0.05, thenDragTo: end) }
+        XCTAssertTrue(app.staticTexts["Earlier conversation message."].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["timeline-history-hint"].exists)
+        app.terminate()
+    }
+
+    func testLoadingEarlierMessagesPreservesVisibleMessageOffset() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-history-position", "-hc.light", "-paneShowComposeByDefault", "NO"]
+        launch(app)
+        let scroll = app.scrollViews["agent-timeline-scroll"]
+        XCTAssertTrue(scroll.waitForExistence(timeout: 5))
+        // Collapse the pane strip separately, before measuring the reading position.
+        let add = app.buttons["pane-add-button"]
+        let card = add.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        card.press(forDuration: 0.05, thenDragTo: card.withOffset(CGVector(dx: 0, dy: -60)))
+        let marker = app.staticTexts["Review the connection guidance and make it clearer in light mode."]
+        XCTAssertTrue(marker.exists)
+        let originalY = marker.frame.minY
+        let start = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45))
+        let end = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95))
+        for _ in 0..<4 {
+            start.press(forDuration: 0.05, thenDragTo: end)
+            if app.staticTexts["Loading earlier messages…"].exists || !app.staticTexts["timeline-history-hint"].exists { break }
+        }
+        XCTAssertTrue(app.staticTexts["timeline-history-hint"].waitForNonExistence(timeout: 15))
+        XCTAssertTrue(marker.exists)
+        XCTAssertEqual(marker.frame.minY, originalY, accuracy: 4,
+                       "Prepending a page must preserve the reading position")
+        XCTAssertFalse(app.staticTexts["Earlier conversation message."].isHittable)
+        app.terminate()
+    }
+
+    func testCodeChangesRenderAndOpenDiffDrawer() {
+        for light in [true, false] {
+            let app = XCUIApplication()
+            app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-code-changes", "-paneShowComposeByDefault", "NO"] + (light ? ["-hc.light"] : [])
+            launch(app)
+            let scroll = app.scrollViews["agent-timeline-scroll"]
+            XCTAssertTrue(scroll.waitForExistence(timeout: 5))
+            let card = app.buttons["timeline-diff-tool:edit-triage:diff:0"]
+            XCTAssertTrue(card.waitForExistence(timeout: 5))
+            for _ in 0..<4 where !card.isHittable { scroll.swipeDown() }
+            let inline = XCTAttachment(screenshot: app.screenshot())
+            inline.name = light ? "Inline code changes light" : "Inline code changes dark"
+            inline.lifetime = .keepAlways
+            add(inline)
+            card.tap()
+            XCTAssertTrue(app.navigationBars["Code changes"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.staticTexts["reply-tool/triage.ts"].exists)
+            XCTAssertTrue(app.staticTexts["+2"].exists)
+            XCTAssertTrue(app.staticTexts["−1"].exists)
+            let expanded = XCTAttachment(screenshot: app.screenshot())
+            expanded.name = light ? "Code diff drawer light" : "Code diff drawer dark"
+            expanded.lifetime = .keepAlways
+            add(expanded)
+            app.buttons["timeline-diff-close"].tap()
+            for _ in 0..<4 where !app.buttons["timeline-tool-tool:edit-triage"].isHittable { scroll.swipeDown() }
+            app.buttons["timeline-tool-tool:edit-triage"].tap()
+            XCTAssertTrue(app.staticTexts["Background review completed"].waitForExistence(timeout: 5))
+            XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "<task-notification>")).firstMatch.exists)
+            app.buttons["timeline-activity-close"].tap()
+            app.terminate()
+        }
+    }
+
+    func testLargeFileWritesLoadRecordedContentForPreview() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-large-write", "-hc.light", "-paneShowComposeByDefault", "NO"]
+        launch(app)
+        let card = app.buttons["timeline-diff-tool:large-write:diff:0"]
+        XCTAssertTrue(card.waitForExistence(timeout: 10))
+        card.tap()
+        XCTAssertTrue(app.navigationBars["Written content"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["project/PaywallView.swift"].exists)
+        XCTAssertFalse(app.staticTexts["MODIFIED"].exists)
+        let preview = XCTAttachment(screenshot: app.screenshot())
+        preview.name = "Large recorded file preview"
+        preview.lifetime = .keepAlways
+        add(preview)
+        app.buttons["timeline-diff-close"].tap()
         app.terminate()
     }
 

@@ -110,6 +110,19 @@ impl Transcript {
                 if !attached {
                     self.content_bubble(context, &kind, raw.get(), false)?;
                 }
+                if attached && kind == "tool_use" {
+                    if let (Some(id), Some(input)) = (string(fields.get("id")), fields.get("input"))
+                    {
+                        let reference = context.reference_for(input.get())?;
+                        if let Some(entry) = self
+                            .entries
+                            .iter_mut()
+                            .find(|entry| entry.id == format!("tool:{id}"))
+                        {
+                            entry.content_ref = Some(reference);
+                        }
+                    }
+                }
                 if kind == "tool_result" {
                     if let Some(content) = fields.get("content") {
                         if let Ok(blocks) = serde_json::from_str::<Vec<&RawValue>>(content.get()) {
@@ -147,8 +160,10 @@ impl Transcript {
             counter: 0,
         };
         if matches!(kind.as_str(), "user" | "assistant") {
-            let attached = string(fields.get("uuid"))
-                .is_some_and(|id| self.attach_record(&format!("message:{id}"), &context.reference));
+            let attached = string(fields.get("uuid")).is_some_and(|id| {
+                self.attach_record(&format!("message:{id}"), &context.reference)
+                    || self.attach_record(&format!("task:{id}"), &context.reference)
+            });
             if let Some(message) = fields.get("message").and_then(|m| object(m.get())) {
                 if let Some(content) = message.get("content") {
                     if let Ok(blocks) = serde_json::from_str::<Vec<&RawValue>>(content.get()) {

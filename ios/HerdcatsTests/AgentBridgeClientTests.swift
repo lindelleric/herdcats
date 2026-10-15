@@ -33,12 +33,12 @@ struct AgentBridgeClientTests {
         await client.close()
         #expect(await wire.closes == 1)
     }
-    @Test func canceledOutstandingRequestClosesOnlyItsChannel() async throws {
+    @Test func canceledWatchRequestClosesOnlyItsChannel() async throws {
         let wire = BridgeTestWire()
         let client = AgentBridgeClient(
             write: { await wire.write($0) }, close: { await wire.close() }, onEvent: { _ in })
         let request = Task {
-            try await client.request(.history, params: AgentBridgeParams(generation: 1, before: "a"))
+            try await client.request(.watch, params: AgentBridgeParams(paneId: "p1"))
         }
         try await wait(wire)
         request.cancel()
@@ -316,6 +316,115 @@ struct TimelineContentClientTests {
         let id = try await wire.requestId()
         await client.receive(Data("{\"id\":\"\(id)\",\"result\":{\"protocol\":1}}\n".utf8))
         #expect(try await next.value.protocol == 1)
+        await client.close()
+    }
+}
+
+@Suite("Timeline history request isolation")
+struct TimelineHistoryClientTests {
+    private func wait(_ wire: BridgeTestWire, count: Int) async throws {
+        for _ in 0..<500 {
+            if await wire.commands.count >= count { return }
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        throw AgentBridgeError.timeout
+    }
+
+    @Test @MainActor
+    func cancelledRefreshWaiterStillMergesTheLatePageAndCoalescesPulls() async throws {
+        let wire = BridgeTestWire()
+        let client = AgentBridgeClient(write: { await wire.write($0) }, close: { await wire.close() }, onEvent: { _ in })
+        let loader = TimelineHistoryLoader()
+        let state = AgentTimelineState()
+        let owner = UUID()
+        state.begin(owner: owner, paneId: "p1")
+        let identity: [String: Any] = ["pane_id": "p1", "terminal_id": "t1", "agent": "claude", "native_session_id": "s1"]
+        let snapshot: [String: Any] = ["event": "timeline.snapshot", "epoch": "e", "seq": 1,
+            "data": ["identity": identity, "generation": 1, "has_more": true,
+                     "entries": [["id": "current", "kind": "message", "text": "Current", "truncated": false]]]]
+        try state.consume(AgentBridgeFrame.decode(JSONSerialization.data(withJSONObject: snapshot)), owner: owner)
+        let refresh = Task {
+            await loader.load {
+                do {
+                    let page = try await client.request(.history, params: AgentBridgeParams(generation: 1, before: "current"))
+                    try Task.checkCancellation()
+                    try state.mergeHistory(page, owner: owner, generation: 1)
+                } catch { Issue.record("Owned page load failed: \(error)") }
+            }
+        }
+        try await wait(wire, count: 1)
+        let id = try await wire.requestId()
+        refresh.cancel()
+        let concurrentPull = Task {
+            await loader.load { Issue.record("A second pull started a duplicate page request") }
+        }
+        await Task.yield()
+        #expect(await wire.closes == 0)
+        let response: [String: Any] = ["id": id, "result": ["identity": identity, "generation": 1, "has_more": false,
+            "entries": [["id": "earlier", "kind": "message", "text": "Earlier", "truncated": false]]]]
+        var bytes = try JSONSerialization.data(withJSONObject: response)
+        bytes.append(10)
+        await client.receive(bytes)
+        await refresh.value
+        await concurrentPull.value
+        #expect(state.entries.map(\.id) == ["earlier", "current"])
+        #expect(!state.hasMore)
+        #expect(await wire.commands.count == 1)
+        #expect(await wire.closes == 0)
+        await client.close()
+    }
+
+    @Test @MainActor
+    func leavingTimelineCancelsOwnedPageWithoutClosingTheWatch() async throws {
+        let wire = BridgeTestWire()
+        let client = AgentBridgeClient(write: { await wire.write($0) }, close: { await wire.close() }, onEvent: { _ in })
+        let loader = TimelineHistoryLoader()
+        let refresh = Task {
+            await loader.load {
+                do {
+                    _ = try await client.request(.history, params: AgentBridgeParams(generation: 1, before: "a"))
+                    Issue.record("Cancelled page load completed")
+                } catch { #expect(Task.isCancelled) }
+            }
+        }
+        try await wait(wire, count: 1)
+        loader.cancel()
+        await refresh.value
+        #expect(await wire.closes == 0)
+        await client.close()
+    }
+
+    @Test(arguments: [false, true])
+    func cancelledOrTimedOutHistoryKeepsLiveEventsAndRetryWorking(timesOut: Bool) async throws {
+        let wire = BridgeTestWire()
+        let events = BridgeTestWire()
+        let client = AgentBridgeClient(
+            write: { await wire.write($0) }, close: { await wire.close() },
+            onEvent: { frame in await events.write(Data((frame.event ?? "").utf8)) })
+        let request = Task {
+            try await client.request(.history, params: AgentBridgeParams(generation: 1, before: "a"),
+                                     timeout: timesOut ? 0.05 : 5)
+        }
+        try await wait(wire, count: 1)
+        let oldId = try await wire.requestId()
+        if !timesOut { request.cancel() }
+        do {
+            _ = try await request.value
+            Issue.record("Abandoned history request completed")
+        } catch {
+            #expect(error as? AgentBridgeError == (timesOut ? .timeout : .closed))
+        }
+        #expect(await wire.closes == 0)
+        // A late response belongs to the abandoned page, not a broken channel.
+        await client.receive(Data("{\"id\":\"\(oldId)\",\"result\":{}}\n".utf8))
+        await client.receive(Data("{\"event\":\"timeline.updated\",\"epoch\":\"e\",\"seq\":1,\"data\":{}}\n".utf8))
+        #expect(await events.commands.count == 1)
+        let retry = Task { try await client.request(.history, params: AgentBridgeParams(generation: 1, before: "a")) }
+        try await wait(wire, count: 2)
+        let id = try await wire.requestId()
+        await client.receive(Data("{\"id\":\"\(id)\",\"result\":{\"generation\":1,\"entries\":[],\"has_more\":false}}\n".utf8))
+        #expect(try await retry.value.generation == 1)
+        #expect(await wire.closes == 0)
         await client.close()
     }
 }

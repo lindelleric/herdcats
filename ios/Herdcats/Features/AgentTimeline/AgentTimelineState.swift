@@ -154,3 +154,32 @@ import Observation
         else { throw AgentBridgeError.invalidFrame }
     }
 }
+
+/// The page belongs to the timeline, not SwiftUI's short-lived refresh gesture.
+/// Concurrent pulls share a request; leaving the timeline explicitly cancels it.
+@MainActor final class TimelineHistoryLoader {
+    private var task: Task<Void, Never>?
+    private var token: UUID?
+
+    func load(_ operation: @escaping @MainActor () async -> Void) async {
+        if let task {
+            await task.value
+            return
+        }
+        let token = UUID()
+        let task = Task { await operation() }
+        self.token = token
+        self.task = task
+        await task.value
+        if self.token == token {
+            self.task = nil
+            self.token = nil
+        }
+    }
+
+    func cancel() {
+        task?.cancel()
+        task = nil
+        token = nil
+    }
+}

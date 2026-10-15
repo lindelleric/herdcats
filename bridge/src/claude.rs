@@ -51,6 +51,14 @@ fn text_content(value: &Value) -> String {
         })
         .unwrap_or_default()
 }
+fn notification_field<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+    text.split_once(&format!("<{tag}>"))?
+        .1
+        .split_once(&format!("</{tag}>"))
+        .map(|(value, _)| value.trim())
+        .filter(|value| !value.is_empty())
+}
+
 impl Transcript {
     pub(crate) fn upsert(&mut self, mut entry: Entry) -> Result<()> {
         if let Some(old) = self.entries.iter_mut().find(|old| old.id == entry.id) {
@@ -74,6 +82,29 @@ impl Transcript {
         }
         Ok(())
     }
+    fn apply_notification(&mut self, source_id: &str, text: &str) -> Result<()> {
+        let (summary, truncated) =
+            bounded(notification_field(text, "summary").unwrap_or("Background task update"));
+        let status = match notification_field(text, "status") {
+            Some("completed") => "completed",
+            Some("failed" | "killed" | "cancelled") => "failed",
+            Some("running") => "running",
+            _ => "unknown",
+        };
+        self.upsert(Entry {
+            id: format!("task:{source_id}"),
+            kind: "tool".into(),
+            text: summary,
+            role: None,
+            tool_name: Some("Background task".into()),
+            status: Some(status.into()),
+            details: None,
+            truncated,
+            content_ref: None,
+            record_refs: Vec::new(),
+        })
+    }
+
     pub fn apply(&mut self, record: &Value, session: &str) -> Result<()> {
         let kind = record["type"].as_str().unwrap_or("");
         if !matches!(kind, "user" | "assistant") {
@@ -117,6 +148,12 @@ impl Transcript {
             }
         }
         let text = text_content(content);
+        if kind == "user"
+            && (record["origin"]["kind"] == "task-notification"
+                || record["turnOrigin"] == "task_notification")
+        {
+            return self.apply_notification(source_id, &text);
+        }
         if !text.is_empty() {
             let (text, truncated) = bounded(&text);
             self.upsert(Entry {
@@ -258,6 +295,12 @@ impl Transcript {
         };
 
         let full_text = msg_text_parts.join("\n");
+        if kind == "user"
+            && (header.origin.as_ref().and_then(|origin| origin.kind) == Some("task-notification")
+                || header.turn_origin == Some("task_notification"))
+        {
+            return self.apply_notification(source_id, &full_text);
+        }
         if !full_text.is_empty() {
             let (text, truncated) = bounded(&full_text);
             self.upsert(Entry {
@@ -357,6 +400,10 @@ impl Transcript {
 
 #[derive(Deserialize)]
 struct RecordHeader<'a> {
+    #[serde(default, borrow)]
+    origin: Option<RecordOrigin<'a>>,
+    #[serde(rename = "turnOrigin", default, borrow)]
+    turn_origin: Option<&'a str>,
     #[serde(rename = "type", default, borrow)]
     kind: Option<&'a str>,
     #[serde(default, borrow)]
@@ -367,6 +414,12 @@ struct RecordHeader<'a> {
     is_sidechain: Option<bool>,
     #[serde(rename = "isMeta", default)]
     is_meta: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct RecordOrigin<'a> {
+    #[serde(default, borrow)]
+    kind: Option<&'a str>,
 }
 
 #[derive(Deserialize)]
