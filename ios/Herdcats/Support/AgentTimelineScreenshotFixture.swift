@@ -11,7 +11,7 @@
                         "data": ["pane_id": paneId, "generation": 1, "code": ScreenshotFixtures.screen == "timeline-helper-missing" ? "helper_missing" : "unsupported_agent"],
                     ]))
             }
-            let entries: [[String: Any]] =
+            var entries: [[String: Any]] =
                 ScreenshotFixtures.screen == "timeline-empty"
                 ? []
                 : [
@@ -40,6 +40,13 @@
                         "truncated": false,
                     ],
                 ]
+            if ProcessInfo.processInfo.arguments.contains("-hc.timeline-long") {
+                entries += (0..<12).map { index in
+                    ["id": "message:history-\(index)", "kind": "message", "role": "assistant",
+                     "text": "Session update \(index + 1). Reviewed the implementation, checked the changed files, and confirmed the result with a focused test run.",
+                     "truncated": false] as [String: Any]
+                }
+            }
             return try AgentBridgeFrame.decode(
                 JSONSerialization.data(withJSONObject: [
                     "event": "timeline.snapshot", "epoch": "fixture", "seq": 1,

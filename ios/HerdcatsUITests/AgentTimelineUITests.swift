@@ -255,6 +255,52 @@ final class AgentTimelineUITests: XCTestCase {
         }
     }
 
+    func testLatestIsCircularTrailingButtonAndResumesFollowing() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline", "-hc.timeline-long", "-hc.light", "-paneShowComposeByDefault", "NO"]
+        launch(app)
+        let scroll = app.scrollViews["agent-timeline-scroll"]
+        XCTAssertTrue(scroll.waitForExistence(timeout: 5))
+        let latest = app.buttons["timeline-latest"]
+        for _ in 0..<8 {
+            scroll.swipeUp()
+            if !latest.exists { break }
+        }
+        XCTAssertTrue(latest.waitForNonExistence(timeout: 5), "No jump button at the bottom")
+        scroll.swipeDown()
+        XCTAssertTrue(latest.waitForExistence(timeout: 5))
+        XCTAssertEqual(latest.frame.width, latest.frame.height, accuracy: 1)
+        XCTAssertGreaterThanOrEqual(latest.frame.width, 44)
+        XCTAssertGreaterThan(latest.frame.midX, app.frame.width * 0.75)
+        XCTAssertEqual(latest.label, "Jump to latest messages")
+        XCTAssertFalse(app.staticTexts["Latest"].exists)
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "Timeline circular latest button"
+        capture.lifetime = .keepAlways
+        add(capture)
+        for _ in 0..<8 {
+            scroll.swipeUp()
+            if !latest.exists { break }
+        }
+        XCTAssertTrue(latest.waitForNonExistence(timeout: 5), "Manual return to bottom hides the button")
+        scroll.swipeDown()
+        XCTAssertTrue(latest.waitForExistence(timeout: 5))
+        latest.tap()
+        XCTAssertTrue(latest.waitForNonExistence(timeout: 5))
+        app.terminate()
+    }
+
+    func testShortTimelineDoesNotShowLatestAfterDragging() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-empty", "-hc.light", "-paneShowComposeByDefault", "NO"]
+        launch(app)
+        let scroll = app.scrollViews["agent-timeline-scroll"]
+        XCTAssertTrue(app.staticTexts["No messages yet"].waitForExistence(timeout: 5))
+        scroll.swipeDown()
+        XCTAssertFalse(app.buttons["timeline-latest"].exists)
+        app.terminate()
+    }
+
     private func launch(_ app: XCUIApplication) {
         app.launchArguments += ["-hc.timeline-intro-reset"]
         app.launch()

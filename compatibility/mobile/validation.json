@@ -209,5 +209,27 @@
     "ownership": "Existing verified native-session and bridge capability guards retained",
     "unit_validation": "388 passed;2 opt-in live SSH tests skipped; /private/tmp/hc-agent-gate-green.log",
     "ui_validation": "12 passed, including Codex/Cursor/unknown Terminal fallback and generic helper guidance; /private/tmp/hc-agent-gate-green.log"
+  },
+  "latest_fab": {
+    "date": "2026-10-15",
+    "size_points": 44,
+    "alignment": "bottom trailing above Compose",
+    "label": "Icon only; VoiceOver: Jump to latest messages",
+    "style": "Native interactive regular glass on iOS26+, ultra-thin material on earlier iOS; opaque themed circle for Reduce Transparency",
+    "visibility": "Content end measured in viewport; hidden at bottom and for fitting histories; manual bottom return resumes following",
+    "jump_target": "Includes final content padding, so a tap reaches the true bottom",
+    "validation": {
+      "ui_tests": 2,
+      "result": "passed",
+      "coverage": [
+        "circular44-point trailing icon-only control",
+        "manual return hides FAB",
+        "tap reaches bottom and hides FAB",
+        "short history remains hidden after drag"
+      ],
+      "log": "/private/tmp/hc-latest-fab-focused.log",
+      "screenshot": ".lavish/timeline-latest-fab.png",
+      "keyboard_check": "Passed with the new geometry observer before final end-padding adjustment. Final combined rerun stopped after repeated simulator animation-completion notification timeouts; FAB-specific tests rerun fresh and passed."
+    }
   }
 }

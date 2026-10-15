@@ -12,6 +12,7 @@ struct AgentTimelineView: View {
     let onSetupComplete: () -> Void
     @Environment(AppModel.self) private var appModel
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var activeClient: AgentBridgeClient?
     @State private var activeOwner: UUID?
     @State private var showsSetup = false
@@ -27,6 +28,7 @@ struct AgentTimelineView: View {
     @State private var isPaging = false
     @State private var pageError: String?
     @State private var following = true
+    @State private var atBottom = true
     @State private var scrollPosition: String?
 
     private var connectionState: AgentTimelineConnectionState {
@@ -44,93 +46,114 @@ struct AgentTimelineView: View {
     }
     var body: some View {
         ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 16) {
-                    if timeline.phase == .ready {
-                        HStack {
-                            Label("Conversation", systemImage: "text.bubble")
-                            Spacer()
-                            if timeline.delayed {
-                                Text("Delayed")
-                            } else if let status = timeline.agentStatus {
-                                Text(status.capitalized)
-                            }
-                        }
-                        .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
-                        if timeline.hasMore {
-                            Button {
-                                following = false
-                                Task { await loadOlder() }
-                            } label: {
-                                HStack {
-                                    if isPaging { ProgressView() }
-                                    Text("Load earlier messages")
+            GeometryReader { viewport in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 16) {
+                        if timeline.phase == .ready {
+                            HStack {
+                                Label("Conversation", systemImage: "text.bubble")
+                                Spacer()
+                                if timeline.delayed {
+                                    Text("Delayed")
+                                } else if let status = timeline.agentStatus {
+                                    Text(status.capitalized)
                                 }
-                                .frame(maxWidth: .infinity)
                             }
-                            .disabled(isPaging).buttonStyle(.herdrSecondary)
+                            .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
+                            if timeline.hasMore {
+                                Button {
+                                    following = false
+                                    Task { await loadOlder() }
+                                } label: {
+                                    HStack {
+                                        if isPaging { ProgressView() }
+                                        Text("Load earlier messages")
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                }
+                                .disabled(isPaging).buttonStyle(.herdrSecondary)
+                            }
+                            if let pageError {
+                                Text(pageError).font(.jost(.caption)).foregroundStyle(Theme.textMuted)
+                            }
+                            if timeline.entries.isEmpty {
+                                ContentUnavailableView(
+                                    "No messages yet", systemImage: "text.bubble",
+                                    description: Text("Messages from this session will appear here."))
+                            }
+                            ForEach(timeline.entries) { entry in AgentTimelineEntryView(entry: entry).id(entry.id)
+                            }
+                            if timeline.delayed {
+                                Text("Source update delayed; showing verified history.")
+                                    .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
+                            }
+                            if timeline.unknownRecords > 0 {
+                                Text("Some session records are not displayed.")
+                                    .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
+                            }
+                            if timeline.droppedEntries > 0 {
+                                Text("Showing recent session history.")
+                                    .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
+                            }
+                        } else {
+                            availability
                         }
-                        if let pageError {
-                            Text(pageError).font(.jost(.caption)).foregroundStyle(Theme.textMuted)
-                        }
-                        if timeline.entries.isEmpty {
-                            ContentUnavailableView(
-                                "No messages yet", systemImage: "text.bubble",
-                                description: Text("Messages from this session will appear here."))
-                        }
-                        ForEach(timeline.entries) { entry in AgentTimelineEntryView(entry: entry).id(entry.id)
-                        }
-                        if timeline.delayed {
-                            Text("Source update delayed; showing verified history.")
-                                .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
-                        }
-                        if timeline.unknownRecords > 0 {
-                            Text("Some session records are not displayed.")
-                                .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
-                        }
-                        if timeline.droppedEntries > 0 {
-                            Text("Showing recent session history.")
-                                .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
-                        }
-                    } else {
-                        availability
+                        // Clear scroll space lets the final entry sit above the
+                        // floating Compose bubble without an opaque dock panel.
+                        Color.clear
+                            .frame(height: bottomOverlayInset)
+                            .padding(.bottom, DesignSystem.Spacing.base)
+                            .id("timeline-bottom")
                     }
-                    // Clear scroll space lets the final entry sit above the
-                    // floating Compose bubble without an opaque dock panel.
-                    Color.clear
-                        .frame(height: bottomOverlayInset + (following ? 0 : 44))
-                        .id("timeline-bottom")
+                    .scrollTargetLayout()
+                    .padding([.horizontal, .top], DesignSystem.Spacing.base)
+                    .background {
+                        GeometryReader { content in
+                            Color.clear.preference(
+                                key: TimelineAtBottomPreferenceKey.self,
+                                value: content.frame(in: .named("timeline-viewport")).maxY <= viewport.size.height + 8)
+                        }
+                    }
                 }
-                .scrollTargetLayout()
-                .padding(DesignSystem.Spacing.base)
-            }
-            .accessibilityIdentifier("agent-timeline-scroll")
-            .scrollPosition(id: $scrollPosition, anchor: .top)
-            .scrollDismissesKeyboard(.interactively)
-            .simultaneousGesture(DragGesture().onChanged { _ in following = false })
-            .onChange(of: timeline.revision) { _, _ in
-                guard following, !timeline.entries.isEmpty else { return }
-                proxy.scrollTo("timeline-bottom", anchor: .bottom)
-            }
-            .onChange(of: timeline.identity) { _, _ in
-                scrollPosition = nil
-                following = true
-            }
-            .onChange(of: bottomOverlayInset) { _, _ in
-                if following && !timeline.entries.isEmpty {
+                .coordinateSpace(name: "timeline-viewport")
+                .onPreferenceChange(TimelineAtBottomPreferenceKey.self) { bottom in
+                    atBottom = bottom
+                    if bottom { following = true }
+                }
+                .accessibilityIdentifier("agent-timeline-scroll")
+                .scrollPosition(id: $scrollPosition, anchor: .top)
+                .scrollDismissesKeyboard(.interactively)
+                .simultaneousGesture(
+                    DragGesture().onChanged { _ in following = false }
+                        .onEnded { _ in if atBottom { following = true } }
+                )
+                .onChange(of: timeline.revision) { _, _ in
+                    guard following, !timeline.entries.isEmpty else { return }
                     proxy.scrollTo("timeline-bottom", anchor: .bottom)
                 }
-            }
-            .overlay(alignment: .bottom) {
-                if !following && timeline.phase == .ready {
-                    Button("Latest", systemImage: "arrow.down") {
-                        following = true
+                .onChange(of: timeline.identity) { _, _ in
+                    scrollPosition = nil
+                    following = true
+                }
+                .onChange(of: bottomOverlayInset) { _, _ in
+                    if following && !timeline.entries.isEmpty {
                         proxy.scrollTo("timeline-bottom", anchor: .bottom)
                     }
-                    .accessibilityIdentifier("timeline-latest")
-                    .font(.jost(.subheadline)).padding(8)
-                    .background(Theme.cardBackground, in: Capsule())
-                    .padding(.bottom, bottomOverlayInset + 8)
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if !atBottom && timeline.phase == .ready {
+                        Button {
+                            following = true
+                            proxy.scrollTo("timeline-bottom", anchor: .bottom)
+                        } label: {
+                            latestIcon
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Jump to latest messages")
+                        .accessibilityIdentifier("timeline-latest")
+                        .padding(.trailing, 16)
+                        .padding(.bottom, bottomOverlayInset + 8)
+                    }
                 }
             }
         }
@@ -185,6 +208,21 @@ struct AgentTimelineView: View {
             .presentationCornerRadius(28)
         }
     }
+    @ViewBuilder private var latestIcon: some View {
+        let icon = Image(systemName: "arrow.down")
+            .font(.system(size: 18, weight: .semibold))
+            .foregroundStyle(Theme.text)
+            .frame(width: 44, height: 44)
+            .contentShape(Circle())
+        if reduceTransparency {
+            icon.background(Theme.cardBackground, in: Circle())
+        } else if #available(iOS 26.0, *) {
+            icon.glassEffect(.regular.interactive(), in: Circle())
+        } else {
+            icon.background(.ultraThinMaterial, in: Circle())
+        }
+    }
+
     private func beginSetup() {
         setupShouldUseTerminal = true
         setupFeedback = nil
@@ -613,4 +651,9 @@ private struct AgentBridgeSetupView: View {
     private func benefit(_ title: String, icon: String) -> some View {
         Label(title, systemImage: icon).font(.jost(.subheadline))
     }
+}
+
+private struct TimelineAtBottomPreferenceKey: PreferenceKey {
+    static var defaultValue: Bool { true }
+    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value && nextValue() }
 }
