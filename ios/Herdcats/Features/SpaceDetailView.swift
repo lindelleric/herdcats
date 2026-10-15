@@ -1354,23 +1354,31 @@ struct PaneSessionView: View {
     private var outputWithInputDock: some View {
         VStack(spacing: 0) {
             Color.clear.frame(height: topOutputInset)
-            if showsTimeline {
-                AgentTimelineView(
-                    paneId: pane.paneId, connection: appModel.connection, timeline: timeline,
-                    bottomOverlayInset: bottomDockHeight, setupTarget: connectionScope,
-                    onUseTerminal: {
-                        UserDefaults.standard.set(true, forKey: TimelineSetupPreference.key(scope: connectionScope))
-                        showsTimeline = false
-                    },
-                    onSetupComplete: {
-                        let key = TimelineSetupPreference.key(scope: connectionScope)
-                        if UserDefaults.standard.bool(forKey: key) { UserDefaults.standard.removeObject(forKey: key) }
-                    }
-                )
-            } else {
-                outputScrollView
-                    .environment(\.colorScheme, .dark)
-                    .background(Color(uiColor: UIColor(hex: terminalPalette.background)))
+            Group {
+                if showsTimeline {
+                    AgentTimelineView(
+                        paneId: pane.paneId, connection: appModel.connection, timeline: timeline,
+                        bottomOverlayInset: bottomDockHeight, setupTarget: connectionScope,
+                        onUseTerminal: {
+                            UserDefaults.standard.set(true, forKey: TimelineSetupPreference.key(scope: connectionScope))
+                            showsTimeline = false
+                        },
+                        onSetupComplete: {
+                            let key = TimelineSetupPreference.key(scope: connectionScope)
+                            if UserDefaults.standard.bool(forKey: key) { UserDefaults.standard.removeObject(forKey: key) }
+                        }
+                    )
+                } else {
+                    outputScrollView
+                        .environment(\.colorScheme, .dark)
+                        .background(Color(uiColor: UIColor(hex: terminalPalette.background)))
+                }
+            }
+            // Keep the header transparent to the app theme; extend only the
+            // output surface behind the keyboard and home indicator.
+            .background {
+                (showsTimeline ? Theme.background : Color(uiColor: UIColor(hex: terminalPalette.background)))
+                    .ignoresSafeArea(edges: .bottom)
             }
         }
         .overlay(alignment: .bottom) {
@@ -1392,12 +1400,6 @@ struct PaneSessionView: View {
                         key: PaneBottomDockHeightPreferenceKey.self, value: geometry.size.height)
                 }
             }
-        }
-        // Extend the active output surface behind the keyboard and home
-        // indicator; the enclosing screen otherwise exposes its app theme.
-        .background {
-            (showsTimeline ? Theme.background : Color(uiColor: UIColor(hex: terminalPalette.background)))
-                .ignoresSafeArea()
         }
         .onChange(of: showsTimeline) { _, _ in
             dismissLiveKeyboard(); composeFieldFocused = false; dictation.cancel()
@@ -1567,7 +1569,6 @@ struct PaneSessionView: View {
 
     var body: some View {
         outputWithLifecycle
-        .preferredColorScheme(showsTimeline ? nil : .dark)
         .animation(.easeInOut(duration: 0.2), value: surfaceModel.surface)
         .onChange(of: composeFieldFocused) { _, focused in
             if focused {

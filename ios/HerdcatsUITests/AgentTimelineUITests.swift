@@ -186,6 +186,7 @@ final class AgentTimelineUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-hc.screenshots", "-hc.screen", "compose", "-hc.light", "-paneShowComposeByDefault", "NO"]
         launch(app)
+        var themedHeader: [Double]?
         for timeline in [true, false] {
             if !timeline {
                 app.buttons["timeline-open-terminal"].tap()
@@ -201,6 +202,14 @@ final class AgentTimelineUITests: XCTestCase {
             attachment.lifetime = .keepAlways
             add(attachment)
             guard let image = screenshot.image.cgImage else { return XCTFail("Missing screenshot") }
+            let header = pixel(image, x: 5, y: 5)
+            if timeline { themedHeader = header }
+            if let themedHeader {
+                for channel in 0..<3 {
+                    XCTAssertEqual(header[channel], themedHeader[channel], accuracy: 6,
+                                   "Header must retain the app theme when switching to Terminal")
+                }
+            }
             let output = pixel(image, x: 5, y: image.height / 3)
             let surround = pixel(image, x: 5, y: image.height - 5)
             let keyboard = pixel(image, x: 5, y: image.height * 4 / 5)
