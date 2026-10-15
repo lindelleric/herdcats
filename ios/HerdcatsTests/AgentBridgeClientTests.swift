@@ -150,12 +150,12 @@ struct AgentBridgeClientTests {
 
 @Suite("Host helper explicit setup policy")
 struct HostHelperSetupPolicyTests {
-    private func report(_ version: String = "0.1.3", protocolNumber: Int = 1) -> String {
+    private func report(_ version: String = "0.1.4", protocolNumber: Int = 1) -> String {
         "HC_HELPER_MANAGED\n{\"name\":\"herdcats-bridge\",\"version\":\"\(version)\",\"protocol\":\(protocolNumber),\"herdr_protocol\":22,\"agents\":[\"claude\"]}"
     }
     @Test func currentInstallationNeedsNoDownloadOrReplacement() throws {
         let probe = try HostHelperProbe(output: report())
-        #expect(probe == .present(version: "0.1.3", managed: true, compatible: true))
+        #expect(probe == .present(version: "0.1.4", managed: true, compatible: true))
         #expect(HostHelperSetupPlan.decision(probe: probe, replace: true, checkOnly: false) == .ready)
     }
     @Test func unknownAndOldManagedFilesRequireExplicitReplacement() throws {
@@ -174,12 +174,12 @@ struct HostHelperSetupPolicyTests {
     @Test func externalHelperIsNotOverwrittenAndNewerCompatibleHelperIsNotDowngraded() throws {
         let external = try HostHelperProbe(output: report("0.1.0").replacingOccurrences(of: "MANAGED", with: "EXTERNAL"))
         #expect(HostHelperSetupPlan.decision(probe: external, replace: true, checkOnly: false) == .install(replace: false))
-        let newer = try HostHelperProbe(output: report("0.1.4"))
+        let newer = try HostHelperProbe(output: report("0.1.5"))
         #expect(HostHelperSetupPlan.decision(probe: newer, replace: true, checkOnly: false) == .ready)
     }
     @Test func incompatibleProtocolDoesNotCountAsInstalledAndUnsafeTargetFailsClosed() throws {
         let probe = try HostHelperProbe(output: report(protocolNumber: 2))
-        #expect(probe == .present(version: "0.1.3", managed: true, compatible: false))
+        #expect(probe == .present(version: "0.1.4", managed: true, compatible: false))
         #expect(throws: HostHelperSetupError.unsafeDestination) { try HostHelperProbe(output: "HC_HELPER_BLOCKED\n") }
     }
 }
@@ -273,7 +273,49 @@ struct HostHelperSetupGuardTests {
             try HostHelperSetupPlan.verifyInstallation("HC_HELPER_ERROR:checksum_mismatch\n")
         }
         #expect(throws: HostHelperSetupError.invalidResponse) {
-            try HostHelperSetupPlan.verifyInstallation("HC_HELPER_INSTALLED\n{\"name\":\"herdcats-bridge\",\"version\":\"0.1.3\",\"protocol\":2,\"herdr_protocol\":22,\"agents\":[\"claude\"]}")
+            try HostHelperSetupPlan.verifyInstallation("HC_HELPER_INSTALLED\n{\"name\":\"herdcats-bridge\",\"version\":\"0.1.4\",\"protocol\":2,\"herdr_protocol\":22,\"agents\":[\"claude\"]}")
         }
+    }
+}
+
+@Suite("Timeline content request isolation")
+struct TimelineContentClientTests {
+    private func wait(_ wire: BridgeTestWire, count:Int) async throws {
+        for _ in 0..<500 {
+            if await wire.commands.count >= count { return }
+            try await Task.sleep(for:.milliseconds(2))
+        }
+        throw AgentBridgeError.timeout
+    }
+    @Test func chunksReassembleExactBytesAndVerifyIdentity() async throws {
+        let wire = BridgeTestWire()
+        let client = AgentBridgeClient(write:{ await wire.write($0) },close:{ await wire.close() },onEvent:{_ in})
+        let identity = AgentTimelineIdentity(paneId:"p1",terminalId:"t1",agent:"claude",nativeSessionId:"s")
+        let fetch = Task { try await client.content(reference:"source:0:4",generation:1,identity:identity) }
+        for (index,hex) in ["e78c","ab21"].enumerated() {
+            try await wait(wire,count:index+1)
+            let id = try await wire.requestId()
+            let data:[String:Any] = ["id":id,"result":["identity":["pane_id":"p1","terminal_id":"t1","agent":"claude","native_session_id":"s"],
+                "generation":1,"content_ref":"source:0:4","offset":index*2,"next_offset":index*2+2,"total":4,"hex":hex]]
+            var bytes = try JSONSerialization.data(withJSONObject:data);bytes.append(10);await client.receive(bytes)
+        }
+        #expect(try await fetch.value == Data("猫!".utf8))
+        await client.close()
+    }
+    @Test func cancellingContentDoesNotCloseTimelineAndLateReplyIsDrained() async throws {
+        let wire = BridgeTestWire()
+        let client = AgentBridgeClient(write:{ await wire.write($0) },close:{ await wire.close() },onEvent:{_ in})
+        let request = Task { try await client.request(.content,params:AgentBridgeParams(generation:1)) }
+        try await wait(wire,count:1)
+        let oldId = try await wire.requestId();request.cancel()
+        do { _ = try await request.value; Issue.record("Canceled content completed") } catch {}
+        #expect(await wire.closes == 0)
+        await client.receive(Data("{\"id\":\"\(oldId)\",\"result\":{}}\n".utf8))
+        let next = Task { try await client.request(.initialize,params:AgentBridgeParams(protocol:1)) }
+        try await wait(wire,count:2)
+        let id = try await wire.requestId()
+        await client.receive(Data("{\"id\":\"\(id)\",\"result\":{\"protocol\":1}}\n".utf8))
+        #expect(try await next.value.protocol == 1)
+        await client.close()
     }
 }

@@ -25,6 +25,8 @@ struct AgentTimelineEntry: Codable, Identifiable, Equatable, Sendable {
     let status: String?
     let details: String?
     let truncated: Bool
+    var contentRef: String? = nil
+    var recordRefs: [String]? = nil
 }
 struct AgentTimelineIdentity: Codable, Equatable, Sendable {
     let paneId: String
@@ -32,7 +34,7 @@ struct AgentTimelineIdentity: Codable, Equatable, Sendable {
     let agent: String
     let nativeSessionId: String
 }
-struct AgentBridgeCapabilities: Codable, Sendable { let claudeTimeline: Bool }
+struct AgentBridgeCapabilities: Codable, Sendable { let claudeTimeline: Bool; var recordContent: Bool? = nil }
 struct AgentBridgePayload: Codable, Sendable {
     var `protocol`: Int?
     var epoch: String?
@@ -49,6 +51,11 @@ struct AgentBridgePayload: Codable, Sendable {
     var delayed: Bool?
     var paneId: String?
     var code: String?
+    var contentRef: String?
+    var offset: Int?
+    var nextOffset: Int?
+    var total: Int?
+    var hex: String?
 }
 struct AgentBridgeRemoteError: Codable, Sendable { let code: String }
 struct AgentBridgeFrame: Decodable, Sendable {
@@ -195,4 +202,30 @@ enum HostHelperSetupError: Error, LocalizedError, Equatable {
 /// does not imply that native session history is available.
 enum TimelineAgentAvailability {
     static func supports(agent: String?) -> Bool { agent == "claude" }
+}
+
+/// Only references into the bridge's bounded, verified source snapshot.
+enum TimelineContentReference {
+    static func length(_ reference: String) -> Int? {
+        guard reference.utf8.count <= 128 else { return nil }
+        let parts = reference.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[0] == "source",
+              parts[1].allSatisfy({ $0.isASCII && $0.isNumber }), parts[2].allSatisfy({ $0.isASCII && $0.isNumber }),
+              let start = Int(parts[1]), let length = Int(parts[2]), start >= 0, length > 0,
+              start <= 64 * 1024 * 1024, length <= 64 * 1024 * 1024 - start else { return nil }
+        return length
+    }
+}
+
+enum TimelineSourcePages {
+    static func ranges(_ bytes: Data) -> [Range<Int>] {
+        guard !bytes.isEmpty else { return [0..<0] }
+        var result: [Range<Int>] = []; var start = 0
+        while start < bytes.count {
+            var end = min(start + 32768, bytes.count)
+            while end < bytes.count && bytes[end] & 0xc0 == 0x80 { end -= 1 }
+            result.append(start..<end); start = end
+        }
+        return result
+    }
 }

@@ -42,6 +42,7 @@ pub struct Service {
     sequence: u64,
     generation: u64,
     initialized: bool,
+    include_content: bool,
     watch: Option<Watch>,
 }
 fn page(entries: &[Entry], before: usize) -> Value {
@@ -72,6 +73,7 @@ impl Service {
             sequence: 0,
             generation: 0,
             initialized: false,
+            include_content: false,
             watch: None,
         }
     }
@@ -133,7 +135,11 @@ impl Service {
             native_session_id: session.clone(),
         };
         if watch.identity.as_ref() != Some(&identity) {
-            watch.follower = Follower::default();
+            watch.follower = if self.include_content {
+                Follower::with_content()
+            } else {
+                Follower::default()
+            };
             // A transient read of a new occupant cannot authorize serving the
             // previous occupant's cached transcript.
             watch.identity = None;
@@ -187,7 +193,11 @@ impl Service {
                     self.generation += 1;
                     watch.identity = None;
                     watch.previous.clear();
-                    watch.follower = Follower::default();
+                    watch.follower = if self.include_content {
+                        Follower::with_content()
+                    } else {
+                        Follower::default()
+                    };
                     watch.unavailable = Some(code);
                     self.event(
                         out,
@@ -299,6 +309,7 @@ impl Service {
         let method = request["method"].as_str().unwrap_or("");
         if method == "initialize" {
             self.initialized = false;
+            self.include_content = params["record_content"] == true;
             self.watch = None;
             if params["protocol"] != 1 {
                 return Self::error(out, id, "protocol_mismatch");
@@ -309,7 +320,7 @@ impl Service {
             self.initialized = true;
             return Self::write(
                 out,
-                &json!({"id":id,"result":{"protocol":1,"bridge_version":env!("CARGO_PKG_VERSION"),"epoch":self.epoch,"capabilities":{"claude_timeline":self.resolver.is_some(),"codex_timeline":false,"git":false,"prompts":false,"approvals":false,"questions":false,"routed_hosts":false}}}),
+                &json!({"id":id,"result":{"protocol":1,"bridge_version":env!("CARGO_PKG_VERSION"),"epoch":self.epoch,"capabilities":{"claude_timeline":self.resolver.is_some(),"record_content":true,"codex_timeline":false,"git":false,"prompts":false,"approvals":false,"questions":false,"routed_hosts":false}}}),
             );
         }
         if !self.initialized {
@@ -326,7 +337,11 @@ impl Service {
                 self.watch = Some(Watch {
                     pane_id: pane.into(),
                     identity: None,
-                    follower: Follower::default(),
+                    follower: if self.include_content {
+                        Follower::with_content()
+                    } else {
+                        Follower::default()
+                    },
                     generation: 0,
                     previous: Vec::new(),
                     unavailable: None,
@@ -342,6 +357,47 @@ impl Service {
             "unwatch" => {
                 self.watch = None;
                 Self::write(out, &json!({"id":id,"result":{"watching":null}}))
+            }
+            "content" => {
+                if !self.include_content {
+                    return Self::error(out, id, "unsupported_capability");
+                }
+                self.poll_with_refresh(out, refresh)?;
+                let Some(watch) = &self.watch else {
+                    return Self::error(out, id, "not_watching");
+                };
+                if watch.unavailable.is_some() || watch.identity.is_none() || watch.delayed {
+                    return Self::error(out, id, "timeline_unavailable");
+                }
+                if params["generation"].as_u64() != Some(self.generation) {
+                    return Self::error(out, id, "stale_cursor");
+                }
+                let Some(reference) = params["content_ref"].as_str().filter(|s| s.len() <= 128)
+                else {
+                    return Self::error(out, id, "content_unavailable");
+                };
+                let Some(offset) = params["offset"]
+                    .as_u64()
+                    .and_then(|n| usize::try_from(n).ok())
+                else {
+                    return Self::error(out, id, "invalid_content_offset");
+                };
+                match watch.follower.read_content(reference, offset) {
+                    Ok((bytes, total)) => {
+                        let digits = b"0123456789abcdef";
+                        let mut hex = String::with_capacity(bytes.len() * 2);
+                        for byte in &bytes {
+                            hex.push(digits[(byte >> 4) as usize] as char);
+                            hex.push(digits[(byte & 15) as usize] as char);
+                        }
+                        Self::write(
+                            out,
+                            &json!({"id":id,"result":{"identity":watch.identity,"generation":self.generation,
+                            "content_ref":reference,"offset":offset,"next_offset":offset + bytes.len(),"total":total,"hex":hex}}),
+                        )
+                    }
+                    Err(code) => Self::error(out, id, code),
+                }
             }
             "history" => {
                 self.poll_with_refresh(out, refresh)?;

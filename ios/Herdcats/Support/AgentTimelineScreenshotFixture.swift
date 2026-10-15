@@ -1,7 +1,24 @@
 #if DEBUG && targetEnvironment(simulator)
     import Foundation
+    import UIKit
 
-    enum AgentTimelineScreenshotFixture {
+    @MainActor enum AgentTimelineScreenshotFixture {
+        private static let imageBlock: Data = {
+            let format = UIGraphicsImageRendererFormat(); format.scale = 1
+            let image = UIGraphicsImageRenderer(size: CGSize(width: 360, height: 180), format: format).image { context in
+                UIColor.systemMint.setFill(); context.fill(CGRect(x: 0, y: 0, width: 360, height: 180))
+                ("Session image" as NSString).draw(at: CGPoint(x: 70, y: 70), withAttributes: [.font: UIFont.systemFont(ofSize: 28), .foregroundColor: UIColor.black])
+            }
+            return try! JSONSerialization.data(withJSONObject: ["type":"image", "source":["type":"base64", "media_type":"image/png", "data":image.pngData()!.base64EncodedString()]])
+        }()
+        private static let unfamiliarBlock = Data("{\"type\":\"future_block\",\"unexpected\":{\"complete\":\"Every field is preserved\",\"unicode\":\"猫\"}}".utf8)
+        private static var imageRef: String { "source:0:\(imageBlock.count)" }
+        private static var unfamiliarRef: String { "source:\(imageBlock.count):\(unfamiliarBlock.count)" }
+        static func content(reference: String) throws -> Data {
+            if reference == imageRef { return imageBlock }
+            if reference == unfamiliarRef { return unfamiliarBlock }
+            throw AgentBridgeError.unavailable("content_unavailable")
+        }
         static func frame(paneId: String, helperInstalled: Bool = false) throws -> AgentBridgeFrame {
             if ScreenshotFixtures.screen == "timeline-disconnected" { throw AgentBridgeError.closed }
             if ScreenshotFixtures.screen == "timeline-unavailable" || (ScreenshotFixtures.screen == "timeline-helper-missing" && !helperInstalled) {
@@ -47,6 +64,12 @@
                      "truncated": false] as [String: Any]
                 }
             }
+            if ScreenshotFixtures.screen == "timeline-rich-content" {
+                entries += [
+                    ["id":"content:image", "kind":"image", "role":"user", "text":"Image", "truncated":false, "content_ref":imageRef, "record_refs":[imageRef]],
+                    ["id":"content:unfamiliar", "kind":"record", "text":"future_block", "details":String(decoding: unfamiliarBlock, as: UTF8.self), "truncated":false, "content_ref":unfamiliarRef, "record_refs":[unfamiliarRef]]
+                ]
+            }
             return try AgentBridgeFrame.decode(
                 JSONSerialization.data(withJSONObject: [
                     "event": "timeline.snapshot", "epoch": "fixture", "seq": 1,
@@ -55,7 +78,7 @@
                             "pane_id": paneId, "terminal_id": "fixture-terminal", "agent": "claude",
                             "native_session_id": "fixture-session",
                         ], "generation": 1, "entries": entries, "has_more": false, "agent_status": "idle",
-                        "unknown_records": 0, "dropped_entries": 0,
+                        "unknown_records": ProcessInfo.processInfo.arguments.contains("-hc.timeline-long") ? 2 : 0, "dropped_entries": 0,
                     ],
                 ]))
         }

@@ -145,3 +145,43 @@ struct TimelineAgentAvailabilityTests {
         }
     }
 }
+
+@Suite("Timeline preserved content")
+@MainActor struct TimelinePreservedContentTests {
+    @Test func sourceReferencesSurviveDecodingAndImageAndRecordBubblesAreAccepted() throws {
+        for kind in ["image", "record"] {
+            let row: [String:Any] = ["id":"content:0:0", "kind":kind,"text":"Image or unfamiliar record","truncated":false,
+                                     "content_ref":"source:0:10","record_refs":["source:0:20"]]
+            let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
+            let entry = try decoder.decode(AgentTimelineEntry.self,from:JSONSerialization.data(withJSONObject:row))
+            let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase
+            let roundTrip = try JSONSerialization.jsonObject(with:encoder.encode(entry)) as! [String:Any]
+            #expect(roundTrip["content_ref"] as? String == "source:0:10")
+            let owner = UUID(); let state = AgentTimelineState(); state.begin(owner:owner,paneId:"p1")
+            let frame = try AgentBridgeFrame.decode(JSONSerialization.data(withJSONObject:["event":"timeline.snapshot","epoch":"e","seq":1,
+                "data":["identity":["pane_id":"p1","terminal_id":"t1","agent":"claude","native_session_id":"s"],"generation":1,"entries":[row]]]))
+            try state.consume(frame,owner:owner)
+            #expect(state.phase == .ready)
+            #expect(state.entries.count == 1)
+        }
+    }
+}
+
+@Suite("Lossless Timeline source paging")
+struct TimelineSourcePagingTests {
+    @Test func pagesPreserveEveryUnicodeByteWithoutSplittingScalars() {
+        let original = Data(String(repeating:"猫🐈é\n",count:15000).utf8)
+        let pages = TimelineSourcePages.ranges(original)
+        #expect(pages.count > 1)
+        var decoded = ""
+        for range in pages {
+            #expect(range.count <= 32768)
+            decoded += String(decoding:original[range],as:UTF8.self)
+        }
+        #expect(Data(decoded.utf8) == original)
+        #expect(TimelineContentReference.length("source:0:10") == 10)
+        for invalid in ["/etc/passwd","source:-1:3","source:0:0","source:67108864:1","source:0:4:5"] {
+            #expect(TimelineContentReference.length(invalid) == nil)
+        }
+    }
+}

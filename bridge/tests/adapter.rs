@@ -597,7 +597,10 @@ fn tool_result_content_string_array_tolerated_in_normal_and_oversized() {
     let mut follower = Follower::default();
     assert!(follower.refresh(&path, SESSION).unwrap());
     assert_eq!(follower.transcript.entries.len(), 1);
-    assert_eq!(follower.transcript.entries[0].status.as_deref(), Some("completed"));
+    assert_eq!(
+        follower.transcript.entries[0].status.as_deref(),
+        Some("completed")
+    );
 }
 
 #[test]
@@ -619,7 +622,10 @@ fn oversized_text_only_message_and_tool_input_do_not_count_omission() {
     fs::write(&path, &msg).unwrap();
     let mut follower = Follower::default();
     assert!(follower.refresh(&path, SESSION).unwrap());
-    assert_eq!(follower.transcript.unknown_records, 0, "text-only oversized message must not count as omission");
+    assert_eq!(
+        follower.transcript.unknown_records, 0,
+        "text-only oversized message must not count as omission"
+    );
     assert_eq!(follower.transcript.entries.len(), 1);
     assert!(follower.transcript.entries[0].truncated);
     assert_eq!(follower.transcript.entries[0].text.len(), 8192);
@@ -643,7 +649,58 @@ fn oversized_text_only_message_and_tool_input_do_not_count_omission() {
     }));
     append(&path, &tool_call);
     assert!(follower.refresh(&path, SESSION).unwrap());
-    assert_eq!(follower.transcript.unknown_records, 0, "fully represented tool input must not count as omission");
+    assert_eq!(
+        follower.transcript.unknown_records, 0,
+        "fully represented tool input must not count as omission"
+    );
     assert_eq!(follower.transcript.entries.len(), 2);
     assert!(follower.transcript.entries[1].truncated);
+}
+
+#[test]
+fn referenced_content_is_exact_chunked_and_restricted_to_published_entries() {
+    let temp = Temp::new();
+    let path = temp.0.join("source.jsonl");
+    let block = json!({"type":"future","text":"猫".repeat(50_000),"extra":{"keep":true}});
+    let record =
+        json!({"type":"user","uuid":"raw","sessionId":SESSION,"message":{"content":[block]}});
+    let source = line(&record);
+    fs::write(&path, &source).unwrap();
+    let mut follower = Follower::with_content();
+    follower.refresh(&path, SESSION).unwrap();
+    let entry = follower
+        .transcript
+        .entries
+        .iter()
+        .find(|e| e.kind == "record")
+        .unwrap();
+    let reference = entry.content_ref.clone().unwrap();
+    let mut result = Vec::new();
+    loop {
+        let (bytes, total) = follower.read_content(&reference, result.len()).unwrap();
+        assert!(bytes.len() <= 65536);
+        result.extend(bytes);
+        if result.len() == total {
+            break;
+        }
+    }
+    assert_eq!(serde_json::from_slice::<Value>(&result).unwrap(), block);
+    let whole = &entry.record_refs[0];
+    let (first, total) = follower.read_content(whole, 0).unwrap();
+    assert_eq!(first, source.as_bytes()[..first.len()]);
+    assert_eq!(total, source.len());
+    assert_eq!(
+        follower.read_content("source:0:1", 0),
+        Err("content_unavailable")
+    );
+    assert_eq!(
+        follower.read_content(&reference, result.len() + 1),
+        Err("invalid_content_offset")
+    );
+    fs::write(&path, line(&message("new", "replacement"))).unwrap();
+    follower.refresh(&path, SESSION).unwrap();
+    assert_eq!(
+        follower.read_content(&reference, 0),
+        Err("content_unavailable")
+    );
 }

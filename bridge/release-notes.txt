@@ -1,16 +1,12 @@
 Optional host companion for Herdcats native Claude Timeline.
 
-Patch fixes:
-- Reused buffer eliminates bounded allocator churn across repeated idle polls against large transcripts.
-- Minimal streaming deserialization preserves user text and completes tool runs from oversized records while omitting bulky image payloads.
-- Omission notices are recorded only when unrepresented blocks are actually skipped, keeping fully represented text messages and tool input accurate.
-- Unknown payload shapes (progress content objects, web search error objects, string-array tool outputs) are tolerated without invalidating transcripts.
-- Consecutive source-changing reads signal a delayed status while keeping verified history and recovering automatically.
-- Same-size source rewrites are detected even when filesystem timestamps collide.
-- Transient reads of the same session retry without clearing verified history.
-- Retention updates preserve generation and loaded history; only an evicted cursor expires.
-- Installation works with noexec temporary directories, and truncated script downloads cannot run setup.
-- Release builds are verified against their exact version-tag commit.
+Changes in this release:
+- Images have individual Timeline entries and on-demand original bytes instead of being omitted from streamed records.
+- Unfamiliar records and content blocks get fallback bubbles with complete original source access.
+- Text and tool entries retain links to their original records, including output shortened in previews.
+- Bounded content chunks revalidate the current native session, source generation and published reference before retrieval; no host file paths are accepted.
+- Rich content is negotiated explicitly; older clients keep the existing message/tool protocol behavior.
+- Large inline images stay out of live event frames. Existing transcript size, identity and retention bounds remain enforced.
 
 Install on the direct SSH computer that owns Herdr and the Claude transcripts:
 

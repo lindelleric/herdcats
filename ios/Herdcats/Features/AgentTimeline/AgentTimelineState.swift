@@ -145,8 +145,11 @@ import Observation
     private func validate(_ rows: [AgentTimelineEntry]) throws {
         guard rows.count <= 1000, Set(rows.map(\.id)).count == rows.count,
             rows.allSatisfy({
-                !$0.id.isEmpty && $0.id.utf8.count <= 264 && ["message", "tool"].contains($0.kind)
+                !$0.id.isEmpty && $0.id.utf8.count <= 264 && ["message", "tool", "image", "record"].contains($0.kind)
                     && $0.text.utf8.count <= 8192 && ($0.details?.utf8.count ?? 0) <= 8192
+                    && ($0.contentRef.map { TimelineContentReference.length($0) != nil } ?? !["image", "record"].contains($0.kind))
+                    && ($0.recordRefs?.count ?? 0) <= 4
+                    && ($0.recordRefs ?? []).allSatisfy { TimelineContentReference.length($0) != nil }
             })
         else { throw AgentBridgeError.invalidFrame }
     }

@@ -1,5 +1,8 @@
 import SwiftUI
 import UIKit
+import ImageIO
+import UniformTypeIdentifiers
+import QuickLook
 
 /// Native session content; the owning pane supplies its composition dock.
 struct AgentTimelineView: View {
@@ -13,6 +16,7 @@ struct AgentTimelineView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var activeClient: AgentBridgeClient?
     @State private var activeOwner: UUID?
     @State private var showsSetup = false
@@ -25,6 +29,7 @@ struct AgentTimelineView: View {
     @State private var fixtureHelperInstalled = false
     @State private var helperMayHaveInstalled = false
     @State private var retry = 0
+    @State private var contentFiles = TimelineContentFiles()
     @State private var isPaging = false
     @State private var pageError: String?
     @State private var following = true
@@ -81,14 +86,14 @@ struct AgentTimelineView: View {
                                     "No messages yet", systemImage: "text.bubble",
                                     description: Text("Messages from this session will appear here."))
                             }
-                            ForEach(timeline.entries) { entry in AgentTimelineEntryView(entry: entry).id(entry.id)
+                            ForEach(timeline.entries) { entry in
+                                let scope = contentScope
+                                AgentTimelineEntryView(entry: entry, files: contentFiles, scope: scope,
+                                    loadContent: { reference in try await loadContent(reference, scope: scope) })
+                                    .id("\(scope):\(entry.id)")
                             }
                             if timeline.delayed {
                                 Text("Source update delayed; showing verified history.")
-                                    .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
-                            }
-                            if timeline.unknownRecords > 0 {
-                                Text("Some session records are not displayed.")
                                     .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
                             }
                             if timeline.droppedEntries > 0 {
@@ -141,10 +146,13 @@ struct AgentTimelineView: View {
                     }
                 }
                 .overlay(alignment: .bottomTrailing) {
+                    Group {
                     if !atBottom && timeline.phase == .ready {
                         Button {
                             following = true
-                            proxy.scrollTo("timeline-bottom", anchor: .bottom)
+                            withAnimation(reduceMotion ? nil : .smooth(duration: 0.4)) {
+                                proxy.scrollTo("timeline-bottom", anchor: .bottom)
+                            }
                         } label: {
                             latestIcon
                         }
@@ -153,7 +161,10 @@ struct AgentTimelineView: View {
                         .accessibilityIdentifier("timeline-latest")
                         .padding(.trailing, 16)
                         .padding(.bottom, bottomOverlayInset + 8)
+                        .transition(.opacity)
                     }
+                    }
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: !atBottom && timeline.phase == .ready)
                 }
             }
         }
@@ -175,7 +186,7 @@ struct AgentTimelineView: View {
                         ? "The helper was not found yet. Run the command on your SSH host, then check again."
                         : explanation(code)
                 }
-                if code == "helper_missing" && !showsSetup { beginSetup() }
+                if ["helper_missing", "helper_update_required"].contains(code) && !showsSetup { beginSetup() }
             case .disconnected:
                 if isCheckingSetup {
                     isCheckingSetup = false
@@ -186,7 +197,8 @@ struct AgentTimelineView: View {
         }
         .onChange(of: connectionState) { _, _ in cancelHelperInstallation() }
         .onChange(of: scenePhase) { _, phase in if phase != .active { cancelHelperInstallation() } }
-        .onDisappear { cancelHelperInstallation() }
+        .onChange(of: contentScope) { _, _ in contentFiles.reset() }
+        .onDisappear { cancelHelperInstallation(); contentFiles.reset() }
         .sheet(isPresented: $showsSetup, onDismiss: {
             cancelHelperInstallation()
             if setupShouldUseTerminal { onUseTerminal() }
@@ -208,6 +220,23 @@ struct AgentTimelineView: View {
             .presentationCornerRadius(28)
         }
     }
+    private var contentScope: String {
+        "\(activeOwner?.uuidString ?? "none"):\(timeline.generation ?? 0):\(timeline.identity?.nativeSessionId ?? "")"
+    }
+    @MainActor private func loadContent(_ reference: String, scope: String) async throws -> Data {
+        guard scope == contentScope, timeline.phase == .ready else { throw AgentBridgeError.closed }
+        let result = try await contentFiles.data(key: "\(scope):\(reference)") {
+            #if DEBUG && targetEnvironment(simulator)
+            if ScreenshotFixtures.enabled { return try AgentTimelineScreenshotFixture.content(reference: reference) }
+            #endif
+            guard let client = activeClient, let identity = timeline.identity, let generation = timeline.generation else { throw AgentBridgeError.closed }
+            return try await client.content(reference: reference, generation: generation, identity: identity)
+        }
+        try Task.checkCancellation()
+        guard scope == contentScope, timeline.phase == .ready else { throw AgentBridgeError.closed }
+        return result
+    }
+
     @ViewBuilder private var latestIcon: some View {
         let icon = Image(systemName: "arrow.down")
             .font(.system(size: 18, weight: .semibold))
@@ -225,7 +254,8 @@ struct AgentTimelineView: View {
 
     private func beginSetup() {
         setupShouldUseTerminal = true
-        setupFeedback = nil
+        setupFeedback = timeline.phase == .unavailable("helper_update_required")
+            ? "Update the host helper to display images and inspect complete session records." : nil
         showsSetup = true
     }
     @MainActor private func startHelperInstallation() {
@@ -359,7 +389,7 @@ struct AgentTimelineView: View {
             } description: {
                 Text(explanation(code))
             } actions: {
-                if ["helper_missing", "protocol_mismatch", "record_too_large"].contains(code) {
+                if ["helper_missing", "helper_update_required", "protocol_mismatch", "record_too_large"].contains(code) {
                     Button("Set up Timeline") { beginSetup() }
                         .buttonStyle(.herdrPrimary)
                         .accessibilityIdentifier("timeline-helper-setup")
@@ -374,6 +404,8 @@ struct AgentTimelineView: View {
         switch code {
         case "helper_missing":
             return "Install the small host helper to see this session as native messages. Terminal is available now."
+        case "helper_update_required":
+            return "Update the host helper to display images and inspect complete session records."
         case "unsupported_agent":
             return "Timeline is not available for this agent yet. You can still send messages below or use Terminal."
         case "routed_host_unsupported": return "Native history is not available through saved machines yet. Messages can still be sent below."
@@ -463,9 +495,30 @@ struct AgentTimelineView: View {
 
 private struct AgentTimelineEntryView: View {
     let entry: AgentTimelineEntry
+    let files: TimelineContentFiles
+    let scope: String
+    let loadContent: @MainActor (String) async throws -> Data
+    @State private var thumbnail: UIImage?
+    @State private var originalURL: URL?
+    @State private var previewURL: URL?
+    @State private var imageLink: URL?
+    @State private var imageError: String?
+    @State private var selectedSource: TimelineSourceSelection?
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if entry.kind == "tool" {
+            if entry.kind == "image" {
+                imageContent
+            } else if entry.kind == "record" {
+                Label(entry.text.isEmpty ? "Session record" : entry.text, systemImage: "doc.text")
+                    .font(.jost(.subheadline, weight: .semibold))
+                DisclosureGroup("Record details") {
+                    Text(entry.details ?? entry.text).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                }
+                if let reference = entry.contentRef {
+                    Button("View full record") { selectedSource = TimelineSourceSelection(reference: reference) }
+                        .accessibilityIdentifier("timeline-source-\(entry.id)")
+                }
+            } else if entry.kind == "tool" {
                 DisclosureGroup {
                     if let input = entry.details, !input.isEmpty {
                         Text("Input").font(.jost(.caption, weight: .semibold))
@@ -491,7 +544,18 @@ private struct AgentTimelineEntryView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if entry.truncated {
-                Text("Entry shortened").font(.jost(.caption)).foregroundStyle(Theme.textMuted)
+                Text("Preview shortened. Open the original record for complete content.")
+                    .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
+            }
+            if let references = entry.recordRefs, !references.isEmpty {
+                DisclosureGroup("Original records") {
+                    ForEach(Array(references.enumerated()), id: \.offset) { index, reference in
+                        Button(references.count == 1 ? "View original record" : "View original record \(index + 1)") {
+                            selectedSource = TimelineSourceSelection(reference: reference)
+                        }
+                    }
+                }
+                .font(.jost(.caption))
             }
         }
         .foregroundStyle(Theme.text).frame(maxWidth: .infinity, alignment: .leading)
@@ -500,6 +564,51 @@ private struct AgentTimelineEntryView: View {
         .overlay {
             RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.lg).strokeBorder(
                 Theme.hairline, lineWidth: 1)
+        }
+        .task(id: entry.contentRef) { if entry.kind == "image" { await loadImage() } }
+        .onDisappear { thumbnail = nil }
+        .quickLookPreview($previewURL)
+        .sheet(item: $selectedSource) { source in
+            TimelineSourceView(reference: source.reference, scope: scope, files: files, loadContent: loadContent)
+        }
+    }
+    @ViewBuilder private var imageContent: some View {
+        Text(entry.role == "user" ? "You" : "Agent").font(.jost(.caption, weight: .semibold)).foregroundStyle(Theme.textMuted)
+        if let thumbnail {
+            Button { previewURL = originalURL } label: {
+                Image(uiImage: thumbnail).resizable().scaledToFit().frame(maxHeight: 320)
+                    .accessibilityLabel("Session image")
+                    .accessibilityIdentifier("timeline-image-\(entry.id)")
+            }.buttonStyle(.plain)
+            Text("Tap to open original").font(.jost(.caption)).foregroundStyle(Theme.textMuted)
+        } else if let imageLink {
+            Label("Image link", systemImage: "photo")
+            Text(imageLink.absoluteString).font(.jost(.caption)).textSelection(.enabled)
+            Link("Open image", destination: imageLink)
+        } else if let imageError {
+            Label("Image", systemImage: "photo")
+            Text(imageError).font(.jost(.caption)).foregroundStyle(Theme.textMuted)
+            Button("Retry") { Task { await loadImage() } }
+        } else {
+            ProgressView("Loading image…")
+        }
+    }
+    @MainActor private func loadImage() async {
+        guard let reference = entry.contentRef else { imageError = "Image reference is unavailable."; return }
+        imageError = nil
+        do {
+            let data = try await loadContent(reference)
+            let decoded = try await Task.detached(priority: .userInitiated) { try TimelineImagePayload.decode(data) }.value
+            try Task.checkCancellation()
+            switch decoded {
+            case .image(let preview, let original, let suffix):
+                originalURL = try files.file(data: original, key: "\(scope):\(reference):image", name: "Session image.\(suffix)")
+                thumbnail = UIImage(data: preview)
+                if thumbnail == nil { throw AgentBridgeError.invalidFrame }
+            case .link(let url): imageLink = url
+            }
+        } catch {
+            if !Task.isCancelled { imageError = "This image could not be displayed. Its complete original record is available below." }
         }
     }
     private var toolStatus: String {
@@ -656,4 +765,119 @@ private struct AgentBridgeSetupView: View {
 private struct TimelineAtBottomPreferenceKey: PreferenceKey {
     static var defaultValue: Bool { true }
     static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value && nextValue() }
+}
+
+@MainActor private final class TimelineContentFiles {
+    private let cache = NSCache<NSString, NSData>()
+    private let directory = FileManager.default.temporaryDirectory.appendingPathComponent("timeline-" + UUID().uuidString)
+    private var files: [String: URL] = [:]
+    init() { cache.totalCostLimit = 32 * 1024 * 1024 }
+    func data(key: String, load: @MainActor () async throws -> Data) async throws -> Data {
+        if let bytes = cache.object(forKey: key as NSString) { return bytes as Data }
+        let bytes = try await load()
+        try Task.checkCancellation()
+        cache.setObject(bytes as NSData, forKey: key as NSString, cost: bytes.count)
+        return bytes
+    }
+    func file(data: Data, key: String, name: String) throws -> URL {
+        if let file = files[key], FileManager.default.fileExists(atPath: file.path) { return file }
+        let folder = directory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let url = folder.appendingPathComponent(name)
+        try data.write(to: url, options: [.atomic, .completeFileProtection])
+        files[key] = url
+        return url
+    }
+    func reset() { cache.removeAllObjects(); files.removeAll(); try? FileManager.default.removeItem(at: directory) }
+    deinit { try? FileManager.default.removeItem(at: directory) }
+}
+
+private struct TimelineSourceSelection: Identifiable { let reference: String; var id: String { reference } }
+private struct TimelineSourceView: View {
+    let reference: String
+    let scope: String
+    let files: TimelineContentFiles
+    let loadContent: @MainActor (String) async throws -> Data
+    @Environment(\.dismiss) private var dismiss
+    @State private var bytes: Data?
+    @State private var exportURL: URL?
+    @State private var page = 0
+    @State private var error: String?
+    private var ranges: [Range<Int>] { bytes.map(TimelineSourcePages.ranges) ?? [] }
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let bytes, !ranges.isEmpty {
+                    VStack(spacing: 12) {
+                        ScrollView {
+                            Text(String(decoding: bytes[ranges[min(page, ranges.count - 1)]], as: UTF8.self))
+                                .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading).padding()
+                        }
+                        if ranges.count > 1 {
+                            HStack {
+                                Button("Previous") { page -= 1 }.disabled(page == 0)
+                                Spacer()
+                                Text("Page \(page + 1) of \(ranges.count)").font(.jost(.caption))
+                                Spacer()
+                                Button("Next") { page += 1 }.disabled(page >= ranges.count - 1)
+                            }.padding()
+                        }
+                    }
+                } else if let error {
+                    ContentUnavailableView("Record unavailable", systemImage: "doc.text", description: Text(error))
+                } else { ProgressView("Loading complete record…") }
+            }
+            .background(Theme.background)
+            .navigationTitle("Session record").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) {
+                    if let exportURL {
+                        ShareLink(item: exportURL).accessibilityIdentifier("timeline-source-share")
+                    }
+                }
+            }
+            .task(id: reference) {
+                do {
+                    let data = try await loadContent(reference)
+                    try Task.checkCancellation()
+                    exportURL = try files.file(data: data, key: "\(scope):\(reference):record", name: "Session record.json")
+                    bytes = data
+                } catch {
+                    if !Task.isCancelled { self.error = "The source may have changed or disconnected. Reopen this record after Timeline reconnects." }
+                }
+            }
+        }
+    }
+}
+
+enum TimelineImagePayload: Sendable {
+    case image(preview: Data, original: Data, suffix: String)
+    case link(URL)
+    nonisolated static func decode(_ data: Data) throws -> Self {
+        guard let block = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let source = block["source"] as? [String: Any] else { throw AgentBridgeError.invalidFrame }
+        if let raw = source["url"] as? String, let url = URL(string: raw),
+           ["https", "http"].contains(url.scheme?.lowercased() ?? ""), url.host != nil { return .link(url) }
+        guard let encoded = source["data"] as? String, let original = Data(base64Encoded: encoded),
+              let image = CGImageSourceCreateWithData(original as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let properties = CGImageSourceCopyPropertiesAtIndex(image, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
+              let height = properties[kCGImagePropertyPixelHeight] as? NSNumber,
+              width.doubleValue > 0, height.doubleValue > 0,
+              width.doubleValue * height.doubleValue <= 200_000_000,
+              let thumbnail = CGImageSourceCreateThumbnailAtIndex(image, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: 1024,
+                kCGImageSourceShouldCacheImmediately: true] as CFDictionary) else { throw AgentBridgeError.invalidFrame }
+        let preview = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(preview, UTType.png.identifier as CFString, 1, nil) else { throw AgentBridgeError.invalidFrame }
+        CGImageDestinationAddImage(destination, thumbnail, nil)
+        guard CGImageDestinationFinalize(destination) else { throw AgentBridgeError.invalidFrame }
+        let identifier = CGImageSourceGetType(image).map { $0 as String } ?? UTType.data.identifier
+        let suffix = UTType(identifier)?.preferredFilenameExtension ?? "image"
+        return .image(preview: preview as Data, original: original, suffix: suffix)
+    }
 }

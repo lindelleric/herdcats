@@ -167,7 +167,7 @@ final class AgentTimelineUITests: XCTestCase {
             XCTAssertTrue(feedback.waitForExistence(timeout: 5))
             XCTAssertFalse(app.staticTexts["Conversation"].exists)
             if scenario == "replacement" {
-                XCTAssertEqual(install.label, "Replace helper with 0.1.3")
+                XCTAssertEqual(install.label, "Replace helper with 0.1.4")
                 install.tap()
                 XCTAssertTrue(app.staticTexts["Conversation"].waitForExistence(timeout: 5))
             } else if scenario == "uncertain" {
@@ -267,6 +267,7 @@ final class AgentTimelineUITests: XCTestCase {
             if !latest.exists { break }
         }
         XCTAssertTrue(latest.waitForNonExistence(timeout: 5), "No jump button at the bottom")
+        XCTAssertFalse(app.staticTexts["Some session records are not displayed."].exists)
         scroll.swipeDown()
         XCTAssertTrue(latest.waitForExistence(timeout: 5))
         XCTAssertEqual(latest.frame.width, latest.frame.height, accuracy: 1)
@@ -298,6 +299,23 @@ final class AgentTimelineUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["No messages yet"].waitForExistence(timeout: 5))
         scroll.swipeDown()
         XCTAssertFalse(app.buttons["timeline-latest"].exists)
+        app.terminate()
+    }
+
+    func testImagesRenderAndUnfamiliarRecordsKeepTheirFullContents() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-rich-content", "-hc.light", "-paneShowComposeByDefault", "NO"]
+        launch(app)
+        let scroll = app.scrollViews["agent-timeline-scroll"]
+        XCTAssertTrue(scroll.waitForExistence(timeout: 5))
+        for _ in 0..<4 { scroll.swipeUp() }
+        XCTAssertTrue(app.descendants(matching: .any)["timeline-image-content:image"].firstMatch.waitForExistence(timeout: 5))
+        let original = app.buttons["timeline-source-content:unfamiliar"]
+        XCTAssertTrue(original.waitForExistence(timeout: 5))
+        original.tap()
+        XCTAssertTrue(app.navigationBars["Session record"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Every field is preserved")).firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["timeline-source-share"].exists)
         app.terminate()
     }
 

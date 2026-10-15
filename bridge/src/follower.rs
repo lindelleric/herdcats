@@ -24,6 +24,7 @@ impl Stamp {
 }
 #[derive(Default)]
 pub struct Follower {
+    preserve_content: bool,
     pub transcript: Transcript,
     pub offset: u64,
     pub generation: u64,
@@ -33,6 +34,42 @@ pub struct Follower {
     buf: Vec<u8>,
 }
 impl Follower {
+    pub fn with_content() -> Self {
+        Self {
+            preserve_content: true,
+            ..Self::default()
+        }
+    }
+    pub fn read_content(&self, reference: &str, offset: usize) -> Result<(Vec<u8>, usize)> {
+        if !self.transcript.entries.iter().any(|entry| {
+            entry.content_ref.as_deref() == Some(reference)
+                || entry.record_refs.iter().any(|r| r == reference)
+        }) {
+            return Err("content_unavailable");
+        }
+        let mut parts = reference.split(':');
+        if parts.next() != Some("source") {
+            return Err("content_unavailable");
+        }
+        let start = parts
+            .next()
+            .and_then(|s| s.parse::<usize>().ok())
+            .ok_or("content_unavailable")?;
+        let length = parts
+            .next()
+            .and_then(|s| s.parse::<usize>().ok())
+            .ok_or("content_unavailable")?;
+        if parts.next().is_some() || offset > length {
+            return Err("invalid_content_offset");
+        }
+        let end = start
+            .checked_add(length)
+            .filter(|end| *end <= self.bytes.len())
+            .ok_or("content_unavailable")?;
+        let source = &self.bytes[start..end];
+        let next = offset.saturating_add(64 * 1024).min(source.len());
+        Ok((source[offset..next].to_vec(), source.len()))
+    }
     pub fn refresh(&mut self, path: &Path, session: &str) -> Result<bool> {
         self.refresh_file(crate::resolver::open_absolute(path, false)?, session)
     }
@@ -89,14 +126,23 @@ impl Follower {
             if part.last() != Some(&b'\n') {
                 break;
             }
-            if part.len() > MAX_RECORD {
-                // Image tool results can exceed the normal record limit. Use
-                // bounded minimal deserialization to keep text and complete
-                // tool calls while skipping bulky image payloads.
-                transcript.apply_oversized(part, session)?;
-            } else if part != b"\n" {
-                let row = serde_json::from_slice(part).map_err(|_| "invalid_transcript")?;
-                transcript.apply(&row, session)?;
+            if part != b"\n" {
+                let result = if part.len() > MAX_RECORD {
+                    transcript.apply_oversized(part, session)
+                } else {
+                    let row = serde_json::from_slice(part).map_err(|_| "invalid_transcript")?;
+                    transcript.apply(&row, session)
+                };
+                // Valid but unfamiliar message shapes remain inspectable as raw
+                // records. Ownership/security and resource-limit errors still fail.
+                if let Err(code) = result {
+                    if code != "invalid_transcript" || !self.preserve_content {
+                        return Err(code);
+                    }
+                }
+                if self.preserve_content {
+                    transcript.preserve_record(part, session, offset)?;
+                }
             }
             offset += part.len();
         }
@@ -108,7 +154,8 @@ impl Follower {
             self.bytes.clear();
             self.bytes.extend_from_slice(&self.buf[..offset]);
         } else {
-            self.bytes.extend_from_slice(&self.buf[self.bytes.len()..offset]);
+            self.bytes
+                .extend_from_slice(&self.buf[self.bytes.len()..offset]);
         }
         self.offset = offset as u64;
         self.transcript = transcript;

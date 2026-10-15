@@ -7,8 +7,11 @@ struct AgentBridgeParams: Encodable, Sendable {
     var paneId: String? = nil
     var generation: UInt64? = nil
     var before: String? = nil
+    var recordContent: Bool? = nil
+    var contentRef: String? = nil
+    var offset: Int? = nil
 }
-enum AgentBridgeMethod: String, Sendable { case initialize, watch, history }
+enum AgentBridgeMethod: String, Sendable { case initialize, watch, history, content }
 
 /// One non-PTY channel, with bounded request correlation and no agent mutations.
 /// Cancellation closes this channel explicitly: canceling an async iterator
@@ -28,6 +31,7 @@ actor AgentBridgeClient {
     private var closeTransport: (@Sendable () async -> Void)?
     private let onEvent: @Sendable (AgentBridgeFrame) async throws -> Void
     private var pending: [String: Pending] = [:]
+    private var retiredContentRequests: Set<String> = []
     private var framer = AgentBridgeFramer()
     private var streamTask: Task<Void, Never>?
     private var opening: CheckedContinuation<Void, Error>?
@@ -74,12 +78,15 @@ actor AgentBridgeClient {
                     } catch { await self.stop((error as? AgentBridgeError) ?? .closed) }
                 }
             }
-            let handshake = try await request(.initialize, params: AgentBridgeParams(protocol: 1))
+            let handshake = try await request(.initialize, params: AgentBridgeParams(protocol: 1, recordContent: true))
             guard handshake.protocol == 1, handshake.epoch?.isEmpty == false else {
                 throw AgentBridgeError.protocolMismatch
             }
             guard handshake.capabilities?.claudeTimeline == true else {
                 throw AgentBridgeError.unavailable("transcript_root_unavailable")
+            }
+            guard handshake.capabilities?.recordContent == true else {
+                throw AgentBridgeError.unavailable("helper_update_required")
             }
             _ = try await request(.watch, params: AgentBridgeParams(paneId: paneId))
             try Task.checkCancellation()
@@ -100,14 +107,46 @@ actor AgentBridgeClient {
         opening = nil
         continuation?.resume()
     }
+    func content(reference: String, generation: UInt64, identity: AgentTimelineIdentity) async throws -> Data {
+        guard let expectedLength = TimelineContentReference.length(reference) else { throw AgentBridgeError.invalidFrame }
+        var bytes = Data()
+        while bytes.count < expectedLength {
+            try Task.checkCancellation()
+            let reply = try await request(.content, params: AgentBridgeParams(generation: generation, contentRef: reference, offset: bytes.count), timeout: 10)
+            guard reply.identity == identity, reply.generation == generation else { throw AgentBridgeError.identityMismatch }
+            guard reply.contentRef == reference, reply.offset == bytes.count, reply.total == expectedLength,
+                  let hex = reply.hex, hex.utf8.count <= 131072, hex.utf8.count.isMultiple(of: 2) else { throw AgentBridgeError.invalidFrame }
+            let digits = Array(hex.utf8)
+            var chunk = Data(); chunk.reserveCapacity(digits.count / 2)
+            func nibble(_ byte: UInt8) -> UInt8? {
+                switch byte { case 48...57: byte - 48; case 97...102: byte - 87; default: nil }
+            }
+            for index in stride(from: 0, to: digits.count, by: 2) {
+                guard let high = nibble(digits[index]), let low = nibble(digits[index + 1]) else { throw AgentBridgeError.invalidFrame }
+                chunk.append(high * 16 + low)
+            }
+            guard !chunk.isEmpty, chunk.count <= expectedLength - bytes.count,
+                  reply.nextOffset == bytes.count + chunk.count else { throw AgentBridgeError.invalidFrame }
+            bytes.append(chunk)
+        }
+        try Task.checkCancellation()
+        return bytes
+    }
+    private func retireContentRequest(_ id: String, error: AgentBridgeError) async {
+        guard let request = pending.removeValue(forKey: id) else { return }
+        request.timeout.cancel()
+        request.continuation.resume(throwing: error)
+        guard retiredContentRequests.count < 64 else { await stop(.closed); return }
+        retiredContentRequests.insert(id)
+    }
     func request(_ method: AgentBridgeMethod, params: AgentBridgeParams, timeout: TimeInterval = 5)
         async throws -> AgentBridgePayload
     {
-        try await withTaskCancellationHandler {
+        let id = UUID().uuidString
+        return try await withTaskCancellationHandler {
             try Task.checkCancellation()
             guard closedError == nil, let write else { throw closedError ?? .closed }
             guard pending.count < 16 else { throw AgentBridgeError.unavailable("too_many_requests") }
-            let id = UUID().uuidString
             let encoder = JSONEncoder()
             encoder.keyEncodingStrategy = .convertToSnakeCase
             var bytes = try encoder.encode(Request(id: id, method: method.rawValue, params: params))
@@ -116,7 +155,8 @@ actor AgentBridgeClient {
             return try await withCheckedThrowingContinuation { continuation in
                 let timeoutTask = Task {
                     do { try await Task.sleep(for: .seconds(timeout)) } catch { return }
-                    await self.stop(.timeout)
+                    if method == .content { await self.retireContentRequest(id, error: .timeout) }
+                    else { await self.stop(.timeout) }
                 }
                 pending[id] = Pending(continuation: continuation, timeout: timeoutTask)
                 Task {
@@ -129,7 +169,10 @@ actor AgentBridgeClient {
                 }
             }
         } onCancel: {
-            Task { await self.close() }
+            Task {
+                if method == .content { await self.retireContentRequest(id, error: .closed) }
+                else { await self.close() }
+            }
         }
     }
     func receive(_ bytes: Data) async {
@@ -138,6 +181,7 @@ actor AgentBridgeClient {
             for frame in try framer.append(bytes) {
                 guard closedError == nil else { return }
                 if let id = frame.id {
+                    if retiredContentRequests.remove(id) != nil { continue }
                     guard frame.event == nil, let request = pending.removeValue(forKey: id) else {
                         throw AgentBridgeError.invalidFrame
                     }
@@ -271,8 +315,8 @@ extension HerdrConnection {
 
 /// Immutable release selected by this app build, not a host-supplied URL.
 enum HostHelperSetupPlan {
-    static let version = "0.1.3"
-    static let installerSHA256 = "7e04cf29f32a45d53594346dec0aec7f5dcea697b162303e6bae1987f56795d4"
+    static let version = "0.1.4"
+    static let installerSHA256 = "979c4a0fa8a6620c1748e76ceaa4be0b90b8e7dba13538202ed8c540656092a3"
     static func installationScript(replace: Bool) -> String {
         return #"""
         set -eu

@@ -16,6 +16,10 @@ pub struct Entry {
     pub status: Option<String>,
     pub details: Option<String>,
     pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub record_refs: Vec<String>,
 }
 #[derive(Default, Clone)]
 pub struct Transcript {
@@ -48,8 +52,11 @@ fn text_content(value: &Value) -> String {
         .unwrap_or_default()
 }
 impl Transcript {
-    fn upsert(&mut self, entry: Entry) -> Result<()> {
+    pub(crate) fn upsert(&mut self, mut entry: Entry) -> Result<()> {
         if let Some(old) = self.entries.iter_mut().find(|old| old.id == entry.id) {
+            if entry.record_refs.is_empty() {
+                entry.record_refs = old.record_refs.clone();
+            }
             *old = entry;
         } else {
             if self.seen.contains(&entry.id) {
@@ -121,6 +128,8 @@ impl Transcript {
                 status: None,
                 details: None,
                 truncated,
+                content_ref: None,
+                record_refs: Vec::new(),
             })?;
         }
         if let Some(blocks) = content.as_array() {
@@ -154,6 +163,8 @@ impl Transcript {
                             status: Some(status),
                             details: Some(details),
                             truncated: truncated || name_truncated || output_truncated,
+                            content_ref: None,
+                            record_refs: Vec::new(),
                         })?;
                     }
                     Some("tool_result") => {
@@ -258,6 +269,8 @@ impl Transcript {
                 status: None,
                 details: None,
                 truncated,
+                content_ref: None,
+                record_refs: Vec::new(),
             })?;
         }
 
@@ -293,6 +306,8 @@ impl Transcript {
                             status: Some(status),
                             details: Some(details),
                             truncated: truncated || name_truncated || output_truncated,
+                            content_ref: None,
+                            record_refs: Vec::new(),
                         })?;
                     }
                     "tool_result" => {
@@ -314,12 +329,9 @@ impl Transcript {
                         {
                             let (text, truncated) = bounded(&res_text);
                             old.text = text;
-                            let is_error = block
-                                .is_error
-                                .map(|r| r.get() == "true")
-                                .unwrap_or(false);
-                            old.status =
-                                Some(if is_error { "failed" } else { "completed" }.into());
+                            let is_error =
+                                block.is_error.map(|r| r.get() == "true").unwrap_or(false);
+                            old.status = Some(if is_error { "failed" } else { "completed" }.into());
                             old.truncated |= truncated;
                         }
                     }

@@ -1,8 +1,8 @@
 {
-  "date": "2026-10-14",
+  "date": "2026-10-15",
   "status": "claude_read_only_host_foundation_verified",
   "tests": {
-    "rust": 41,
+    "rust": 47,
     "rust_result": "passed",
     "command": "cargo test --manifest-path bridge/Cargo.toml --offline",
     "clippy": "all targets with -D warnings passed",
@@ -10,7 +10,7 @@
     "phase0_result": "passed",
     "installer": 9,
     "installer_result": "passed against debug and release binaries in temporary directories",
-    "release_build": "0.1.3 release --locked --offline passed; all four native CI jobs passed",
+    "release_build": "0.1.4 release --locked --offline passed; native CI pending",
     "setup_distribution_python": 33,
     "setup_distribution_result": "33 passed, including9 tests executing the actual mobile probe/install shell scripts"
   },
@@ -114,5 +114,14 @@
       "Final pass ran41Rust tests and Clippy; did not repeat iOS tests",
       "Combined-state iOS CI pending at review time"
     ]
+  },
+  "rich_content": {
+    "version": "0.1.4",
+    "negotiation": "initialize.record_content=true required for image/record entries and content method; older clients unchanged",
+    "preservation": "Full original record/block byte spans; images referenced rather than embedded in live frames; unfamiliar shapes receive individual bubbles",
+    "security": "Current native occupant, verified source, generation and retained published reference checked on each chunk",
+    "limits": "64MiB verified source,64KiB content chunks,8192-byte previews,1000 retained entries; hard source failures remain explicit",
+    "review": "Independent review found no P0/P1; P2 unfamiliar text shape fixed with regression",
+    "validation": "47 Rust tests,33 installer/distribution tests, Clippy and local release build passed"
   }
 }

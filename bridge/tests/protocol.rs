@@ -44,6 +44,7 @@ impl Server {
             while !done.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        stream.set_nonblocking(false).unwrap();
                         stream
                             .set_read_timeout(Some(Duration::from_millis(500)))
                             .unwrap();
@@ -399,4 +400,52 @@ fn oversized_agent_status_is_rejected_before_event_serialization() {
     peer.initialize();
     let frame = peer.watch();
     assert_eq!(frame["data"]["code"], "invalid_herdr_response");
+}
+
+#[test]
+fn content_reads_are_lossless_generation_bound_and_revalidated_against_live_occupant() {
+    let server = Server::new();
+    let block =
+        json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}});
+    server.transcript(
+        SESSION,
+        &format!(
+            "{}\n",
+            json!({"type":"user","uuid":"image","sessionId":SESSION,"message":{"content":[block]}})
+        ),
+    );
+    let mut peer = Peer::new(&server);
+    peer.send(
+        json!({"id":"init","method":"initialize","params":{"protocol":1,"record_content":true}}),
+    );
+    assert_eq!(
+        peer.next()["result"]["capabilities"]["record_content"],
+        true
+    );
+    let snap = peer.watch();
+    let reference = snap["data"]["entries"][0]["content_ref"].clone();
+    let generation = snap["data"]["generation"].clone();
+    peer.send(json!({"id":"content","method":"content","params":{"generation":generation,"content_ref":reference,"offset":0}}));
+    let result = peer.next();
+    assert_eq!(result["id"], "content");
+    let hex = result["result"]["hex"].as_str().unwrap();
+    let bytes: Vec<u8> = (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+        .collect();
+    assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), block);
+    peer.send(json!({"id":"forged","method":"content","params":{"generation":generation,"content_ref":"source:0:1","offset":0}}));
+    assert_eq!(peer.next()["error"]["code"], "content_unavailable");
+    peer.send(json!({"id":"stale","method":"content","params":{"generation":9999,"content_ref":reference,"offset":0}}));
+    assert_eq!(peer.next()["error"]["code"], "stale_cursor");
+    server.state.lock().unwrap()["panes"][0]["agent_session"]["value"] = json!(OTHER);
+    server.transcript(OTHER, &row(OTHER, "other", "unrelated"));
+    peer.send(json!({"id":"old","method":"content","params":{"generation":generation,"content_ref":reference,"offset":0}}));
+    loop {
+        let frame = peer.next();
+        if frame["id"] == "old" {
+            assert_eq!(frame["error"]["code"], "stale_cursor");
+            break;
+        }
+    }
 }
