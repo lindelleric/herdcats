@@ -1,6 +1,6 @@
 {
   "date": "2026-10-15",
-  "status": "agent_neutral_timeline_gated_by_implemented_adapter",
+  "status": "rich_timeline_content_and_original_source_verified",
   "scope": "Native Claude Timeline and dark Terminal share the original floating Compose overlay with voice/photo controls; raw Terminal input remains available. Explicit host-helper installation over the displayed direct SSH connection, with manual fallback.",
   "features": [
     "Protocol1 non-PTY Citadel client with request correlation and bounded Unicode NDJSON",
@@ -143,7 +143,7 @@
     "ios/Herdcats/Features/AgentTimeline/AgentTimelineState.swift",
     "ios/Herdcats/Features/AgentTimeline/AgentTimelineView.swift"
   ],
-  "onboarding_release_gate": "Helper0.1.4 release validation pending; app not merged or deployed.",
+  "onboarding_release_gate": "Helper0.1.4 published after explicit user approval; four native jobs and public installer passed. App not merged or deployed.",
   "first_use_drawer": {
     "size": "large detent with drag indicator",
     "preference_scope": "ConnectionIdentity.storageKey (SSH host, port, user and route identity)",
@@ -243,9 +243,16 @@
       "unit_result": "passed,2 opt-in live SSH cases skipped",
       "focused_ui": 3,
       "focused_result": "passed: images/full source, smooth Latest button behavior, fitting history",
-      "full_ui": "pending",
-      "log": "/private/tmp/hc-rich-content-full.log"
+      "full_ui": "15 passed; /private/tmp/hc-rich-all-ui.log",
+      "log": "/private/tmp/hc-rich-content-full.log",
+      "pr_ci": "CI38670431390 passed: iOS, web, bridge on macOS26 and Ubuntu",
+      "original_image": "Passed focused follow-up: actual Quick Look controller, asynchronously rendered original image and full fallback source. /private/tmp/hc-rich-image-original-green.log"
     },
-    "review": "Independent reviewer found no P0/P1; unfamiliar text-block P2 fixed with regression"
+    "review": "Independent reviewer found no P0/P1; unfamiliar text-block P2 fixed with regression",
+    "helper_release": "https://github.com/zhiyao/herdcats/releases/tag/herdcats-bridge-v0.1.4",
+    "screenshots": [
+      ".lavish/timeline-rich-content.png",
+      ".lavish/timeline-original-image.png"
+    ]
   }
 }

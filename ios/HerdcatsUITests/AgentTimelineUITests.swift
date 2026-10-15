@@ -309,7 +309,26 @@ final class AgentTimelineUITests: XCTestCase {
         let scroll = app.scrollViews["agent-timeline-scroll"]
         XCTAssertTrue(scroll.waitForExistence(timeout: 5))
         for _ in 0..<4 { scroll.swipeUp() }
-        XCTAssertTrue(app.descendants(matching: .any)["timeline-image-content:image"].firstMatch.waitForExistence(timeout: 5))
+        let image = app.descendants(matching: .any)["timeline-image-content:image"].firstMatch
+        XCTAssertTrue(image.waitForExistence(timeout: 5))
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Timeline image and unfamiliar record"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        image.tap()
+        let originalPreview = app.otherElements["QLPreviewControllerView"]
+        XCTAssertTrue(originalPreview.waitForExistence(timeout: 5))
+        XCTAssertTrue(originalPreview.images.firstMatch.waitForExistence(timeout: 10))
+        let preview = XCTAttachment(screenshot: app.screenshot())
+        preview.name = "Original session image"
+        preview.lifetime = .keepAlways
+        add(preview)
+        // Quick Look may hide its chrome. Reopen the fixture for the separate
+        // source-record assertion instead of depending on a system button label.
+        app.terminate()
+        launch(app)
+        XCTAssertTrue(scroll.waitForExistence(timeout: 5))
+        for _ in 0..<4 { scroll.swipeUp() }
         let original = app.buttons["timeline-source-content:unfamiliar"]
         XCTAssertTrue(original.waitForExistence(timeout: 5))
         original.tap()

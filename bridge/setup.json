@@ -55,7 +55,7 @@
     "Codex, saved-machine routing and native approvals/questions remain gated"
   ],
   "onboarding": {
-    "status": "0.1.4 release validation pending",
+    "status": "0.1.4 published and public installer verified",
     "app_flow": [
       "For a supported agent, missing helper automatically opens near-full-screen Timeline benefits and host-helper setup guidance",
       "Dismiss or Use Terminal for now selects Terminal and remembers the SSH-host choice",
@@ -76,7 +76,7 @@
       "Linux glibc2.35+ arm64/x86_64"
     ],
     "release_workflow": ".github/workflows/bridge-release.yml",
-    "publication": "Previous0.1.3 published;0.1.4 native build and public installer verification pending",
+    "publication": "Four native builds and draft assembly passed in CI38670425066; user approved publication; public HTTPS installer verified in owned temporary HOME",
     "download_boundary": "HTTPS release assets and same-channel SHA256SUMS; checksums are integrity checks, not independent signing",
     "build_dependencies": "Rust and Python are required only for source-build/development path below",
     "app_installer_integrity": "App pins the install.sh SHA256 before execution; installer checks native binary checksum. This does not add independent release signing.",
