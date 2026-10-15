@@ -26,10 +26,15 @@ enum ScreenshotFixtures {
                           "is_linked_worktree": false]]
         }
     }
+    static var paneAgent: String {
+        let args = ProcessInfo.processInfo.arguments
+        guard let index = args.firstIndex(of: "-hc.agent"), index + 1 < args.count else { return "claude" }
+        return args[index + 1]
+    }
     static var panes: [[String: Any]] {
         projects.indices.map { index in
             ["pane_id": "p\(index)", "tab_id": "t\(index)", "workspace_id": "w\(index)",
-             "agent": providers[index], "agent_status": statuses[index],
+             "agent": index == 0 ? paneAgent : providers[index], "agent_status": statuses[index],
              "cwd": "/Users/demo/Projects/\(projects[index].lowercased().replacingOccurrences(of: " ", with: "-"))",
              "terminal_title_stripped": titles[index], "terminal_title": titles[index],
              "focused": index == 0, "revision": 1, "state_change_seq": 10 - index]

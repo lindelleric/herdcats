@@ -1,6 +1,6 @@
 {
-  "date": "2026-10-14",
-  "status": "explicit_one_click_host_helper_setup_verified",
+  "date": "2026-10-15",
+  "status": "agent_neutral_timeline_gated_by_implemented_adapter",
   "scope": "Native Claude Timeline and dark Terminal share the original floating Compose overlay with voice/photo controls; raw Terminal input remains available. Explicit host-helper installation over the displayed direct SSH connection, with manual fallback.",
   "features": [
     "Protocol1 non-PTY Citadel client with request correlation and bounded Unicode NDJSON",
@@ -36,20 +36,20 @@
   ],
   "validation": {
     "ios_unit": {
-      "total": 389,
-      "passed": 387,
+      "total": 390,
+      "passed": 388,
       "skipped": 2,
       "result": "passed",
       "command": "xcodebuild test -project ios/Herdcats.xcodeproj -scheme Herdcats -destination 'platform=iOS Simulator,id=<available simulator>' -only-testing:HerdcatsTests CODE_SIGN_IDENTITY=-",
       "note": "Initial unsigned run had existing Keychain entitlement errors. Signed full-suite rerun passed.",
-      "release_recheck": "387 passed,2 opt-in skipped; /private/tmp/hc-oneclick-final-green.log",
+      "release_recheck": "388 passed,2 opt-in skipped; /private/tmp/hc-agent-gate-green.log",
       "skipped_tests": [
         "liveCitadelFramesHistoryUpdatesIdleCancellationAndReconnect",
         "HostHelperInstallLiveSSHTests (requires disposable SSH configuration)"
       ]
     },
     "ios_ui": {
-      "tests": 10,
+      "tests": 12,
       "result": "passed",
       "target": "HerdcatsUITests/AgentTimelineUITests",
       "coverage": [
@@ -67,11 +67,13 @@
         "Identical field widths in both modes and Terminal Compose by Default preference",
         "Explicit install with host/path disclosure, no automatic installation",
         "Existing-helper replacement requires a second action",
-        "Uncertain install checks first; download and probe failures retain manual fallback"
+        "Uncertain install checks first; download and probe failures retain manual fallback",
+        "Unsupported Codex, Cursor and unknown agents retain Terminal and Compose without Timeline switch/setup",
+        "Agent-neutral helper guidance and Timeline labels"
       ],
       "note": "One earlier UI run was interrupted by overlapping unit tests on the same simulator. Sequential rerun passed.",
-      "log": "/private/tmp/hc-oneclick-recovery-green.log",
-      "release_recheck": "10 passed including final probe-failure recovery; /private/tmp/hc-oneclick-recovery-green.log"
+      "log": "/private/tmp/hc-agent-gate-green.log",
+      "release_recheck": "12 passed; /private/tmp/hc-agent-gate-green.log"
     },
     "live_citadel": {
       "tests": 1,
@@ -147,7 +149,7 @@
     "preference_scope": "ConnectionIdentity.storageKey (SSH host, port, user and route identity)",
     "installation": "Explicit Install button over direct SSH or manual pinned command; no installation on drawer opening",
     "red": "new automatic drawer test failed before implementation; retry feedback regression failed until observing timeline revision",
-    "green": "387 unit tests and10 UI tests passed; two opt-in tests skipped",
+    "green": "388 unit tests and12 UI tests passed; two opt-in tests skipped",
     "screenshot": ".lavish/timeline-first-use-drawer.png"
   },
   "one_click_setup": {
@@ -191,5 +193,21 @@
       "green": "2 focused UI tests passed: header pixel equality, output/keyboard surround equality, dark Terminal keyboard and draft preservation",
       "log": "/private/tmp/hc-header-green.log"
     }
+  },
+  "agent_support": {
+    "date": "2026-10-15",
+    "copy": "Agent-neutral setup, empty state, error descriptions and assistant labels",
+    "selection": "Detect the selected pane agent and expose Timeline only for an implemented bridge adapter; unsupported and unknown agents stay in Terminal with Compose",
+    "implemented": [
+      "claude"
+    ],
+    "not_implemented": [
+      "codex/chatgpt",
+      "cursor",
+      "agy"
+    ],
+    "ownership": "Existing verified native-session and bridge capability guards retained",
+    "unit_validation": "388 passed;2 opt-in live SSH tests skipped; /private/tmp/hc-agent-gate-green.log",
+    "ui_validation": "12 passed, including Codex/Cursor/unknown Terminal fallback and generic helper guidance; /private/tmp/hc-agent-gate-green.log"
   }
 }

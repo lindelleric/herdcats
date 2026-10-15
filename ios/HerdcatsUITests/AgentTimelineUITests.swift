@@ -76,6 +76,7 @@ final class AgentTimelineUITests: XCTestCase {
         launch(app)
         XCTAssertTrue(app.staticTexts["A clearer view of your agent"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["How the host helper works"].exists)
+        XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label CONTAINS[c] %@", "Claude session")).firstMatch.exists)
         let drawer = app.scrollViews["timeline-setup-scroll"]
         XCTAssertTrue(drawer.exists)
         let preview = XCTAttachment(screenshot: app.screenshot())
@@ -238,6 +239,20 @@ final class AgentTimelineUITests: XCTestCase {
             context.draw(cropped, in: CGRect(x: 0, y: 0, width: 1, height: 1))
         }
         return bytes.map(Double.init)
+    }
+
+    func testUnsupportedAgentsStayInTerminalWithoutTimelineSetup() {
+        for agent in ["codex", "cursor", "unknown"] {
+            let app = XCUIApplication()
+            app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-helper-missing", "-hc.agent", agent, "-hc.light", "-paneShowComposeByDefault", "YES"]
+            launch(app)
+            XCTAssertTrue(app.scrollViews["pane-output-scroll-view"].waitForExistence(timeout: 5))
+            XCTAssertFalse(app.buttons["terminal-open-timeline"].exists)
+            XCTAssertFalse(app.buttons["timeline-open-terminal"].exists)
+            XCTAssertFalse(app.staticTexts["A clearer view of your agent"].exists)
+            XCTAssertTrue(app.descendants(matching: .any)["pane-compose-field"].firstMatch.exists)
+            app.terminate()
+        }
     }
 
     private func launch(_ app: XCUIApplication) {

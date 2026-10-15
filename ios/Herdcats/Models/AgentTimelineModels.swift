@@ -190,3 +190,9 @@ enum HostHelperSetupError: Error, LocalizedError, Equatable {
         }
     }
 }
+
+/// Mirrors adapters implemented by the current bridge; agent detection alone
+/// does not imply that native session history is available.
+enum TimelineAgentAvailability {
+    static func supports(agent: String?) -> Bool { agent == "claude" }
+}

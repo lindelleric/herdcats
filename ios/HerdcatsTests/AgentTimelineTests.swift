@@ -135,3 +135,13 @@ struct AgentBridgeFramingTests {
         #expect(s.entries.map(\.text) == ["msg1", "msg2"])
     }
 }
+
+@Suite("Timeline agent availability")
+struct TimelineAgentAvailabilityTests {
+    @Test func onlyImplementedAdaptersExposeTimeline() {
+        #expect(TimelineAgentAvailability.supports(agent: "claude"))
+        for agent in [nil, "", "codex", "chatgpt", "cursor", "agy", "unknown"] as [String?] {
+            #expect(!TimelineAgentAvailability.supports(agent: agent))
+        }
+    }
+}

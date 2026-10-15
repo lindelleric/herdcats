@@ -76,7 +76,7 @@ struct AgentTimelineView: View {
                         if timeline.entries.isEmpty {
                             ContentUnavailableView(
                                 "No messages yet", systemImage: "text.bubble",
-                                description: Text("Messages from this Claude session will appear here."))
+                                description: Text("Messages from this session will appear here."))
                         }
                         ForEach(timeline.entries) { entry in AgentTimelineEntryView(entry: entry).id(entry.id)
                         }
@@ -337,12 +337,12 @@ struct AgentTimelineView: View {
         case "helper_missing":
             return "Install the small host helper to see this session as native messages. Terminal is available now."
         case "unsupported_agent":
-            return "Native history currently supports Claude. You can still send messages below or use Terminal."
+            return "Timeline is not available for this agent yet. You can still send messages below or use Terminal."
         case "routed_host_unsupported": return "Native history is not available through saved machines yet. Messages can still be sent below."
         case "session_reference_unavailable", "ambiguous_session", "invalid_session_reference":
             return "This pane has no verified session history. Compose and Terminal remain available."
         case "transcript_root_unavailable", "transcript_unavailable":
-            return "Claude session history is unavailable on this host."
+            return "Session history is unavailable on this host."
         case "source_changing": return "Session history is being updated. Try again in a moment."
         case "record_too_large": return "This helper cannot read an oversized session record. Update the helper to reload history."
         case "source_too_large": return "This session exceeds the current history size limit. Compose and Terminal remain available."
@@ -447,7 +447,7 @@ private struct AgentTimelineEntryView: View {
                 .tint(Theme.accent)
                 .accessibilityIdentifier("timeline-tool-\(entry.id)")
             } else {
-                Text(entry.role == "user" ? "You" : "Claude")
+                Text(entry.role == "user" ? "You" : "Agent")
                     .font(.jost(.caption, weight: .semibold)).foregroundStyle(Theme.textMuted)
                 Text(markdown).font(.jost(.body)).textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
@@ -515,7 +515,7 @@ private struct AgentBridgeSetupView: View {
                     Text("A clearer view of your agent")
                         .font(.jost(.title, weight: .semibold))
                         .accessibilityAddTraits(.isHeader)
-                    Text("Timeline turns your Claude session into readable messages and tool activity, with colors that match your app.")
+                    Text("Timeline turns your agent session into readable messages and tool activity, with colors that match your app.")
                         .font(.jost(.body)).foregroundStyle(Theme.textMuted)
                     VStack(alignment: .leading, spacing: 14) {
                         benefit("Read comfortably in light or dark mode", icon: "circle.lefthalf.filled")
@@ -527,7 +527,7 @@ private struct AgentBridgeSetupView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("How the host helper works")
                             .font(.jost(.headline)).accessibilityAddTraits(.isHeader)
-                        Text("A small helper on your SSH computer reads the existing Claude session and sends its history to Herdcats over your SSH connection. Your agent keeps running in the same pane.")
+                        Text("A small helper on your SSH computer reads your existing agent session and sends its history to Herdcats over your SSH connection. Your agent keeps running in the same pane.")
                             .font(.jost(.subheadline)).foregroundStyle(Theme.textMuted)
                         Text("It runs only while Timeline is open. There’s no background service or agent hook to configure.")
                             .font(.jost(.subheadline)).foregroundStyle(Theme.textMuted)
@@ -547,7 +547,7 @@ private struct AgentBridgeSetupView: View {
                         }
                         .buttonStyle(.herdrSecondary)
                         .accessibilityIdentifier("timeline-helper-copy-command")
-                        Text("1. Copy the command below.\n2. Run it on the computer where Herdr and Claude are running.\n3. Come back here and tap Check again.")
+                        Text("1. Copy the command below.\n2. Run it on the computer where Herdr and your agent are running.\n3. Come back here and tap Check again.")
                             .font(.jost(.subheadline)).foregroundStyle(Theme.textMuted)
                         Text(command)
                             .font(.system(.footnote, design: .monospaced)).textSelection(.enabled)

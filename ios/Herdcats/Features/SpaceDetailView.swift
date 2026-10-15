@@ -80,8 +80,11 @@ struct PaneDetailView: View {
     private var timelineMode: Binding<Bool> {
         let key = sessionIdentity
         return Binding(
-            get: { timelineModes[key] ?? !UserDefaults.standard.bool(forKey: TimelineSetupPreference.key(scope: connectionScope)) },
-            set: { timelineModes[key] = $0 }
+            get: {
+                guard TimelineAgentAvailability.supports(agent: selectedPane.agent) else { return false }
+                return timelineModes[key] ?? !UserDefaults.standard.bool(forKey: TimelineSetupPreference.key(scope: connectionScope))
+            },
+            set: { timelineModes[key] = TimelineAgentAvailability.supports(agent: selectedPane.agent) && $0 }
         )
     }
 
@@ -155,16 +158,18 @@ struct PaneDetailView: View {
                     subtitle: selectedPane.shortCwd.isEmpty ? nil : selectedPane.shortCwd
                 )
             }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    timelineMode.wrappedValue.toggle()
-                } label: {
-                    Image(systemName: timelineMode.wrappedValue ? "terminal" : "text.bubble")
-                        .font(.jost(16, weight: .medium))
-                        .foregroundStyle(.primary)
+            if TimelineAgentAvailability.supports(agent: selectedPane.agent) {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        timelineMode.wrappedValue.toggle()
+                    } label: {
+                        Image(systemName: timelineMode.wrappedValue ? "terminal" : "text.bubble")
+                            .font(.jost(16, weight: .medium))
+                            .foregroundStyle(.primary)
+                    }
+                    .accessibilityLabel(timelineMode.wrappedValue ? "Terminal" : "Timeline")
+                    .accessibilityIdentifier(timelineMode.wrappedValue ? "timeline-open-terminal" : "terminal-open-timeline")
                 }
-                .accessibilityLabel(timelineMode.wrappedValue ? "Terminal" : "Timeline")
-                .accessibilityIdentifier(timelineMode.wrappedValue ? "timeline-open-terminal" : "terminal-open-timeline")
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
