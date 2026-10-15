@@ -949,7 +949,7 @@ private struct AgentBridgeSetupView: View {
                         .font(.jost(.body)).foregroundStyle(Theme.textMuted)
                     VStack(alignment: .leading, spacing: 14) {
                         benefit("Read comfortably in light or dark mode", icon: "circle.lefthalf.filled")
-                        benefit("Follow messages and expand tool results", icon: "text.alignleft")
+                        benefit("Follow messages and review activity summaries", icon: "text.alignleft")
                         benefit("Send prompts with Compose, voice, and photos", icon: "square.and.pencil")
                     }
                     .padding(18).frame(maxWidth: .infinity, alignment: .leading)
