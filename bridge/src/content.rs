@@ -1,6 +1,6 @@
 use crate::{
     Result,
-    claude::{Entry, Transcript},
+    claude::{Entry, Transcript, is_routine_metadata},
 };
 use serde_json::value::RawValue;
 use std::collections::BTreeMap;
@@ -143,15 +143,21 @@ impl Transcript {
     pub fn preserve_record(&mut self, part: &[u8], session: &str, offset: usize) -> Result<()> {
         let raw: &RawValue = serde_json::from_slice(part).map_err(|_| "invalid_transcript")?;
         let fields = object(raw.get()).unwrap_or_default();
+        if ["isSidechain", "isMeta"]
+            .iter()
+            .any(|flag| fields.get(*flag).is_some_and(|value| value.get() == "true"))
+        {
+            return Ok(());
+        }
         if let Some(record_session) = string(fields.get("sessionId")) {
             if record_session != session {
-                if fields.get("isSidechain").is_some_and(|v| v.get() == "true") {
-                    return Ok(());
-                }
                 return Err("session_mismatch");
             }
         }
         let kind = string(fields.get("type")).unwrap_or_else(|| "Session record".into());
+        if is_routine_metadata(&kind) {
+            return Ok(());
+        }
         let mut context = RecordContext {
             part,
             offset,
@@ -269,6 +275,59 @@ mod tests {
         );
         assert!(transcript.entries.iter().any(|e| e.kind == "image"));
     }
+    #[test]
+    fn excluded_records_never_publish_content_or_attach_to_main_entries() {
+        for flag in ["isSidechain", "isMeta"] {
+            for session in [SESSION, "foreign"] {
+                let main = json!({"type":"assistant","uuid":"main","sessionId":SESSION,
+                    "message":{"content":[{"type":"tool_use","id":"shared","name":"Read","input":{}}]}});
+                let mut transcript = Transcript::default();
+                transcript.apply(&main, SESSION).unwrap();
+                let before = serde_json::to_value(&transcript.entries).unwrap();
+                let mut excluded = json!({"type":"assistant","uuid":"main","sessionId":session,
+                "message":{"content":[
+                    {"type":"image","source":{"type":"base64","data":"private"}},
+                    {"type":"tool_use","id":"shared","name":"Read","input":{"private":true}},
+                    {"type":"future_block","private":true}
+                ]}});
+                excluded[flag] = json!(true);
+                transcript
+                    .preserve_record(&serde_json::to_vec(&excluded).unwrap(), SESSION, 50)
+                    .unwrap();
+                assert!(serde_json::to_value(&transcript.entries).unwrap() == before);
+            }
+        }
+    }
+
+    #[test]
+    fn routine_metadata_does_not_evict_conversation_or_create_fallbacks() {
+        let mut transcript = Transcript::default();
+        let message = json!({"type":"user","uuid":"keep","sessionId":SESSION,"message":{"content":"Keep me"}});
+        transcript.apply(&message, SESSION).unwrap();
+        let before = serde_json::to_value(&transcript.entries).unwrap();
+        for i in 0..1100 {
+            for kind in [
+                "attachment",
+                "system",
+                "file-history-snapshot",
+                "last-prompt",
+                "ai-title",
+                "mode",
+                "permission-mode",
+                "atis-latch",
+            ] {
+                let metadata = json!({"type":kind,"sessionId":SESSION,"payload":i});
+                transcript.apply(&metadata, SESSION).unwrap();
+                transcript
+                    .preserve_record(&serde_json::to_vec(&metadata).unwrap(), SESSION, i)
+                    .unwrap();
+            }
+        }
+        assert!(serde_json::to_value(&transcript.entries).unwrap() == before);
+        assert_eq!(transcript.dropped_entries, 0);
+        assert_eq!(transcript.unknown_records, 0);
+    }
+
     #[test]
     fn oversized_images_are_referenced_not_embedded_in_live_frames() {
         let row = json!({"type":"assistant","uuid":"large","sessionId":SESSION,"message":{"content":[

@@ -6,6 +6,20 @@ use std::{borrow::Cow, collections::HashSet};
 pub const MAX_ENTRIES: usize = 1000;
 const TEXT_LIMIT: usize = 8192;
 
+pub(crate) fn is_routine_metadata(kind: &str) -> bool {
+    matches!(
+        kind,
+        "attachment"
+            | "system"
+            | "file-history-snapshot"
+            | "last-prompt"
+            | "ai-title"
+            | "mode"
+            | "permission-mode"
+            | "atis-latch"
+    )
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
     pub id: String,
@@ -108,17 +122,7 @@ impl Transcript {
     pub fn apply(&mut self, record: &Value, session: &str) -> Result<()> {
         let kind = record["type"].as_str().unwrap_or("");
         if !matches!(kind, "user" | "assistant") {
-            if !matches!(
-                kind,
-                "attachment"
-                    | "system"
-                    | "file-history-snapshot"
-                    | "last-prompt"
-                    | "ai-title"
-                    | "mode"
-                    | "permission-mode"
-                    | "atis-latch"
-            ) {
+            if !is_routine_metadata(kind) {
                 self.unknown_records += 1;
             }
             return Ok(());
@@ -239,17 +243,7 @@ impl Transcript {
             serde_json::from_slice(part).map_err(|_| "invalid_transcript")?;
         let kind = header.kind.unwrap_or("");
         if !matches!(kind, "user" | "assistant") {
-            if !matches!(
-                kind,
-                "attachment"
-                    | "system"
-                    | "file-history-snapshot"
-                    | "last-prompt"
-                    | "ai-title"
-                    | "mode"
-                    | "permission-mode"
-                    | "atis-latch"
-            ) {
+            if !is_routine_metadata(kind) {
                 self.unknown_records += 1;
             }
             return Ok(());
