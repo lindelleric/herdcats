@@ -22,7 +22,7 @@ class InstallTests(unittest.TestCase):
     def install(self, binary=BINARY, *extra):
         return subprocess.run([sys.executable, str(INSTALLER), '--binary', str(binary),
                                '--bin-dir', str(self.destination), *extra],
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, stdin=subprocess.DEVNULL)
 
     def test_installed_binary_is_executable_and_reports_version(self):
         result = self.install()
@@ -98,9 +98,120 @@ class InstallTests(unittest.TestCase):
 
     def test_no_implicit_install_destination(self):
         result = subprocess.run([sys.executable, str(INSTALLER), '--binary', str(BINARY)],
-                                env={**os.environ, 'HOME': str(self.root)}, capture_output=True)
+                                env={**os.environ, 'HOME': str(self.root)}, capture_output=True,
+                                stdin=subprocess.DEVNULL)
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.root / '.local').exists())
 
+    def test_codex_daemon_non_interactive_without_flag_does_not_modify_config(self):
+        codex_home = self.root / 'codex_home'
+        codex_home.mkdir()
+        config = codex_home / 'config.toml'
+        config.write_text('[features]\ndaemon_auto_start = true\n')
+        env = {**os.environ, 'HOME': str(self.root), 'CODEX_HOME': str(codex_home)}
+        result = subprocess.run(
+            [sys.executable, str(INSTALLER), '--binary', str(BINARY),
+             '--bin-dir', str(self.destination)],
+            env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(config.read_text(), '[features]\ndaemon_auto_start = true\n')
+        # No backup should have been created
+        self.assertEqual(list(codex_home.glob('*.bak*')), [])
+
+    def test_codex_daemon_opt_in_with_flag_creates_config_and_backup(self):
+        codex_home = self.root / 'codex_home'
+        codex_home.mkdir()
+        config = codex_home / 'config.toml'
+        config.write_text('# Existing config\n[user]\nname = "Alice"\n\n[features]\n# Important comment\ndaemon_auto_start = true\nfast_mode = true\n')
+        env = {**os.environ, 'HOME': str(self.root), 'CODEX_HOME': str(codex_home)}
+        result = subprocess.run(
+            [sys.executable, str(INSTALLER), '--binary', str(BINARY),
+             '--bin-dir', str(self.destination), '--codex-disable-daemon'],
+            env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        new_text = config.read_text()
+        self.assertIn('daemon_auto_start = false', new_text)
+        self.assertNotIn('daemon_auto_start = true', new_text)
+        self.assertIn('# Existing config', new_text)
+        self.assertIn('name = "Alice"', new_text)
+        self.assertIn('# Important comment', new_text)
+        self.assertIn('fast_mode = true', new_text)
+
+        # A timestamped backup must exist with original content
+        backups = list(codex_home.glob('config.toml.bak.*'))
+        self.assertEqual(len(backups), 1)
+        self.assertIn('daemon_auto_start = true', backups[0].read_text())
+
+        # Running again is idempotent (no duplicate backups, unchanged content)
+        result2 = subprocess.run(
+            [sys.executable, str(INSTALLER), '--binary', str(BINARY),
+             '--bin-dir', str(self.destination), '--replace', '--codex-disable-daemon'],
+            env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL
+        )
+        self.assertEqual(result2.returncode, 0, result2.stderr)
+        self.assertEqual(config.read_text(), new_text)
+        self.assertEqual(len(list(codex_home.glob('config.toml.bak.*'))), 1)
+
+    def test_codex_daemon_no_op_when_codex_not_installed(self):
+        fake_home = self.root / 'empty_home'
+        fake_home.mkdir()
+        env = {**os.environ, 'HOME': str(fake_home)}
+        env.pop('CODEX_HOME', None)
+        # PATH with no codex
+        env['PATH'] = str(self.root / 'empty_bin')
+        (self.root / 'empty_bin').mkdir()
+        result = subprocess.run(
+            [sys.executable, str(INSTALLER), '--binary', str(BINARY),
+             '--bin-dir', str(self.destination), '--codex-disable-daemon'],
+            env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((fake_home / '.codex').exists())
+
+    def test_codex_daemon_fallback_to_home_codex(self):
+        fake_home = self.root / 'home_with_codex'
+        codex_dir = fake_home / '.codex'
+        codex_dir.mkdir(parents=True)
+        env = {**os.environ, 'HOME': str(fake_home)}
+        env.pop('CODEX_HOME', None)
+        result = subprocess.run(
+            [sys.executable, str(INSTALLER), '--binary', str(BINARY),
+             '--bin-dir', str(self.destination), '--codex-disable-daemon'],
+            env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = codex_dir / 'config.toml'
+        self.assertTrue(config.is_file())
+        self.assertIn('daemon_auto_start = false', config.read_text())
+
+    def test_codex_daemon_interactive_prompt_yes_and_no(self):
+        import io
+        from unittest.mock import patch
+        sys.path.insert(0, str(ROOT / 'scripts'))
+        import install as installer_module
+
+        codex_home = self.root / 'interactive_codex'
+        codex_home.mkdir()
+        config = codex_home / 'config.toml'
+        config.write_text('[features]\ndaemon_auto_start = true\n')
+
+        with patch.dict(os.environ, {'CODEX_HOME': str(codex_home)}):
+            # 1. User says No or presses Enter (default No)
+            with patch('sys.stdin', io.StringIO('\n')):
+                installer_module.configure_codex_daemon(disable_daemon=False, is_interactive=True)
+            self.assertEqual(config.read_text(), '[features]\ndaemon_auto_start = true\n')
+
+            with patch('sys.stdin', io.StringIO('n\n')):
+                installer_module.configure_codex_daemon(disable_daemon=False, is_interactive=True)
+            self.assertEqual(config.read_text(), '[features]\ndaemon_auto_start = true\n')
+
+            # 2. User says Yes
+            with patch('sys.stdin', io.StringIO('y\n')):
+                installer_module.configure_codex_daemon(disable_daemon=False, is_interactive=True)
+            self.assertIn('daemon_auto_start = false', config.read_text())
+
 if __name__ == '__main__':
     unittest.main()
+
