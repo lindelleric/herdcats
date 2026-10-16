@@ -88,10 +88,15 @@ def mask_path(text, path):
         return ''.join(chars)
     return re.sub(pattern, replace, text)
 
-def screen(source, anchor, spike_root):
+def screen(source, anchor, spike_root, end_anchor=None):
     lines = source.read_text().splitlines()
     start = next(i for i, line in enumerate(lines) if anchor in line)
-    text = '\n'.join(line.rstrip() for line in lines[start:]).strip('\n') + '\n'
+    if end_anchor:
+        end = next(i for i, line in enumerate(lines[start:], start) if end_anchor in line)
+        lines = lines[start:end + 1]
+    else:
+        lines = lines[start:]
+    text = '\n'.join(line.rstrip() for line in lines).strip('\n') + '\n'
     return mask_path(text, spike_root)
 
 def main():
@@ -103,14 +108,14 @@ def main():
     outputs = {
         'claude-hooks.jsonl': jsonl(raw / 'claude-hooks.jsonl'),
         'claude-transcript.jsonl': jsonl(raw / 'claude-session-transcript.jsonl', keep_claude),
-        'claude-approval-screen.txt': screen(raw / 'claude-approval-screen.txt', 'Bash command', root + '/claude'),
-        'claude-question-screen.txt': screen(raw / 'claude-question-screen.txt', '☐ Color', root + '/claude'),
+        'claude-approval-screen.txt': screen(raw / 'claude-approval-screen.txt', 'Bash command', root + '/claude', 'Esc to cancel'),
+        'claude-question-screen.txt': screen(raw / 'claude-question-screen.txt', '☐ Color', root + '/claude', 'Esc to cancel'),
         'codex-hooks.jsonl': jsonl(raw / 'codex-hooks.jsonl'),
         'codex-pending-rollout.jsonl': jsonl(raw / 'codex-pending-rollout.jsonl', keep_codex),
         'codex-rollout.jsonl': jsonl(raw / 'codex-session-rollout.jsonl', keep_codex),
-        'codex-approval-screen.txt': screen(raw / 'codex-approval-screen.txt', 'Would you like to run', root + '/codex'),
-        'codex-question-screen.txt': screen(raw / 'codex-question-screen.txt', 'Pick a color', root + '/codex'),
-        'codex-question-picker-screen.txt': screen(raw / 'codex-question-picker-screen.txt', 'Queued follow-up', root + '/codexq'),
+        'codex-approval-screen.txt': screen(raw / 'codex-approval-screen.txt', 'Would you like to run', root + '/codex', 'esc to cancel'),
+        'codex-question-screen.txt': screen(raw / 'codex-question-screen.txt', '• Pick a color', root + '/codex', '⇧← to answer'),
+        'codex-question-picker-screen.txt': screen(raw / 'codex-question-picker-screen.txt', 'Queued follow-up', root + '/codexq', 'main prompt'),
         'codex-question-answer-rollout.jsonl': jsonl(raw / 'codex-question-answer-rollout.jsonl', keep_codex),
     }
     FIXTURES.mkdir(exist_ok=True)
