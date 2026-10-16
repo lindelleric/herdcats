@@ -29,6 +29,37 @@ struct CodexTimelineDecodingTests {
         #expect(disabled.claudeTimeline == true)
         #expect(disabled.codexTimeline == false)
     }
+
+    @Test func capabilitiesDecodeRealHelper014Object() throws {
+        // Real capabilities object emitted by helper 0.1.4
+        let json014 = """
+        {
+            "claude_timeline": true,
+            "codex_timeline": false,
+            "record_content": true,
+            "prompts": false,
+            "approvals": false,
+            "questions": false,
+            "routed_hosts": false
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let caps = try decoder.decode(AgentBridgeCapabilities.self, from: Data(json014.utf8))
+        #expect(caps.claudeTimeline == true)
+        #expect(caps.codexTimeline == false)
+        #expect(caps.recordContent == true)
+    }
+
+    @Test func helperVersionGatingForCodex() {
+        #expect(!AgentBridgeClient.isVersionAtLeast("0.1.4", major: 0, minor: 2))
+        #expect(!AgentBridgeClient.isVersionAtLeast("0.1.0", major: 0, minor: 2))
+        #expect(!AgentBridgeClient.isVersionAtLeast(nil, major: 0, minor: 2))
+        #expect(!AgentBridgeClient.isVersionAtLeast("invalid", major: 0, minor: 2))
+        #expect(AgentBridgeClient.isVersionAtLeast("0.2.0", major: 0, minor: 2))
+        #expect(AgentBridgeClient.isVersionAtLeast("0.2.1", major: 0, minor: 2))
+        #expect(AgentBridgeClient.isVersionAtLeast("1.0.0", major: 0, minor: 2))
+    }
 }
 
 @Suite("Codex timeline agent availability and gating")
@@ -156,5 +187,23 @@ struct CodexTimelineGatingTests {
         let explanation = view.explanation("session_reference_unavailable")
         #expect(explanation.contains("Codex’s shared daemon") || explanation.contains("Codex's shared daemon"))
         #expect(explanation.contains("codex --no-daemon"))
+    }
+
+    @Test func codexPaneDisplaysCwdMismatchState() {
+        let view = AgentTimelineView(
+            paneId: "p-codex",
+            agent: "codex",
+            connection: HerdrConnection(),
+            timeline: AgentTimelineState(),
+            topOverlayInset: 0,
+            bottomOverlayInset: 0,
+            onOutputInteraction: {},
+            setupTarget: ConnectionIdentity(host: "localhost", port: 22, username: "test"),
+            onUseTerminal: {},
+            onSetupComplete: {}
+        )
+        let explanation = view.explanation("session_cwd_mismatch")
+        #expect(explanation.contains("The session folder does not match the pane’s folder") || explanation.contains("The session folder does not match the pane's folder"))
+        #expect(explanation.contains("so Herdcats will not guess"))
     }
 }

@@ -432,11 +432,13 @@ struct AgentTimelineView: View {
             let isCodex = agent == "codex"
             let isHelperOld = ["helper_update_required", "unsupported_agent"].contains(code)
             let isNoSession = ["session_reference_unavailable", "ambiguous_session", "invalid_session_reference"].contains(code)
+            let isCwdMismatch = code == "session_cwd_mismatch"
 
             ContentUnavailableView {
                 Label(
                     isCodex && isHelperOld ? "Update the Herdcats helper to see Codex conversations" :
                     isCodex && isNoSession ? "Codex session not identified" :
+                    isCodex && isCwdMismatch ? "This pane’s Codex session could not be confirmed" :
                     (code == "helper_missing" ? "Set up Timeline" : "Timeline unavailable"),
                     systemImage: "text.bubble"
                 )
@@ -474,6 +476,11 @@ struct AgentTimelineView: View {
                 return "Codex's shared daemon hides which terminal a session belongs to. Fix with `codex --no-daemon` or the installer option."
             }
             return "This pane has no verified session history. Compose and Terminal remain available."
+        case "session_cwd_mismatch":
+            if agent == "codex" {
+                return "The session folder does not match the pane’s folder, so Herdcats will not guess."
+            }
+            return "This pane's session folder does not match the verified session. Compose and Terminal remain available."
         case "transcript_root_unavailable":
             return "Session history is unavailable on this host."
         case "source_changing": return "Session history is being updated. Try again in a moment."
