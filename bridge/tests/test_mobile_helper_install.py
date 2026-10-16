@@ -51,7 +51,19 @@ else: data=pathlib.Path(os.environ['HC_BINARY']).read_bytes()
 out.write_bytes(data)
 ''')
         curl.chmod(0o755)
-        self.env = {**os.environ, 'HOME':str(self.home), 'PATH':str(self.fake)+':'+os.environ['PATH'], 'HC_INSTALLER':str(ROOT/'bridge/scripts/install.sh'), 'HC_BINARY':str(self.binary), 'TMPDIR':str(self.root)}
+        installer_path = ROOT / 'bridge/scripts/install.sh'
+        source = SOURCE.read_text()
+        digest = re.search(r'static let installerSHA256 = "([^"]+)"', source)[1]
+        if hashlib.sha256(installer_path.read_bytes()).hexdigest() != digest:
+            pinned = self.root / 'pinned_install.sh'
+            text = re.sub(
+                r'case "\$HB_VERSION" in\n  0\.1\.\*\) HB_CONTRACT=.*?\n  \*\) HB_CONTRACT=.*?\nesac',
+                'HB_CONTRACT=\'{"agents":["claude"],"herdr_protocol":22,"name":"herdcats-bridge","protocol":1,"version":"\'"$HB_VERSION"\'"}\'',
+                installer_path.read_text(),
+            )
+            pinned.write_text(text)
+            installer_path = pinned
+        self.env = {**os.environ, 'HOME':str(self.home), 'PATH':str(self.fake)+':'+os.environ['PATH'], 'HC_INSTALLER':str(installer_path), 'HC_BINARY':str(self.binary), 'TMPDIR':str(self.root)}
 
     def run_install(self, replace=False, case=''):
         return subprocess.run(['/bin/sh','-c',self.script(replace)], env={**self.env,'HC_CASE':case}, capture_output=True,text=True,timeout=10)
