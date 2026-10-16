@@ -60,6 +60,12 @@ struct AgentTimelineView: View {
     private var taskKey: TaskKey {
         TaskKey(paneId: paneId, agent: agent, connection: connectionState, isActive: scenePhase == .active, retry: retry)
     }
+    private var canPinnedInstallerSupportAgent: Bool {
+        Self.canPinnedInstallerSupport(agent: agent)
+    }
+    static func canPinnedInstallerSupport(agent: String?, supportedAgents: Set<String> = Set(HostHelperSetupPlan.agents)) -> Bool {
+        agent.map { supportedAgents.contains($0) } ?? true
+    }
     var body: some View {
         ScrollViewReader { proxy in
             GeometryReader { viewport in
@@ -220,8 +226,7 @@ struct AgentTimelineView: View {
                         ? "The helper was not found yet. Run the command on your SSH host, then check again."
                         : explanation(code)
                 }
-                let canPinnedInstallerSupport = agent.map { HostHelperSetupPlan.agents.contains($0) } ?? true
-                if ["helper_missing", "helper_update_required"].contains(code) && !showsSetup && canPinnedInstallerSupport { beginSetup() }
+                if ["helper_missing", "helper_update_required"].contains(code) && !showsSetup && canPinnedInstallerSupportAgent { beginSetup() }
             case .disconnected:
                 if isCheckingSetup {
                     isCheckingSetup = false
@@ -247,7 +252,7 @@ struct AgentTimelineView: View {
             AgentBridgeSetupView(
                 isChecking: isCheckingSetup, feedback: setupFeedback,
                 stage: helperStage, target: setupTarget,
-                canInstall: connectionState.isReady && appModel.supportsHostServices && appModel.connectionIdentity == setupTarget && (agent.map { HostHelperSetupPlan.agents.contains($0) } ?? true),
+                canInstall: connectionState.isReady && appModel.supportsHostServices && appModel.connectionIdentity == setupTarget && canPinnedInstallerSupportAgent,
                 onInstall: startHelperInstallation,
                 onCheckAgain: {
                     setupFeedback = nil
@@ -450,8 +455,7 @@ struct AgentTimelineView: View {
             } description: {
                 Text(explanation(code))
             } actions: {
-                let canPinnedInstallerSupport = agent.map { HostHelperSetupPlan.agents.contains($0) } ?? true
-                if ["helper_missing", "helper_update_required", "unsupported_agent", "protocol_mismatch", "record_too_large"].contains(code) && canPinnedInstallerSupport {
+                if ["helper_missing", "helper_update_required", "unsupported_agent", "protocol_mismatch", "record_too_large"].contains(code) && canPinnedInstallerSupportAgent {
                     Button(isCodex && isHelperOld ? "Update helper" : "Set up Timeline") { beginSetup() }
                         .buttonStyle(.herdrPrimary)
                         .accessibilityIdentifier("timeline-helper-setup")
@@ -463,30 +467,42 @@ struct AgentTimelineView: View {
         }
     }
     func explanation(_ code: String) -> String {
+        Self.explanation(code, agent: agent)
+    }
+
+    static func explanation(_ code: String, agent: String?, supportedAgents: Set<String> = Set(HostHelperSetupPlan.agents)) -> String {
+        let isCodex = agent == "codex"
+        let canSupportCodex = supportedAgents.contains("codex")
         switch code {
         case "helper_missing":
-            if agent == "codex" {
-                return "This version of Herdcats can't install a Codex-capable helper yet."
+            if isCodex {
+                return canSupportCodex
+                    ? "Install the small host helper to see this session as native messages. Terminal is available now."
+                    : "This version of Herdcats can't install a Codex-capable helper yet."
             }
             return "Install the small host helper to see this session as native messages. Terminal is available now."
         case "helper_update_required":
-            if agent == "codex" {
-                return "This version of Herdcats can't install a Codex-capable helper yet."
+            if isCodex {
+                return canSupportCodex
+                    ? "Update the Herdcats helper to see Codex conversations."
+                    : "This version of Herdcats can't install a Codex-capable helper yet."
             }
             return "Update the host helper to display session images."
         case "unsupported_agent":
-            if agent == "codex" {
-                return "This version of Herdcats can't install a Codex-capable helper yet."
+            if isCodex {
+                return canSupportCodex
+                    ? "Update the Herdcats helper to see Codex conversations."
+                    : "This version of Herdcats can't install a Codex-capable helper yet."
             }
             return "Timeline is not available for this agent yet. You can still send messages below or use Terminal."
         case "routed_host_unsupported": return "Native history is not available through saved machines yet. Messages can still be sent below."
         case "session_reference_unavailable", "ambiguous_session", "invalid_session_reference":
-            if agent == "codex" {
+            if isCodex {
                 return "Codex's shared daemon hides which terminal a session belongs to. Fix with `codex --no-daemon` or the installer option."
             }
             return "This pane has no verified session history. Compose and Terminal remain available."
         case "session_cwd_mismatch":
-            if agent == "codex" {
+            if isCodex {
                 return "The session folder does not match the pane’s folder, so Herdcats will not guess."
             }
             return "This pane's session folder does not match the verified session. Compose and Terminal remain available."

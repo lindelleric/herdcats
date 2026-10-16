@@ -218,10 +218,35 @@ struct CodexTimelineGatingTests {
             onUseTerminal: {},
             onSetupComplete: {}
         )
-        // Verify explanation texts for Codex
+        // When Codex is unsupported by pinned installer (current state where HostHelperSetupPlan.agents == ["claude"])
         #expect(view.explanation("helper_update_required") == "This version of Herdcats can't install a Codex-capable helper yet.")
         #expect(view.explanation("unsupported_agent") == "This version of Herdcats can't install a Codex-capable helper yet.")
         #expect(view.explanation("helper_missing") == "This version of Herdcats can't install a Codex-capable helper yet.")
+
+        // Explicitly test both ways with injected supportedAgents:
+        // 1. Without Codex in supportedAgents
+        let unsupportedAgents: Set<String> = ["claude"]
+        #expect(AgentTimelineView.explanation("helper_update_required", agent: "codex", supportedAgents: unsupportedAgents) == "This version of Herdcats can't install a Codex-capable helper yet.")
+        #expect(AgentTimelineView.explanation("unsupported_agent", agent: "codex", supportedAgents: unsupportedAgents) == "This version of Herdcats can't install a Codex-capable helper yet.")
+        #expect(AgentTimelineView.explanation("helper_missing", agent: "codex", supportedAgents: unsupportedAgents) == "This version of Herdcats can't install a Codex-capable helper yet.")
+
+        // 2. With Codex in supportedAgents (e.g. future 0.2.0 pinned release)
+        let supportedWithCodex: Set<String> = ["claude", "codex"]
+        #expect(AgentTimelineView.explanation("helper_update_required", agent: "codex", supportedAgents: supportedWithCodex) == "Update the Herdcats helper to see Codex conversations.")
+        #expect(AgentTimelineView.explanation("unsupported_agent", agent: "codex", supportedAgents: supportedWithCodex) == "Update the Herdcats helper to see Codex conversations.")
+        #expect(AgentTimelineView.explanation("helper_missing", agent: "codex", supportedAgents: supportedWithCodex) == "Install the small host helper to see this session as native messages. Terminal is available now.")
+
+        // 3. Claude is unaffected
+        #expect(AgentTimelineView.explanation("helper_update_required", agent: "claude", supportedAgents: unsupportedAgents) == "Update the host helper to display session images.")
+        #expect(AgentTimelineView.explanation("unsupported_agent", agent: "claude", supportedAgents: unsupportedAgents) == "Timeline is not available for this agent yet. You can still send messages below or use Terminal.")
+        #expect(AgentTimelineView.explanation("helper_missing", agent: "claude", supportedAgents: unsupportedAgents) == "Install the small host helper to see this session as native messages. Terminal is available now.")
+    }
+
+    @Test func canPinnedInstallerSupportVerification() {
+        #expect(AgentTimelineView.canPinnedInstallerSupport(agent: "claude", supportedAgents: ["claude"]))
+        #expect(!AgentTimelineView.canPinnedInstallerSupport(agent: "codex", supportedAgents: ["claude"]))
+        #expect(AgentTimelineView.canPinnedInstallerSupport(agent: "codex", supportedAgents: ["claude", "codex"]))
+        #expect(AgentTimelineView.canPinnedInstallerSupport(agent: nil, supportedAgents: ["claude"]))
     }
 
     @Test func codexPaneDisplaysNoSessionReferenceState() {
