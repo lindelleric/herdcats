@@ -421,6 +421,12 @@ struct AgentTimelineView: View {
                     .disabled(!connectionState.isReady)
                     .accessibilityIdentifier("timeline-helper-retry")
             }
+        case .unavailable("transcript_unavailable"):
+            // Claude writes its transcript only after the first prompt; the
+            // helper keeps polling and swaps in the timeline once it exists.
+            ContentUnavailableView(
+                "No messages yet", systemImage: "text.bubble",
+                description: Text("Send a message below to start this session."))
         case .unavailable(let code):
             ContentUnavailableView {
                 Label(code == "helper_missing" ? "Set up Timeline" : "Timeline unavailable", systemImage: "text.bubble")
@@ -449,7 +455,7 @@ struct AgentTimelineView: View {
         case "routed_host_unsupported": return "Native history is not available through saved machines yet. Messages can still be sent below."
         case "session_reference_unavailable", "ambiguous_session", "invalid_session_reference":
             return "This pane has no verified session history. Compose and Terminal remain available."
-        case "transcript_root_unavailable", "transcript_unavailable":
+        case "transcript_root_unavailable":
             return "Session history is unavailable on this host."
         case "source_changing": return "Session history is being updated. Try again in a moment."
         case "record_too_large": return "This helper cannot read an oversized session record. Update the helper to reload history."

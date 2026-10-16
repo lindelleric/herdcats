@@ -1105,7 +1105,7 @@ struct PaneSessionView: View {
 #if DEBUG && targetEnvironment(simulator)
         if ScreenshotFixtures.enabled {
             let surface = PaneInputSurfaceModel()
-            if ["compose", "timeline-helper-missing", "timeline-unavailable", "timeline-disconnected"].contains(ScreenshotFixtures.screen) {
+            if ["compose", "timeline-helper-missing", "timeline-unavailable", "timeline-pending", "timeline-disconnected"].contains(ScreenshotFixtures.screen) {
                 surface.requestComposeDraft()
                 _draft = State(initialValue: "Looks good. Add a test for reconnecting, then open a pull request.")
             } else if ScreenshotFixtures.screen == "voice" {
