@@ -35,7 +35,24 @@ struct AgentTimelineIdentity: Codable, Equatable, Sendable {
     let agent: String
     let nativeSessionId: String
 }
-struct AgentBridgeCapabilities: Codable, Sendable { let claudeTimeline: Bool; var recordContent: Bool? = nil }
+struct AgentBridgeCapabilities: Codable, Equatable, Sendable {
+    let claudeTimeline: Bool
+    var codexTimeline: Bool? = false
+    var recordContent: Bool? = nil
+
+    init(claudeTimeline: Bool, codexTimeline: Bool? = false, recordContent: Bool? = nil) {
+        self.claudeTimeline = claudeTimeline
+        self.codexTimeline = codexTimeline
+        self.recordContent = recordContent
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.claudeTimeline = try container.decode(Bool.self, forKey: .claudeTimeline)
+        self.codexTimeline = try container.decodeIfPresent(Bool.self, forKey: .codexTimeline) ?? false
+        self.recordContent = try container.decodeIfPresent(Bool.self, forKey: .recordContent)
+    }
+}
 struct AgentBridgePayload: Codable, Sendable {
     var `protocol`: Int?
     var epoch: String?
@@ -120,7 +137,7 @@ enum TimelineComposePolicy {
     static func canSend(identity: AgentTimelineIdentity?, paneId: String, status: String?, connected: Bool)
         -> Bool
     {
-        connected && identity?.paneId == paneId && identity?.agent == "claude"
+        connected && identity?.paneId == paneId && TimelineAgentAvailability.supports(agent: identity?.agent)
             && ["idle", "done", "working"].contains(status ?? "")
     }
 }
@@ -134,7 +151,7 @@ enum HostHelperProbe: Equatable, Sendable {
     case missing
     case present(version: String?, managed: Bool, compatible: Bool)
 
-    init(output: String) throws {
+    init(output: String, agent: String? = nil) throws {
         let lines = output.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\n", omittingEmptySubsequences: false)
         guard let marker = lines.first else { throw HostHelperSetupError.invalidResponse }
         if marker == "HC_HELPER_MISSING", lines.count == 1 { self = .missing; return }
@@ -152,9 +169,10 @@ enum HostHelperProbe: Equatable, Sendable {
         let bytes = Data(lines.dropFirst().joined(separator: "\n").utf8)
         let report = try? decoder.decode(Report.self, from: bytes)
         let version = report.flatMap { Self.versionNumbers($0.version) == nil ? nil : $0.version }
+        let targetAgent = agent ?? "claude"
         let compatible = report.map {
             $0.name == "herdcats-bridge" && $0.protocol == 1 && $0.herdrProtocol == 22
-                && $0.agents.contains("claude") && Self.isAtLeastPinned($0.version)
+                && $0.agents.contains(targetAgent) && Self.isAtLeastPinned($0.version)
         } ?? false
         self = .present(version: version, managed: marker == "HC_HELPER_MANAGED", compatible: compatible)
     }
@@ -202,7 +220,7 @@ enum HostHelperSetupError: Error, LocalizedError, Equatable {
 /// Mirrors adapters implemented by the current bridge; agent detection alone
 /// does not imply that native session history is available.
 enum TimelineAgentAvailability {
-    static func supports(agent: String?) -> Bool { agent == "claude" }
+    static func supports(agent: String?) -> Bool { agent == "claude" || agent == "codex" }
 }
 
 /// Only references into the bridge's bounded, verified source snapshot.

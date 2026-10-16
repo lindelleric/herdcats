@@ -140,7 +140,8 @@ struct AgentBridgeFramingTests {
 struct TimelineAgentAvailabilityTests {
     @Test func onlyImplementedAdaptersExposeTimeline() {
         #expect(TimelineAgentAvailability.supports(agent: "claude"))
-        for agent in [nil, "", "codex", "chatgpt", "cursor", "agy", "unknown"] as [String?] {
+        #expect(TimelineAgentAvailability.supports(agent: "codex"))
+        for agent in [nil, "", "chatgpt", "cursor", "agy", "unknown"] as [String?] {
             #expect(!TimelineAgentAvailability.supports(agent: agent))
         }
     }

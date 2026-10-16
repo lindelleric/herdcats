@@ -53,7 +53,7 @@ actor AgentBridgeClient {
         self.closeTransport = close
         self.onEvent = onEvent
     }
-    func open(client: SSHClient, command: String, paneId: String) async throws {
+    func open(client: SSHClient, command: String, paneId: String, agent: String? = nil) async throws {
         try await withTaskCancellationHandler {
             try Task.checkCancellation()
             guard closedError == nil else { throw AgentBridgeError.closed }
@@ -83,8 +83,15 @@ actor AgentBridgeClient {
             guard handshake.protocol == 1, handshake.epoch?.isEmpty == false else {
                 throw AgentBridgeError.protocolMismatch
             }
-            guard handshake.capabilities?.claudeTimeline == true else {
-                throw AgentBridgeError.unavailable("transcript_root_unavailable")
+            if agent == "codex" {
+                guard handshake.capabilities?.codexTimeline == true else {
+                    let code = handshake.capabilities?.codexTimeline == nil ? "helper_update_required" : "transcript_root_unavailable"
+                    throw AgentBridgeError.unavailable(code)
+                }
+            } else {
+                guard handshake.capabilities?.claudeTimeline == true else {
+                    throw AgentBridgeError.unavailable("transcript_root_unavailable")
+                }
             }
             guard handshake.capabilities?.recordContent == true else {
                 throw AgentBridgeError.unavailable("helper_update_required")
@@ -268,7 +275,7 @@ extension HerdrConnection {
     /// Default direct-host session only. Routed machines are rejected before
     /// dialing; an optional helper failure never closes the shared SSH client.
     func openAgentTimeline(
-        paneId: String, onEvent: @escaping @Sendable (AgentBridgeFrame) async throws -> Void
+        paneId: String, agent: String? = nil, onEvent: @escaping @Sendable (AgentBridgeFrame) async throws -> Void
     ) async throws -> AgentBridgeClient {
         guard route == nil else { throw AgentBridgeError.routedHostUnsupported }
         guard let client else { throw AgentBridgeError.closed }
@@ -284,7 +291,7 @@ extension HerdrConnection {
             })
         agentBridges[bridge.id] = bridge
         do {
-            try await bridge.open(client: client, command: Self.agentBridgeCommand, paneId: paneId)
+            try await bridge.open(client: client, command: Self.agentBridgeCommand, paneId: paneId, agent: agent)
             try requireGeneration(owned)
             try Task.checkCancellation()
             guard agentBridges[bridge.id] != nil else { throw AgentBridgeError.closed }
@@ -470,14 +477,14 @@ extension HostHelperSetupPlan {
         "$B" --version-json 2>/dev/null || printf '%s\n' HC_HELPER_PROBE_FAILED
         """#
     }
-    static func verifyInstallation(_ output: String) throws {
+    static func verifyInstallation(_ output: String, agent: String? = nil) throws {
         if output.hasPrefix("HC_HELPER_ERROR:") {
             let code = output.dropFirst("HC_HELPER_ERROR:".count).trimmingCharacters(in: .whitespacesAndNewlines)
             throw HostHelperSetupError.failed(code)
         }
         guard output.hasPrefix("HC_HELPER_INSTALLED\n") else { throw HostHelperSetupError.invalidResponse }
         let report = String(output.dropFirst("HC_HELPER_INSTALLED\n".count))
-        let probe = try HostHelperProbe(output: "HC_HELPER_MANAGED\n" + report)
+        let probe = try HostHelperProbe(output: "HC_HELPER_MANAGED\n" + report, agent: agent)
         guard case .present(_, true, true) = probe else { throw HostHelperSetupError.invalidResponse }
     }
 }
@@ -487,6 +494,7 @@ extension HerdrConnection {
     /// probing, and revalidates both immediately before a mutating command.
     func setUpHostHelper(
         replace: Bool, checkOnly: Bool, target: ConnectionIdentity, owned: ConnectionGeneration,
+        agent: String? = nil,
         onStage: @escaping @Sendable (HostHelperSetupStage) async -> Void
     ) async throws -> HostHelperSetupDecision {
         guard route == nil else { throw AgentBridgeError.routedHostUnsupported }
@@ -504,7 +512,7 @@ extension HerdrConnection {
         let output = try await HostHelperCommand().run(client: client, script: HostHelperSetupPlan.probeScript, timeout: 10)
         try Task.checkCancellation()
         try requireGeneration(owned)
-        let probe = try HostHelperProbe(output: output)
+        let probe = try HostHelperProbe(output: output, agent: agent)
         let decision = HostHelperSetupPlan.decision(probe: probe, replace: replace, checkOnly: checkOnly)
         guard case .install(let replaceManaged) = decision else { return decision }
         await onStage(.installing)
@@ -515,7 +523,7 @@ extension HerdrConnection {
         try Task.checkCancellation()
         try requireGeneration(owned)
         await onStage(.verifying)
-        try HostHelperSetupPlan.verifyInstallation(result)
+        try HostHelperSetupPlan.verifyInstallation(result, agent: agent)
         try requireGeneration(owned)
         return .ready
     }

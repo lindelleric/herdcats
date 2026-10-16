@@ -38,7 +38,7 @@
             }
             let data = try JSONSerialization.data(withJSONObject: [
                 "generation": generation,
-                "identity": ["pane_id": paneId, "terminal_id": "fixture-terminal", "agent": "claude",
+                "identity": ["pane_id": paneId, "terminal_id": "fixture-terminal", "agent": ScreenshotFixtures.paneAgent,
                              "native_session_id": "fixture-session"],
                 "entries": rows,
                 "has_more": false
@@ -51,6 +51,8 @@
             if ScreenshotFixtures.screen == "timeline-disconnected" { throw AgentBridgeError.closed }
             let unavailableCode: String? = switch ScreenshotFixtures.screen {
             case "timeline-unavailable": "unsupported_agent"
+            case "timeline-codex-no-session": "session_reference_unavailable"
+            case "timeline-codex-helper-old": "unsupported_agent"
             case "timeline-pending": "transcript_unavailable"
             case "timeline-helper-missing" where !helperInstalled: "helper_missing"
             default: nil
@@ -151,7 +153,7 @@
                     "event": "timeline.snapshot", "epoch": "fixture", "seq": 1,
                     "data": [
                         "identity": [
-                            "pane_id": paneId, "terminal_id": "fixture-terminal", "agent": "claude",
+                            "pane_id": paneId, "terminal_id": "fixture-terminal", "agent": ScreenshotFixtures.paneAgent,
                             "native_session_id": "fixture-session",
                         ], "generation": 1, "entries": entries, "has_more": ScreenshotFixtures.screen.hasPrefix("timeline-history"), "before": "message:user", "agent_status": "idle",
                         "unknown_records": ProcessInfo.processInfo.arguments.contains("-hc.timeline-long") ? 2 : 0, "dropped_entries": 0,

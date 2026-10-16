@@ -7,6 +7,7 @@ import QuickLook
 /// Native session content; the owning pane supplies its composition dock.
 struct AgentTimelineView: View {
     let paneId: String
+    var agent: String? = nil
     let connection: HerdrConnection
     let timeline: AgentTimelineState
     let topOverlayInset: CGFloat
@@ -293,7 +294,7 @@ struct AgentTimelineView: View {
     private func beginSetup() {
         setupShouldUseTerminal = true
         setupFeedback = timeline.phase == .unavailable("helper_update_required")
-            ? "Update the host helper to display session images." : nil
+            ? (agent == "codex" ? "Update the host helper to see Codex conversations." : "Update the host helper to display session images.") : nil
         showsSetup = true
     }
     @MainActor private func startHelperInstallation() {
@@ -337,13 +338,13 @@ struct AgentTimelineView: View {
                 } else {
                     guard let owned = ownedConnection.generation else { throw AgentBridgeError.closed }
                     result = try await connection.setUpHostHelper(
-                        replace: replacing, checkOnly: checkOnly, target: setupTarget, owned: owned,
+                        replace: replacing, checkOnly: checkOnly, target: setupTarget, owned: owned, agent: agent,
                         onStage: { stage in await commitHelperStage(stage, token: token, connection: ownedConnection) })
                 }
                 #else
                 guard let owned = ownedConnection.generation else { throw AgentBridgeError.closed }
                 result = try await connection.setUpHostHelper(
-                    replace: replacing, checkOnly: checkOnly, target: setupTarget, owned: owned,
+                    replace: replacing, checkOnly: checkOnly, target: setupTarget, owned: owned, agent: agent,
                     onStage: { stage in await commitHelperStage(stage, token: token, connection: ownedConnection) })
                 #endif
                 try Task.checkCancellation()
@@ -428,13 +429,22 @@ struct AgentTimelineView: View {
                 "No messages yet", systemImage: "text.bubble",
                 description: Text("Send a message below to start this session."))
         case .unavailable(let code):
+            let isCodex = agent == "codex"
+            let isHelperOld = ["helper_update_required", "unsupported_agent"].contains(code)
+            let isNoSession = ["session_reference_unavailable", "ambiguous_session", "invalid_session_reference"].contains(code)
+
             ContentUnavailableView {
-                Label(code == "helper_missing" ? "Set up Timeline" : "Timeline unavailable", systemImage: "text.bubble")
+                Label(
+                    isCodex && isHelperOld ? "Update the Herdcats helper to see Codex conversations" :
+                    isCodex && isNoSession ? "Codex session not identified" :
+                    (code == "helper_missing" ? "Set up Timeline" : "Timeline unavailable"),
+                    systemImage: "text.bubble"
+                )
             } description: {
                 Text(explanation(code))
             } actions: {
-                if ["helper_missing", "helper_update_required", "protocol_mismatch", "record_too_large"].contains(code) {
-                    Button("Set up Timeline") { beginSetup() }
+                if ["helper_missing", "helper_update_required", "unsupported_agent", "protocol_mismatch", "record_too_large"].contains(code) {
+                    Button(isCodex && isHelperOld ? "Update helper" : "Set up Timeline") { beginSetup() }
                         .buttonStyle(.herdrPrimary)
                         .accessibilityIdentifier("timeline-helper-setup")
                 }
@@ -444,16 +454,25 @@ struct AgentTimelineView: View {
         case .ready: EmptyView()
         }
     }
-    private func explanation(_ code: String) -> String {
+    func explanation(_ code: String) -> String {
         switch code {
         case "helper_missing":
             return "Install the small host helper to see this session as native messages. Terminal is available now."
         case "helper_update_required":
+            if agent == "codex" {
+                return "Update the Herdcats helper to see Codex conversations."
+            }
             return "Update the host helper to display session images."
         case "unsupported_agent":
+            if agent == "codex" {
+                return "Update the Herdcats helper to see Codex conversations."
+            }
             return "Timeline is not available for this agent yet. You can still send messages below or use Terminal."
         case "routed_host_unsupported": return "Native history is not available through saved machines yet. Messages can still be sent below."
         case "session_reference_unavailable", "ambiguous_session", "invalid_session_reference":
+            if agent == "codex" {
+                return "Codex's shared daemon hides which terminal a session belongs to. Fix with `codex --no-daemon` or the installer option."
+            }
             return "This pane has no verified session history. Compose and Terminal remain available."
         case "transcript_root_unavailable":
             return "Session history is unavailable on this host."
@@ -495,7 +514,7 @@ struct AgentTimelineView: View {
         let ownedConnection = connectionState
         var opened: AgentBridgeClient?
         do {
-            let client = try await connection.openAgentTimeline(paneId: paneId) { frame in
+            let client = try await connection.openAgentTimeline(paneId: paneId, agent: agent) { frame in
                 try await commit(frame, owner: owner, connectionState: ownedConnection)
             }
             opened = client
