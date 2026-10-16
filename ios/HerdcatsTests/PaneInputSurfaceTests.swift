@@ -286,3 +286,25 @@ private struct ComposeEditingHarness: View {
         )
     }
 }
+
+@Suite("Timeline image originals")
+@MainActor struct TimelineImageOriginalTests {
+    @Test func thumbnailIsBoundedAndOriginalBytesRemainExact() throws {
+        let format = UIGraphicsImageRendererFormat();format.scale = 1
+        let image = UIGraphicsImageRenderer(size:CGSize(width:2048,height:64),format:format).image { context in
+            UIColor.red.setFill();context.fill(CGRect(x:0,y:0,width:2048,height:64))
+        }
+        let original = try #require(image.pngData())
+        let block = try JSONSerialization.data(withJSONObject:["type":"image","source":["type":"base64","media_type":"image/png","data":original.base64EncodedString()]])
+        guard case .image(let preview,let retained,_) = try TimelineImagePayload.decode(block) else { Issue.record("Missing image"); return }
+        #expect(retained == original)
+        #expect(try #require(UIImage(data:preview)).size.width <= 1024)
+    }
+    @Test func externalImageLinksRequireUserActionAndUnsafeSchemesFail() throws {
+        let valid = try JSONSerialization.data(withJSONObject:["source":["type":"url","url":"https://example.com/image.png"]])
+        guard case .link(let url) = try TimelineImagePayload.decode(valid) else { Issue.record("Expected link"); return }
+        #expect(url.scheme == "https")
+        let invalid = try JSONSerialization.data(withJSONObject:["source":["type":"url","url":"file:///private/data"]])
+        #expect(throws:AgentBridgeError.self) { try TimelineImagePayload.decode(invalid) }
+    }
+}

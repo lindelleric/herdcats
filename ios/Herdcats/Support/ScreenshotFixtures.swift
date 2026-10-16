@@ -26,10 +26,15 @@ enum ScreenshotFixtures {
                           "is_linked_worktree": false]]
         }
     }
+    static var paneAgent: String {
+        let args = ProcessInfo.processInfo.arguments
+        guard let index = args.firstIndex(of: "-hc.agent"), index + 1 < args.count else { return "claude" }
+        return args[index + 1]
+    }
     static var panes: [[String: Any]] {
         projects.indices.map { index in
             ["pane_id": "p\(index)", "tab_id": "t\(index)", "workspace_id": "w\(index)",
-             "agent": providers[index], "agent_status": statuses[index],
+             "agent": index == 0 ? paneAgent : providers[index], "agent_status": statuses[index],
              "cwd": "/Users/demo/Projects/\(projects[index].lowercased().replacingOccurrences(of: " ", with: "-"))",
              "terminal_title_stripped": titles[index], "terminal_title": titles[index],
              "focused": index == 0, "revision": 1, "state_change_seq": 10 - index]
@@ -97,11 +102,14 @@ struct ScreenshotRootView: View {
         app.phase = .connected(host: "studio-mac", username: "demo")
         app.hasActiveSession = true
         app.connectionIdentity = ConnectionIdentity(host: "studio-mac", port: 22, username: "demo")
+        if ProcessInfo.processInfo.arguments.contains("-hc.timeline-intro-reset"), let identity = app.connectionIdentity {
+            UserDefaults.standard.removeObject(forKey: TimelineSetupPreference.key(scope: identity))
+        }
         return app
     }()
     var body: some View {
         Group {
-            if ScreenshotFixtures.screen == "pane" || ScreenshotFixtures.screen == "agent-pane" || ["keys", "compose", "voice"].contains(ScreenshotFixtures.screen) {
+            if ScreenshotFixtures.screen == "pane" || ScreenshotFixtures.screen == "agent-pane" || ["keys", "compose", "voice"].contains(ScreenshotFixtures.screen) || ScreenshotFixtures.screen.hasPrefix("timeline") {
                 NavigationStack {
                     if let pane = try? JSONDecoder().decode(PaneEntry.self, from: Data(ScreenshotFixtures.json(ScreenshotFixtures.panes[0]).utf8)) {
                         PaneDetailView(pane: pane)
@@ -117,7 +125,7 @@ struct ScreenshotRootView: View {
             }
         }
         .environment(model)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(ProcessInfo.processInfo.arguments.contains("-hc.light") ? .light : .dark)
         .tint(Theme.accent)
         .foregroundStyle(Theme.text)
         .font(.jost(.body))

@@ -1,0 +1,239 @@
+{
+  "protocol": 1,
+  "bridge_version": "0.1.4",
+  "transport": "non-PTY stdio NDJSON; one watched pane per process",
+  "launch": {
+    "command": "herdcats-bridge serve --stdio",
+    "flags": {
+      "--socket": "Herdr Unix socket; defaults to HERDR_SOCKET_PATH",
+      "--claude-root": "defaults to HOME/.claude/projects",
+      "--poll-ms": "50..5000; default 300"
+    }
+  },
+  "capabilities": {
+    "claude_timeline": "true when transcript root is available; per-pane source validation still required",
+    "codex_timeline": false,
+    "git": false,
+    "prompts": false,
+    "approvals": false,
+    "questions": false,
+    "routed_hosts": false,
+    "record_content": "true; rich entries and bounded content retrieval are enabled only when initialize params.record_content is true"
+  },
+  "requests": [
+    {
+      "method": "initialize",
+      "params": {
+        "protocol": 1,
+        "record_content": "optional bool; false by default for older clients"
+      },
+      "result_fields": [
+        "protocol",
+        "bridge_version",
+        "epoch",
+        "capabilities"
+      ],
+      "effect": "clears watch; validates Herdr protocol22; required before other methods"
+    },
+    {
+      "method": "watch",
+      "params": {
+        "pane_id": "opaque Herdr ID"
+      },
+      "result": {
+        "watching": "pane_id"
+      },
+      "effect": "ack then snapshot or unavailable"
+    },
+    {
+      "method": "unwatch",
+      "params": {},
+      "result": {
+        "watching": null
+      }
+    },
+    {
+      "method": "history",
+      "params": {
+        "generation": "u64 from snapshot",
+        "before": "stable first entry ID from preceding page"
+      },
+      "result_fields": [
+        "identity",
+        "generation",
+        "entries",
+        "has_more",
+        "before",
+        "dropped_entries"
+      ],
+      "effect": "revalidates source before serving; may emit notifications before response"
+    },
+    {
+      "method": "content",
+      "params": {
+        "generation": "snapshot generation",
+        "content_ref": "opaque source reference published on an entry",
+        "offset": "byte offset within referenced content"
+      },
+      "result_fields": [
+        "identity",
+        "generation",
+        "content_ref",
+        "offset",
+        "next_offset",
+        "total",
+        "hex"
+      ],
+      "effect": "Revalidates native occupant and source; returns at most64KiB raw bytes encoded as lowercase hex. Only current retained entry references are readable; no host paths accepted."
+    }
+  ],
+  "envelopes": {
+    "request": {
+      "id": "nonempty string <=128 bytes",
+      "method": "string",
+      "params": "object"
+    },
+    "success": {
+      "id": "request ID",
+      "result": "object"
+    },
+    "failure": {
+      "id": "request ID or null for invalid frame/ID",
+      "error": {
+        "code": "stable string"
+      }
+    },
+    "notification": {
+      "epoch": "process lifetime opaque ID",
+      "seq": "monotonic u64 within epoch",
+      "event": "event name",
+      "data": "object"
+    }
+  },
+  "identity": [
+    "pane_id",
+    "terminal_id",
+    "agent",
+    "native_session_id"
+  ],
+  "client_scope": "Also bind to SSH host, Herdr session and local connection generation; those are not emitted by this helper.",
+  "events": {
+    "timeline.snapshot": {
+      "fields": [
+        "identity",
+        "generation",
+        "entries",
+        "has_more",
+        "before",
+        "agent_status",
+        "unknown_records",
+        "dropped_entries",
+        "delayed"
+      ],
+      "effect": "replace state; recent page only; fetch earlier retained entries separately"
+    },
+    "timeline.updated": {
+      "fields": [
+        "identity",
+        "generation",
+        "entries",
+        "agent_status",
+        "evicted_ids",
+        "unknown_records",
+        "dropped_entries",
+        "delayed"
+      ],
+      "effect": "Remove evicted_ids before stable-ID upserts; retention does not reset generation. Do not resurrect evicted IDs from delayed history. Counters may update with no entries; frames remain bounded."
+    },
+    "timeline.unavailable": {
+      "fields": [
+        "pane_id",
+        "generation",
+        "code"
+      ],
+      "effect": "clear selected timeline and invalidate cursors"
+    }
+  },
+  "entry_fields": {
+    "id": "message:<source UUID>, tool:<tool ID>, or content:<source byte offset>:<block index>",
+    "kind": "message/tool; image/record when record_content is negotiated",
+    "text": "bounded text/output",
+    "role": "user/assistant or null",
+    "tool_name": "string or null",
+    "status": "running/completed/failed or null",
+    "details": "bounded serialized input or null",
+    "truncated": "boolean, conservatively preserved for replayed tools",
+    "content_ref": "optional opaque reference to complete block bytes",
+    "record_refs": "optional references to complete original record bytes; up to4 per entry"
+  },
+  "reconnect": "No persistent replay cursor. Start a new helper, initialize and watch. Epoch change or sequence gap requires fresh snapshot. Notifications can interleave all replies.",
+  "cursor": "Generation-bound before entry ID. Identity/source replacement or genuine outage recovery resets generation. Normal retention keeps generation; a retained cursor remains valid and an evicted cursor returns stale_cursor.",
+  "limits": {
+    "source_bytes": 67108864,
+    "wire_frame_bytes": 1048576,
+    "source_record_bytes": 1048576,
+    "retained_entries": 1000,
+    "page_entries": 100,
+    "text_bytes": 8192,
+    "details_bytes": 8192,
+    "entry_identities": 100000,
+    "project_directories": 10000,
+    "request_queue": 16,
+    "oversized_source_record_behavior": "Complete source lines exceeding the parsed record limit use bounded typed deserialization for text/tools. Negotiated rich mode additionally emits image descriptors and unfamiliar-record bubbles with complete source references, without embedding bulky image bytes in live frames. Incomplete lines wait for newline; the 64MiB source bound remains hard.",
+    "evicted_ids_per_update": 1000
+  },
+  "source_policy": "Herdr22 Claude reference source herdr:claude; native UUID exact filename/path beneath pinned transcript root; ambiguity, symlinks, missing reference or foreign main-session records fail closed.",
+  "implementation_limits": [
+    "Polling-only fallback; no subscriptions.",
+    "Bounded source prefix reread on change, new complete records parsed incrementally.",
+    "Negotiated content retrieval covers complete original records and blocks within the verified 64MiB source; only references on retained entries are readable.",
+    "Claude captured2.1.296 schema coverage; no general version promise.",
+    "Optional four-platform installer and native iOS client; Codex and native approval/question actions remain unavailable."
+  ],
+  "errors": [
+    "ambiguous_session",
+    "claude_root_required",
+    "content_unavailable",
+    "herdr_snapshot_too_large",
+    "herdr_unavailable",
+    "incomplete_input_frame",
+    "input_frame_too_large",
+    "input_unavailable",
+    "invalid_content_offset",
+    "invalid_cursor",
+    "invalid_herdr_response",
+    "invalid_json",
+    "invalid_pane_id",
+    "invalid_poll_interval",
+    "invalid_request_id",
+    "invalid_session_reference",
+    "invalid_transcript",
+    "missing_argument",
+    "not_initialized",
+    "not_watching",
+    "output_frame_too_large",
+    "pane_unavailable",
+    "protocol_mismatch",
+    "record_too_large",
+    "session_mismatch",
+    "session_reference_unavailable",
+    "socket_required",
+    "source_changing",
+    "source_too_large",
+    "stale_cursor",
+    "stream_closed",
+    "timeline_unavailable",
+    "transcript_identity_limit",
+    "transcript_index_too_large",
+    "transcript_root_unavailable",
+    "transcript_unavailable",
+    "unknown_argument",
+    "unknown_method",
+    "unsafe_transcript_path",
+    "unsupported_agent",
+    "unsupported_capability",
+    "unsupported_herdr_protocol",
+    "unsupported_session_source"
+  ],
+  "transient_read_behavior": "source_changing retries without clearing verified cache for the same identity; after repeated retries (threshold 10), emits timeline.updated with delayed: true while keeping verified history until recovery clears it. A changed occupant still clears old state."
+}

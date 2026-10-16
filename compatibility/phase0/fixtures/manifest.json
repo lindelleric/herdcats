@@ -1,0 +1,53 @@
+{
+  "capture_kind": "sanitized live disposable sessions",
+  "versions": {
+    "herdr": "0.9.3",
+    "protocol": 22,
+    "claude": "2.1.296",
+    "codex": "0.162.1"
+  },
+  "codex_history_mode": "paginated",
+  "redaction": "Free text replaced; stable IDs pseudonymized; paths replaced; global instructions/account metadata omitted. Source record shape is retained where relevant.",
+  "files": {
+    "ssh-probe.json": {
+      "bytes": 325,
+      "sha256": "fa67c3b2eb7841980ad0d9a5c2e8eafe14dba80139344f12f71ab5af0aa8b763"
+    },
+    "boundary-cases.json": {
+      "bytes": 1537,
+      "sha256": "165bb3d64eb5c13debd6925adac8cb19cebd18fbc5e7a2575ca111991812826a"
+    },
+    "herdr-events.json": {
+      "bytes": 24641,
+      "sha256": "7ac4120cf0b1ccc6ca7ce33001f44b059dd407f9bec95043d832cbedfa2cad87"
+    },
+    "session-identity-trace.json": {
+      "bytes": 10132,
+      "sha256": "a954eb4d2affcc06cc924976f56582535b5b806239b80fe5a35f403b7dca8436"
+    },
+    "codex-rollout.jsonl": {
+      "bytes": 15785,
+      "sha256": "844c16a0df7c5e1f5f56f3537f36b4616fee3e3ed9ce554bcbf265ae22fb0198"
+    },
+    "claude-transcript.jsonl": {
+      "bytes": 55305,
+      "sha256": "6675c3b83586a678ce8946cc551d325bd644f52ab8430f8a3f002f9b95da5130"
+    },
+    "codex-history-schema.json": {
+      "bytes": 1898,
+      "sha256": "b9e90faa009188caa617115fda066a49f33134f0cdd1901198f6313538cb2677"
+    },
+    "codex-paginated-items.json": {
+      "bytes": 1207,
+      "sha256": "97b40d4cda0895f08421f66948278ecbb709e7155f9492ec6706316ebcf57ca7"
+    },
+    "herdr-schema.json": {
+      "bytes": 272578,
+      "sha256": "9e2af207e9aa8183d4aeca5fde9cc48e7909bb40cdbd7cf21608a6d3ea78075b"
+    },
+    "codex-session-hook.jsonl": {
+      "bytes": 481,
+      "sha256": "17a868c47ccac24434b8daa94f3272f9a3565798e0b7c62aa41ba36fdd10daf8"
+    }
+  }
+}

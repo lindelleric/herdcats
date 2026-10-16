@@ -79,3 +79,6 @@ web/out/
 
 # Private marketing notes
 /marketing.md
+
+# Host bridge build artifacts
+/bridge/target/

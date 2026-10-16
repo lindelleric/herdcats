@@ -166,3 +166,10 @@ struct RefreshGenerationGate: Equatable, Sendable {
         generation == token
     }
 }
+
+extension ConnectionClientSlot {
+    func ownedClient(_ expected:ConnectionGeneration) throws -> Client {
+        guard matches(expected), let client=current else{throw HerdrError.notConnected}
+        return client
+    }
+}

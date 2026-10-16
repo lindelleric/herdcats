@@ -70,13 +70,16 @@ extension HerdrConnection {
 
     func executeHerdr(
         _ args: String, timeout: TimeInterval, allowEmptyOutput: Bool,
-        timeoutPolicy: HerdrCommandTimeoutPolicy = .teardownAndNotify
+        timeoutPolicy: HerdrCommandTimeoutPolicy = .teardownAndNotify,
+        expectedGeneration: ConnectionGeneration? = nil
     ) async throws -> String {
 #if DEBUG && targetEnvironment(simulator)
         if ScreenshotFixtures.enabled { return try ScreenshotFixtures.response(args) }
 #endif
-        guard let client else { throw HerdrError.notConnected }
-        let owned = generation
+        let owned = expectedGeneration ?? generation
+        // Validate ownership and capture the client in this same actor turn.
+        // A caller's earlier generation check cannot authorize a new client.
+        let client = try slot.ownedClient(owned)
         let command = Self.remoteCommand(args)
         let diagnosticLabel = Self.herdrDiagnosticLabel
         print("[HC] exec: \(diagnosticLabel)")

@@ -199,3 +199,45 @@ extension HerdrConnection {
         return remotePath
     }
 }
+
+private struct TimelinePromptAgentResult: Decodable {
+    let agent: TimelinePromptAgent
+}
+private struct TimelinePromptAgent: Decodable {
+    let paneId: String
+    let terminalId: String
+    let agent: String
+    let agentStatus: String
+    let agentSession: Reference?
+    struct Reference: Decodable {
+        let agent: String
+        let source: String
+        let kind: String
+        let value: String
+    }
+    enum CodingKeys: String, CodingKey {
+        case paneId = "pane_id", terminalId = "terminal_id", agent
+        case agentStatus = "agent_status", agentSession = "agent_session"
+    }
+}
+extension HerdrConnection {
+    /// Native composition uses the existing prompt API, with a fresh occupant
+    /// check. It never falls back to shell input or answers a blocked request.
+    func submitTimelinePrompt(text: String, identity: AgentTimelineIdentity, owned: ConnectionGeneration) async throws {
+        guard route == nil else {throw AgentBridgeError.routedHostUnsupported}
+        try await paneInput.run(paneId: identity.paneId) {
+            try await self.requireGeneration(owned)
+            let live = try await self.fetch(TimelinePromptAgentResult.self,args:"agent get \(Self.shellSafeArgument(identity.paneId))").agent
+            let reference = live.agentSession
+            let sessionId = reference?.kind == "path" ? URL(fileURLWithPath:reference?.value ?? "").deletingPathExtension().lastPathComponent : reference?.value
+            guard live.paneId == identity.paneId, live.terminalId == identity.terminalId,
+                  live.agent == identity.agent, reference?.agent == identity.agent,
+                  reference?.source == "herdr:claude", sessionId == identity.nativeSessionId,
+                  TimelineComposePolicy.canSend(identity:identity,paneId:live.paneId,status:live.agentStatus,connected:true)
+            else {throw AgentBridgeError.identityMismatch}
+            try await self.requireGeneration(owned)
+            try Task.checkCancellation()
+            _ = try await self.executeHerdr("agent prompt \(Self.shellSafeArgument(identity.paneId)) \(Self.shellSafeArgument(text))",timeout:30,allowEmptyOutput:true,expectedGeneration:owned)
+        }
+    }
+}

@@ -1,0 +1,116 @@
+{
+  "thread_turns": [
+    {
+      "name": "thread_id",
+      "type": "TEXT"
+    },
+    {
+      "name": "turn_id",
+      "type": "TEXT"
+    },
+    {
+      "name": "rollout_ordinal",
+      "type": "INTEGER"
+    },
+    {
+      "name": "status",
+      "type": "TEXT"
+    },
+    {
+      "name": "error_json",
+      "type": "TEXT"
+    },
+    {
+      "name": "started_at",
+      "type": "INTEGER"
+    },
+    {
+      "name": "completed_at",
+      "type": "INTEGER"
+    },
+    {
+      "name": "duration_ms",
+      "type": "INTEGER"
+    },
+    {
+      "name": "first_user_item_id",
+      "type": "TEXT"
+    },
+    {
+      "name": "final_agent_item_id",
+      "type": "TEXT"
+    },
+    {
+      "name": "rollout_byte_offset",
+      "type": "INTEGER"
+    },
+    {
+      "name": "rollout_end_ordinal",
+      "type": "INTEGER"
+    },
+    {
+      "name": "rollout_end_byte_offset",
+      "type": "INTEGER"
+    },
+    {
+      "name": "root_turn_id",
+      "type": "TEXT"
+    }
+  ],
+  "thread_items": [
+    {
+      "name": "thread_id",
+      "type": "TEXT"
+    },
+    {
+      "name": "turn_id",
+      "type": "TEXT"
+    },
+    {
+      "name": "item_id",
+      "type": "TEXT"
+    },
+    {
+      "name": "rollout_ordinal",
+      "type": "INTEGER"
+    },
+    {
+      "name": "created_at_ms",
+      "type": "INTEGER"
+    },
+    {
+      "name": "item_json",
+      "type": "TEXT"
+    },
+    {
+      "name": "item_type",
+      "type": "TEXT"
+    },
+    {
+      "name": "updated_at_ordinal",
+      "type": "INTEGER"
+    },
+    {
+      "name": "started_at_ms",
+      "type": "INTEGER"
+    },
+    {
+      "name": "completed_at_ms",
+      "type": "INTEGER"
+    }
+  ],
+  "thread_history_projection_state": [
+    {
+      "name": "thread_id",
+      "type": "TEXT"
+    },
+    {
+      "name": "next_rollout_byte_offset",
+      "type": "INTEGER"
+    },
+    {
+      "name": "next_rollout_ordinal",
+      "type": "INTEGER"
+    }
+  ]
+}
