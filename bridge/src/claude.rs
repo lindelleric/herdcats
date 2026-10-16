@@ -1,7 +1,59 @@
-use crate::Result;
+use crate::{Result, adapter::Adapter, follower::Follower, herdr::Pane, resolver::Resolver};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{borrow::Cow, collections::HashSet};
+use std::{borrow::Cow, collections::HashSet, fs::File};
+
+pub struct ClaudeAdapter {
+    pub resolver: Option<Resolver>,
+}
+
+impl ClaudeAdapter {
+    pub fn new(resolver: Option<Resolver>) -> Self {
+        Self { resolver }
+    }
+}
+
+impl Adapter for ClaudeAdapter {
+    fn name(&self) -> &'static str {
+        "claude"
+    }
+
+    fn supports(&self, agent: &str) -> bool {
+        agent == "claude"
+    }
+
+    fn is_available(&self) -> bool {
+        self.resolver.is_some()
+    }
+
+    fn resolve_and_open(&self, pane: &Pane) -> Result<(String, File)> {
+        if pane.agent.as_deref() != Some("claude") {
+            return Err("unsupported_agent");
+        }
+        let reference = pane
+            .agent_session
+            .as_ref()
+            .ok_or("session_reference_unavailable")?;
+        if reference.agent != "claude" || reference.source != "herdr:claude" {
+            return Err("unsupported_session_source");
+        }
+        let resolver = self
+            .resolver
+            .as_ref()
+            .ok_or("transcript_root_unavailable")?;
+        let (session, path) = resolver.resolve(&reference.kind, &reference.value)?;
+        let file = resolver.open(&path)?;
+        Ok((session, file))
+    }
+
+    fn new_follower(&self, include_content: bool) -> Follower {
+        if include_content {
+            Follower::with_content()
+        } else {
+            Follower::default()
+        }
+    }
+}
 
 pub const MAX_ENTRIES: usize = 1000;
 const TEXT_LIMIT: usize = 8192;
@@ -42,7 +94,7 @@ pub struct Transcript {
     pub dropped_entries: usize,
     seen: HashSet<String>,
 }
-fn bounded(text: &str) -> (String, bool) {
+pub(crate) fn bounded(text: &str) -> (String, bool) {
     let mut end = text.len().min(TEXT_LIMIT);
     while !text.is_char_boundary(end) {
         end -= 1;

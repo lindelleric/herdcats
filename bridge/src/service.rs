@@ -1,6 +1,7 @@
 use crate::{
     Result,
-    claude::Entry,
+    adapter::Adapter,
+    claude::{ClaudeAdapter, Entry},
     follower::{Follower, MAX_RECORD},
     herdr::Client,
     resolver::Resolver,
@@ -38,6 +39,7 @@ struct Watch {
 pub struct Service {
     pub client: Client,
     pub resolver: Option<Resolver>,
+    adapters: Vec<Box<dyn Adapter>>,
     epoch: String,
     sequence: u64,
     generation: u64,
@@ -66,9 +68,12 @@ impl Service {
                 .as_nanos(),
             std::process::id()
         );
+        let resolver = Resolver::new(&root).ok();
+        let adapters: Vec<Box<dyn Adapter>> = vec![Box::new(ClaudeAdapter::new(resolver.clone()))];
         Self {
             client: Client { socket },
-            resolver: Resolver::new(&root).ok(),
+            resolver,
+            adapters,
             epoch,
             sequence: 0,
             generation: 0,
@@ -76,6 +81,12 @@ impl Service {
             include_content: false,
             watch: None,
         }
+    }
+    fn adapter_for(&self, agent: &str) -> Option<&dyn Adapter> {
+        self.adapters
+            .iter()
+            .find(|a| a.supports(agent))
+            .map(|a| a.as_ref())
     }
     fn write(out: &mut impl Write, frame: &Value) -> io::Result<()> {
         let bytes = serde_json::to_vec(frame)?;
@@ -107,21 +118,9 @@ impl Service {
             .iter()
             .find(|p| p.pane_id == watch.pane_id)
             .ok_or("pane_unavailable")?;
-        if pane.agent.as_deref() != Some("claude") {
-            return Err("unsupported_agent");
-        }
-        let reference = pane
-            .agent_session
-            .as_ref()
-            .ok_or("session_reference_unavailable")?;
-        if reference.agent != "claude" || reference.source != "herdr:claude" {
-            return Err("unsupported_session_source");
-        }
-        let resolver = self
-            .resolver
-            .as_ref()
-            .ok_or("transcript_root_unavailable")?;
-        let (session, path) = resolver.resolve(&reference.kind, &reference.value)?;
+        let agent = pane.agent.as_deref().ok_or("unsupported_agent")?;
+        let adapter = self.adapter_for(agent).ok_or("unsupported_agent")?;
+        let (session, file) = adapter.resolve_and_open(pane)?;
         if pane.terminal_id.is_empty()
             || pane.terminal_id.len() > 256
             || pane.agent_status.len() > 256
@@ -131,20 +130,16 @@ impl Service {
         let identity = Identity {
             pane_id: pane.pane_id.clone(),
             terminal_id: pane.terminal_id.clone(),
-            agent: "claude".into(),
+            agent: adapter.name().into(),
             native_session_id: session.clone(),
         };
         if watch.identity.as_ref() != Some(&identity) {
-            watch.follower = if self.include_content {
-                Follower::with_content()
-            } else {
-                Follower::default()
-            };
+            watch.follower = adapter.new_follower(self.include_content);
             // A transient read of a new occupant cannot authorize serving the
             // previous occupant's cached transcript.
             watch.identity = None;
         }
-        refresh(&mut watch.follower, resolver.open(&path)?, &session)?;
+        refresh(&mut watch.follower, file, &session)?;
         let reset = watch.identity.as_ref() != Some(&identity)
             || watch.unavailable.is_some()
             || watch.follower.generation != watch.generation;

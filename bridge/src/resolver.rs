@@ -7,7 +7,17 @@ pub struct Resolver {
     pub root: PathBuf,
     anchor: fs::File,
 }
-fn session_id(value: &str) -> bool {
+
+impl Clone for Resolver {
+    fn clone(&self) -> Self {
+        Self {
+            root: self.root.clone(),
+            anchor: self.anchor.try_clone().expect("anchor clone"),
+        }
+    }
+}
+
+pub(crate) fn session_id(value: &str) -> bool {
     value.len() == 36
         && value.bytes().enumerate().all(|(i, b)| {
             if [8, 13, 18, 23].contains(&i) {
@@ -86,7 +96,7 @@ impl Resolver {
 
 // Walk through pinned directory descriptors. O_NOFOLLOW applies at every level,
 // so renaming a parent and substituting a symlink cannot redirect a read.
-fn open_beneath(anchor: &fs::File, path: &Path, directory: bool) -> Result<fs::File> {
+pub(crate) fn open_beneath(anchor: &fs::File, path: &Path, directory: bool) -> Result<fs::File> {
     use std::{
         ffi::CString,
         os::{
