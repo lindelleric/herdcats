@@ -78,6 +78,21 @@ extension HerdrConnection {
         }
     }
 
+    static func shouldTypeAndEnterForTimelinePrompt(agent: String, agentStatus: String?) -> Bool {
+        agent == "codex" && agentStatus == "working"
+    }
+
+    func paneSubmitWorkingCodexPromptUnlocked(
+        paneId: String,
+        text: String,
+        owned: ConnectionGeneration
+    ) async throws {
+        try await paneTypeTextUnlocked(paneId: paneId, text: text, owned: owned)
+        try await Task.sleep(for: .milliseconds(350))
+        try requireGeneration(owned)
+        try await paneSendKeysUnlocked(paneId: paneId, ["enter"], owned: owned)
+    }
+
     func paneSubmitUnlocked(
         paneId: String,
         text: String,
@@ -86,11 +101,8 @@ extension HerdrConnection {
         owned: ConnectionGeneration
     ) async throws {
         try requireGeneration(owned)
-        if agent == "codex", status == .working {
-            try await paneTypeTextUnlocked(paneId: paneId, text: text, owned: owned)
-            try await Task.sleep(for: .milliseconds(350))
-            try requireGeneration(owned)
-            try await paneSendKeysUnlocked(paneId: paneId, ["enter"], owned: owned)
+        if Self.shouldTypeAndEnterForTimelinePrompt(agent: agent ?? "", agentStatus: status?.rawValue) {
+            try await paneSubmitWorkingCodexPromptUnlocked(paneId: paneId, text: text, owned: owned)
             return
         }
         if agent != nil {
@@ -238,6 +250,10 @@ extension HerdrConnection {
             else {throw AgentBridgeError.identityMismatch}
             try await self.requireGeneration(owned)
             try Task.checkCancellation()
+            if Self.shouldTypeAndEnterForTimelinePrompt(agent: identity.agent, agentStatus: live.agentStatus) {
+                try await self.paneSubmitWorkingCodexPromptUnlocked(paneId: identity.paneId, text: text, owned: owned)
+                return
+            }
             _ = try await self.executeHerdr("agent prompt \(Self.shellSafeArgument(identity.paneId)) \(Self.shellSafeArgument(text))",timeout:30,allowEmptyOutput:true,expectedGeneration:owned)
         }
     }

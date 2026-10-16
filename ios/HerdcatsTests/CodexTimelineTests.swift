@@ -259,3 +259,26 @@ struct CodexTimelineGatingTests {
         #expect(explanation.contains("so Herdcats will not guess"))
     }
 }
+
+@Suite("Codex timeline prompt submission and routing")
+struct CodexTimelinePromptRoutingTests {
+    @Test func timelinePromptRoutingDecision() {
+        // codex + working -> type then enter
+        #expect(HerdrConnection.shouldTypeAndEnterForTimelinePrompt(agent: "codex", agentStatus: "working"))
+
+        // codex idle/done -> agent prompt
+        #expect(!HerdrConnection.shouldTypeAndEnterForTimelinePrompt(agent: "codex", agentStatus: "idle"))
+        #expect(!HerdrConnection.shouldTypeAndEnterForTimelinePrompt(agent: "codex", agentStatus: "done"))
+        #expect(!HerdrConnection.shouldTypeAndEnterForTimelinePrompt(agent: "codex", agentStatus: "blocked"))
+        #expect(!HerdrConnection.shouldTypeAndEnterForTimelinePrompt(agent: "codex", agentStatus: nil))
+
+        // claude any -> agent prompt
+        #expect(!HerdrConnection.shouldTypeAndEnterForTimelinePrompt(agent: "claude", agentStatus: "working"))
+        #expect(!HerdrConnection.shouldTypeAndEnterForTimelinePrompt(agent: "claude", agentStatus: "idle"))
+        #expect(!HerdrConnection.shouldTypeAndEnterForTimelinePrompt(agent: "claude", agentStatus: "done"))
+        #expect(!HerdrConnection.shouldTypeAndEnterForTimelinePrompt(agent: "claude", agentStatus: nil))
+
+        // other agents -> agent prompt
+        #expect(!HerdrConnection.shouldTypeAndEnterForTimelinePrompt(agent: "cursor", agentStatus: "working"))
+    }
+}
