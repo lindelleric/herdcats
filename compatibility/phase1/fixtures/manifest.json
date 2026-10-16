@@ -1,0 +1,56 @@
+{
+  "capture_kind": "sanitized live disposable sessions (herdr --session, temp project, probe-only prompts)",
+  "versions": {
+    "herdr": "0.9.3",
+    "protocol": 22,
+    "claude": "2.1.301",
+    "codex": "0.162.1"
+  },
+  "redaction": "Probe-authored text kept verbatim; all other free text replaced; IDs pseudonymized with the phase 0 namespace; paths masked in place.",
+  "files": {
+    "claude-hooks.jsonl": {
+      "bytes": 10956,
+      "sha256": "1cf351918c2f3ef3714e379ba078d3ad787b5b289f85143539f15d486b7a7fab"
+    },
+    "claude-transcript.jsonl": {
+      "bytes": 11389,
+      "sha256": "ccd082dc12eeb4d95a4a5388f4e6d61a9cd9cbe11e7991b217402e0bdbfe63e2"
+    },
+    "claude-approval-screen.txt": {
+      "bytes": 1250,
+      "sha256": "265a42d4ab88bfc2be7b7f5ac36fe534341642ec0084f3d306ac1cf56fab7015"
+    },
+    "claude-question-screen.txt": {
+      "bytes": 579,
+      "sha256": "75b324fe9ba19d18618cc8036a039706c00b6b0976b93ebea38552ab2cfa976f"
+    },
+    "codex-hooks.jsonl": {
+      "bytes": 4923,
+      "sha256": "38bdf493ef01e5f03bf7a73b5d99667b0368b8271da261a44030784828a6df0f"
+    },
+    "codex-pending-rollout.jsonl": {
+      "bytes": 4439,
+      "sha256": "fcc3cccaca98027a691e77483685d98c39ec233cf99e59abf16d56efc8c5274e"
+    },
+    "codex-rollout.jsonl": {
+      "bytes": 10219,
+      "sha256": "e93e9c61c75db4710ea39888c619f053b89812d5bc1bb93997a2ac3b18f46ab4"
+    },
+    "codex-approval-screen.txt": {
+      "bytes": 387,
+      "sha256": "6c2e5d00ad6431599009df6f92a6f17ca337a772c9317aee452067601e016271"
+    },
+    "codex-question-screen.txt": {
+      "bytes": 196,
+      "sha256": "21e2c56bfb6ee911b509c4e400b5ba8ae4955cd9571fd2c99cecb9177758ebd6"
+    },
+    "codex-question-picker-screen.txt": {
+      "bytes": 129,
+      "sha256": "541b9be83702d435cd1edfa8002ae82fd060efb4f9bc82d1bcbc13856c0e8250"
+    },
+    "codex-question-answer-rollout.jsonl": {
+      "bytes": 8873,
+      "sha256": "bad9d0a8d50a299f32372985353f14082cd1c2b0633878f4ef156e8708b60a93"
+    }
+  }
+}

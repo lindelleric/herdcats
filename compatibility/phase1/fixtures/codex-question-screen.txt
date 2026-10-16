@@ -1,0 +1,10 @@
+• Pick a color
+  • Red
+  • Blue
+  Pick a size
+  • Small
+  • Large
+• Working (9s • esc to interrupt) · Running hooks
+• Queued follow-up inputs
+  ? 2 questions
+    ⇧← to answer
