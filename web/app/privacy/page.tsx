@@ -11,7 +11,7 @@ export default function PrivacyPage() {
     <SitePage current="privacy" title="Privacy Policy">
       <section className={styles.section}>
         <p>
-          <strong>Last updated:</strong> 8 October 2026
+          <strong>Last updated:</strong> 16 October 2026
         </p>
         <p>
           This Privacy Policy explains how the publisher of Herdcats (&ldquo;we,&rdquo; &ldquo;us,&rdquo; or
@@ -39,6 +39,7 @@ export default function PrivacyPage() {
           <li>Optional drafts and command history can be stored locally on your device</li>
           <li>Optional dictation uses Apple&rsquo;s Speech frameworks (and may involve Apple)</li>
           <li>Optional photo attachments are sent to your remote machine over SSH</li>
+          <li>Optional Timeline helper is downloaded from GitHub releases and runs on your own machine, over your SSH connection</li>
           <li>App Store purchases are processed by Apple</li>
         </ul>
       </section>
@@ -108,6 +109,16 @@ export default function PrivacyPage() {
           (for example under <code>~/.cache/herdrcat/attachments</code>). The app does not
           automatically delete those remote files.
         </p>
+        <p>
+          Optional Timeline helper. If you enable the native Timeline, the app can download a small
+          helper (<code>herdcats-bridge</code>) from our GitHub releases and install it on the direct
+          SSH host (at <code>~/.local/bin/herdcats-bridge</code>) after you tap Install. GitHub serves
+          that download and may log the request under its own privacy policy. The helper reads the
+          agent session transcript on that machine (currently Claude) and sends it to your phone
+          over the same SSH connection. It runs only while Timeline is open; there is no background
+          service. Downloads are checksum-verified but not code-signed or notarized. Delete the
+          file to uninstall it.
+        </p>
       </section>
 
       <section className={styles.section}>
@@ -171,6 +182,7 @@ export default function PrivacyPage() {
         <ul className={styles.list}>
           <li>Apple (App Store / StoreKit, and Speech if you use dictation)</li>
           <li>Website hosting / CDN providers for herdcats.dev</li>
+          <li>GitHub (serves the optional Timeline helper download, if you install it)</li>
           <li>Networks and hosts you configure (your SSH server, Tailscale, Herdr, AI agent tools)</li>
         </ul>
       </section>

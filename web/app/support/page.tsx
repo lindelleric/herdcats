@@ -92,6 +92,11 @@ const supportSections = [
     "depth": 1
   },
   {
+    "id": "using-app-what-is-the-timeline-helper-and-why-does-timeline-need-it",
+    "label": "Timeline helper",
+    "depth": 1
+  },
+  {
     "id": "using-app-does-herdcats-run-agents-on-my-iphone",
     "label": "Where agents run",
     "depth": 1
@@ -234,6 +239,11 @@ const supportSections = [
   {
     "id": "troubleshooting-herdr-command-not-found",
     "label": "Herdr not found",
+    "depth": 1
+  },
+  {
+    "id": "troubleshooting-timeline-helper-missing-or-install-failed",
+    "label": "Timeline helper",
     "depth": 1
   }
 ];
@@ -378,7 +388,7 @@ export default function SupportPage() {
         </div>
         <div className="faq-item">
         <h4 id="faq-do-i-need-any-other-software-on-my-computer" className="faq-question">Do I need any other software on my computer?</h4>
-        <p>Herdr and SSH are required. You do not need a separate Herdcats companion server. The optional <code>quota-axi</code> tool adds provider quota information.</p>
+        <p>Herdr and SSH are required. Terminal, Compose, voice, and photos need nothing else. The optional Timeline view does: a small helper (<code>herdcats-bridge</code>) on the computer you connect to directly. A terminal pane is a scrolling log; the helper reads your Claude session&#x27;s structured transcript so Herdcats can show it as readable messages, tool activity, and images instead. It is installed only when you tap Install, runs only while Timeline is open, and everything else works without it. The optional <code>quota-axi</code> tool adds provider quota information.</p>
         </div>
         </div>
         <h3 id="privacy" className="faq-category">Signing in and privacy</h3>
@@ -422,6 +432,11 @@ export default function SupportPage() {
         <li><strong>Compose:</strong> write and review a message before sending it.</li>
         <li><strong>Voice:</strong> dictate a message, review the text, then send it.</li>
         </ul>
+        </div>
+        <div className="faq-item">
+        <h4 id="using-app-what-is-the-timeline-helper-and-why-does-timeline-need-it" className="faq-question">What is the Timeline helper, and why does Timeline need it?</h4>
+        <p>Timeline turns an agent session into a phone-friendly conversation: readable messages, tool activity, and images. A terminal pane can&#x27;t provide that — its output is a scrolling log. The helper (<code>herdcats-bridge</code>) is a small program on your SSH computer that reads the session&#x27;s structured transcript and sends it to your phone over the same SSH connection, only while Timeline is open.</p>
+        <p>It is optional. Terminal, Compose, voice, and photos never need it, and Timeline asks before installing anything: no sudo, no background service, no agent hooks. Timeline currently supports Claude; other agents keep using Terminal and Compose. Delete <code>~/.local/bin/herdcats-bridge</code> to remove it.</p>
         </div>
         <div className="faq-item">
         <h4 id="using-app-does-herdcats-run-agents-on-my-iphone" className="faq-question">Does Herdcats run agents on my iPhone?</h4>
@@ -755,6 +770,13 @@ Set-Service -Name sshd -StartupType 'Automatic'`}</code></pre>
                   <h3 id="troubleshooting-herdr-command-not-found"><TriangleAlert className="warn-icon" size={18} strokeWidth={2.25} aria-hidden="true" /><span>&ldquo;herdr: command not found&rdquo;</span></h3>
                   <p>
                     Herdcats looks for <code>herdr</code> in <code>PATH</code>, <code>~/.local/bin</code>, <code>/opt/homebrew/bin</code>, and <code>/usr/local/bin</code>. Ensure Herdr is installed on the remote machine.
+                  </p>
+                </div>
+
+                <div className="faq-item">
+                  <h3 id="troubleshooting-timeline-helper-missing-or-install-failed"><TriangleAlert className="warn-icon" size={18} strokeWidth={2.25} aria-hidden="true" /><span>&ldquo;Timeline says the helper is missing or could not be installed&rdquo;</span></h3>
+                  <p>
+                    Timeline needs the optional <code>herdcats-bridge</code> helper on the computer your phone connects to directly — without it, that view falls back to Terminal, which stays fully usable. Tap <strong>Install</strong> in the setup sheet, or copy the manual install command shown there and run it on that computer, then tap <strong>Check again</strong>. Updating an existing helper requires <code>--replace</code>. If installation cannot be verified, choose <strong>Check installation</strong>; Terminal and Compose keep working without the helper.
                   </p>
                 </div>
               </div>

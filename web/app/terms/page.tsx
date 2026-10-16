@@ -10,7 +10,7 @@ export default function TermsPage() {
     <SitePage current="terms" title="Terms of Service">
       <section className={styles.section}>
         <p>
-          <strong>Last updated:</strong> 1 October 2026
+          <strong>Last updated:</strong> 16 October 2026
         </p>
         <p>
           These Terms of Service (&ldquo;Terms&rdquo;) govern your access to and use of the Herdcats
@@ -77,6 +77,12 @@ export default function TermsPage() {
           misconfiguration, compromised credentials, or agent behavior.
         </p>
         <p>
+          The Service can, at your direction, download and install optional companion software (the
+          Timeline helper) on your remote host from our GitHub releases. Downloads are verified by
+          checksum but are not independently code-signed; you are responsible for reviewing and
+          authorizing installations on machines you control.
+        </p>
+        <p>
           The Service is a developer tool. It is not designed for use in safety-critical, medical,
           emergency, or other high-risk environments where failure could cause death, personal injury,
           or severe physical or environmental damage.
@@ -127,7 +133,8 @@ export default function TermsPage() {
         <h2 className={styles.label}>8. Third-Party Services</h2>
         <p>
           The Service may interoperate with third-party software and services you choose (for example
-          Herdr, SSH hosts, Tailscale, AI agent CLIs, and quota tooling). Those services are governed
+          Herdr, SSH hosts, Tailscale, AI agent CLIs, quota tooling, and GitHub, which serves
+          optional helper downloads). Those services are governed
           by their own terms and privacy policies. We do not control them and are not responsible for
           their availability, security, billing, or conduct.
         </p>
