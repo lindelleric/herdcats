@@ -157,14 +157,27 @@ def configure_codex_daemon(disable_daemon=False, is_interactive=False):
     else:
         content = ''
 
+    try:
+        orig_data = tomllib.loads(content) if content.strip() else {}
+    except Exception as e:
+        raise ValueError(f"Existing Codex config is not valid TOML: {e}")
+
     # Check if already false (idempotent)
+    features_obj = orig_data.get('features')
+    if isinstance(features_obj, dict) and features_obj.get('daemon_auto_start') is False:
+        return
+
+    if 'features' in orig_data and not isinstance(features_obj, dict):
+        raise ValueError(f"Existing features in {config_path} is not a table")
+
     lines = content.splitlines(keepends=True)
     in_features = False
     has_seen_table = False
-    already_false = False
     has_features_section = False
     daemon_line_idx = None
     is_dotted = False
+    inline_table_idx = None
+    dotted_other_idx = None
 
     for i, line in enumerate(lines):
         stripped = line.strip()
@@ -183,27 +196,42 @@ def configure_codex_daemon(disable_daemon=False, is_interactive=False):
         if in_features:
             key_match = re.match(r'^\s*(?:"daemon_auto_start"|\'daemon_auto_start\'|daemon_auto_start)\s*=\s*(.*)$', line)
             if key_match:
-                val = key_match.group(1).split('#', 1)[0].strip().lower()
-                if val == 'false':
-                    already_false = True
                 daemon_line_idx = i
                 is_dotted = False
         elif not has_seen_table:
+            inline_match = re.match(r'^\s*(?:"features"|\'features\'|features)\s*=\s*\{(.*)\}\s*(?:#.*)?$', line)
+            if inline_match:
+                inline_table_idx = i
+                continue
+
             dotted_match = re.match(
                 r'^\s*(?:"features"|\'features\'|features)\s*\.\s*(?:"daemon_auto_start"|\'daemon_auto_start\'|daemon_auto_start)\s*=\s*(.*)$',
                 line,
             )
             if dotted_match:
-                val = dotted_match.group(1).split('#', 1)[0].strip().lower()
-                if val == 'false':
-                    already_false = True
                 daemon_line_idx = i
                 is_dotted = True
+                continue
 
-    if already_false:
-        return
+            dotted_other = re.match(r'^\s*(?:"features"|\'features\'|features)\s*\.', line)
+            if dotted_other and dotted_other_idx is None:
+                dotted_other_idx = i
 
-    if daemon_line_idx is not None:
+    if inline_table_idx is not None:
+        line = lines[inline_table_idx]
+        key_pattern = r'([\"\'\s]?daemon_auto_start[\"\'\s]?\s*=\s*)(?:true|false)'
+        if re.search(key_pattern, line, re.IGNORECASE):
+            lines[inline_table_idx] = re.sub(key_pattern, r'\g<1>false', line)
+        else:
+            m = re.match(r'^(\s*(?:"features"|\'features\'|features)\s*=\s*\{\s*)(.*)$', line)
+            if m:
+                prefix, rest = m.group(1), m.group(2)
+                if rest.startswith('}'):
+                    lines[inline_table_idx] = f'{prefix}daemon_auto_start = false{rest}'
+                else:
+                    lines[inline_table_idx] = f'{prefix}daemon_auto_start = false, {rest}'
+        new_content = ''.join(lines)
+    elif daemon_line_idx is not None:
         if is_dotted:
             lines[daemon_line_idx] = 'features.daemon_auto_start = false\n'
         else:
@@ -220,37 +248,38 @@ def configure_codex_daemon(disable_daemon=False, is_interactive=False):
                     new_lines.append('daemon_auto_start = false\n')
                     inserted = True
         new_content = ''.join(new_lines)
+    elif dotted_other_idx is not None:
+        if not lines[dotted_other_idx].endswith('\n'):
+            lines[dotted_other_idx] += '\n'
+        lines.insert(dotted_other_idx + 1, 'features.daemon_auto_start = false\n')
+        new_content = ''.join(lines)
+    elif 'features' in orig_data:
+        raise ValueError(f"Existing features table in {config_path} is in an unsupported format for automatic configuration")
     else:
         prefix = '' if not content or content.endswith('\n\n') else ('\n' if content.endswith('\n') else '\n\n')
         new_content = content + prefix + '[features]\ndaemon_auto_start = false\n'
 
     # Safeguard: validate with tomllib (Python 3.11+) before touching the filesystem
-    if tomllib is not None:
-        try:
-            orig_data = tomllib.loads(content) if content.strip() else {}
-        except Exception as e:
-            raise ValueError(f"Existing Codex config is not valid TOML: {e}")
+    try:
+        new_data = tomllib.loads(new_content)
+    except Exception as e:
+        raise ValueError(f"Updated Codex config is not valid TOML: {e}")
 
-        try:
-            new_data = tomllib.loads(new_content)
-        except Exception as e:
-            raise ValueError(f"Updated Codex config is not valid TOML: {e}")
+    features = new_data.get('features')
+    if not isinstance(features, dict) or features.get('daemon_auto_start') is not False:
+        raise ValueError("Validation failed: features.daemon_auto_start is not False in updated config")
 
-        features = new_data.get('features')
-        if not isinstance(features, dict) or features.get('daemon_auto_start') is not False:
-            raise ValueError("Validation failed: features.daemon_auto_start is not False in updated config")
-
-        for k in set(orig_data.keys()) | set(new_data.keys()):
-            if k == 'features':
-                orig_feat = orig_data.get('features', {})
-                if not isinstance(orig_feat, dict):
-                    raise ValueError("Validation failed: features is not a table in original config")
-                for fk in set(orig_feat.keys()) | set(features.keys()):
-                    if fk != 'daemon_auto_start' and orig_feat.get(fk) != features.get(fk):
-                        raise ValueError(f"Validation failed: features.{fk} was unexpectedly modified")
-            else:
-                if orig_data.get(k) != new_data.get(k):
-                    raise ValueError(f"Validation failed: top-level key '{k}' was unexpectedly modified")
+    for k in set(orig_data.keys()) | set(new_data.keys()):
+        if k == 'features':
+            orig_feat = orig_data.get('features', {})
+            if not isinstance(orig_feat, dict):
+                raise ValueError("Validation failed: features is not a table in original config")
+            for fk in set(orig_feat.keys()) | set(features.keys()):
+                if fk != 'daemon_auto_start' and orig_feat.get(fk) != features.get(fk):
+                    raise ValueError(f"Validation failed: features.{fk} was unexpectedly modified")
+        else:
+            if orig_data.get(k) != new_data.get(k):
+                raise ValueError(f"Validation failed: top-level key '{k}' was unexpectedly modified")
 
     codex_dir.mkdir(parents=True, exist_ok=True)
     if config_path.is_file():

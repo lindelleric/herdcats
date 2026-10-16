@@ -400,8 +400,82 @@ class InstallTests(unittest.TestCase):
                 self.assertIn('To disable Codex daemon, please add daemon_auto_start = false', stderr_capture_interactive.getvalue())
                 self.assertEqual(config.read_text(), initial_content)
 
+    def test_codex_daemon_inline_features_table(self):
+        # Case 1: inline table with daemon_auto_start = true
+        codex_home1 = self.root / 'inline_codex1'
+        codex_home1.mkdir()
+        config1 = codex_home1 / 'config.toml'
+        config1.write_text('features = { daemon_auto_start = true, fast_mode = true }\n')
+        env1 = {**os.environ, 'HOME': str(self.root), 'CODEX_HOME': str(codex_home1)}
+        result1 = subprocess.run(
+            [sys.executable, str(INSTALLER), '--binary', str(BINARY),
+             '--bin-dir', str(self.destination), '--replace', '--codex-disable-daemon'],
+            env=env1, capture_output=True, text=True, stdin=subprocess.DEVNULL
+        )
+        self.assertEqual(result1.returncode, 0, result1.stderr)
+        content1 = config1.read_text()
+        self.assertIn('daemon_auto_start = false', content1)
+        self.assertIn('fast_mode = true', content1)
+        self.assertNotIn('daemon_auto_start = true', content1)
+
+        # Case 2: inline table without daemon_auto_start
+        codex_home2 = self.root / 'inline_codex2'
+        codex_home2.mkdir()
+        config2 = codex_home2 / 'config.toml'
+        config2.write_text('features = { fast_mode = true }\n')
+        env2 = {**os.environ, 'HOME': str(self.root), 'CODEX_HOME': str(codex_home2)}
+        result2 = subprocess.run(
+            [sys.executable, str(INSTALLER), '--binary', str(BINARY),
+             '--bin-dir', str(self.destination), '--replace', '--codex-disable-daemon'],
+            env=env2, capture_output=True, text=True, stdin=subprocess.DEVNULL
+        )
+        self.assertEqual(result2.returncode, 0, result2.stderr)
+        content2 = config2.read_text()
+        self.assertIn('daemon_auto_start = false', content2)
+        self.assertIn('fast_mode = true', content2)
+
+        # Case 3: empty inline table
+        codex_home3 = self.root / 'inline_codex3'
+        codex_home3.mkdir()
+        config3 = codex_home3 / 'config.toml'
+        config3.write_text('features = {}\n')
+        env3 = {**os.environ, 'HOME': str(self.root), 'CODEX_HOME': str(codex_home3)}
+        result3 = subprocess.run(
+            [sys.executable, str(INSTALLER), '--binary', str(BINARY),
+             '--bin-dir', str(self.destination), '--replace', '--codex-disable-daemon'],
+            env=env3, capture_output=True, text=True, stdin=subprocess.DEVNULL
+        )
+        self.assertEqual(result3.returncode, 0, result3.stderr)
+        content3 = config3.read_text()
+        self.assertIn('daemon_auto_start = false', content3)
+
+        # Case 4: already false is idempotent (no backup created)
+        result4 = subprocess.run(
+            [sys.executable, str(INSTALLER), '--binary', str(BINARY),
+             '--bin-dir', str(self.destination), '--replace', '--codex-disable-daemon'],
+            env=env3, capture_output=True, text=True, stdin=subprocess.DEVNULL
+        )
+        self.assertEqual(result4.returncode, 0, result4.stderr)
+        self.assertEqual(len(list(codex_home3.glob('config.toml.bak.*'))), 1)
+
+        # Case 5: features is not a table
+        codex_home5 = self.root / 'inline_codex5'
+        codex_home5.mkdir()
+        config5 = codex_home5 / 'config.toml'
+        config5.write_text('features = "disabled"\n')
+        env5 = {**os.environ, 'HOME': str(self.root), 'CODEX_HOME': str(codex_home5)}
+        result5 = subprocess.run(
+            [sys.executable, str(INSTALLER), '--binary', str(BINARY),
+             '--bin-dir', str(self.destination), '--replace', '--codex-disable-daemon'],
+            env=env5, capture_output=True, text=True, stdin=subprocess.DEVNULL
+        )
+        self.assertEqual(result5.returncode, 0, result5.stderr)
+        self.assertIn('is not a table', result5.stderr)
+        self.assertEqual(config5.read_text(), 'features = "disabled"\n')
+
 
 if __name__ == '__main__':
     unittest.main()
+
 
 
