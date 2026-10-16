@@ -53,6 +53,16 @@ final class AgentTimelineUITests: XCTestCase {
             app.terminate()
         }
     }
+    func testNewSessionWithoutTranscriptShowsEmptyStateNotError() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-pending", "-hc.light", "-paneShowComposeByDefault", "YES"]
+        launch(app)
+        XCTAssertTrue(app.staticTexts["No messages yet"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Timeline unavailable"].exists)
+        XCTAssertFalse(app.buttons["timeline-helper-retry"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["timeline-compose-field"].firstMatch.exists)
+        app.terminate()
+    }
     func testDisconnectedTimelineCanRetryWithoutReconnectingSSH() {
         let app = XCUIApplication()
         app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-disconnected", "-hc.light", "-paneShowComposeByDefault", "YES"]

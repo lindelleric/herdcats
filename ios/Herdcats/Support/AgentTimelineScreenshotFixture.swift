@@ -49,11 +49,17 @@
         }
         static func frame(paneId: String, helperInstalled: Bool = false) throws -> AgentBridgeFrame {
             if ScreenshotFixtures.screen == "timeline-disconnected" { throw AgentBridgeError.closed }
-            if ScreenshotFixtures.screen == "timeline-unavailable" || (ScreenshotFixtures.screen == "timeline-helper-missing" && !helperInstalled) {
+            let unavailableCode: String? = switch ScreenshotFixtures.screen {
+            case "timeline-unavailable": "unsupported_agent"
+            case "timeline-pending": "transcript_unavailable"
+            case "timeline-helper-missing" where !helperInstalled: "helper_missing"
+            default: nil
+            }
+            if let unavailableCode {
                 return try AgentBridgeFrame.decode(
                     JSONSerialization.data(withJSONObject: [
                         "event": "timeline.unavailable", "epoch": "fixture", "seq": 1,
-                        "data": ["pane_id": paneId, "generation": 1, "code": ScreenshotFixtures.screen == "timeline-helper-missing" ? "helper_missing" : "unsupported_agent"],
+                        "data": ["pane_id": paneId, "generation": 1, "code": unavailableCode],
                     ]))
             }
             var entries: [[String: Any]] =
