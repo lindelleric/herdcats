@@ -2,6 +2,7 @@ use crate::{
     Result,
     adapter::Adapter,
     claude::{ClaudeAdapter, Entry},
+    codex::{CodexAdapter, CodexResolver},
     follower::{Follower, MAX_RECORD},
     herdr::Client,
     resolver::Resolver,
@@ -39,6 +40,7 @@ struct Watch {
 pub struct Service {
     pub client: Client,
     pub resolver: Option<Resolver>,
+    pub codex_resolver: Option<CodexResolver>,
     adapters: Vec<Box<dyn Adapter>>,
     epoch: String,
     sequence: u64,
@@ -60,6 +62,18 @@ fn page(entries: &[Entry], before: usize) -> Value {
 }
 impl Service {
     pub fn new(socket: PathBuf, root: PathBuf) -> Self {
+        let resolver = Resolver::new(&root).ok();
+        let codex_root = std::env::var_os("CODEX_HOME")
+            .map(|p| PathBuf::from(p).join("sessions"))
+            .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".codex/sessions")));
+        let codex_resolver = codex_root.and_then(|r| CodexResolver::new(&r).ok());
+        Self::with_resolvers(socket, resolver, codex_resolver)
+    }
+    pub fn with_resolvers(
+        socket: PathBuf,
+        resolver: Option<Resolver>,
+        codex_resolver: Option<CodexResolver>,
+    ) -> Self {
         let epoch = format!(
             "{}-{}",
             SystemTime::now()
@@ -68,11 +82,14 @@ impl Service {
                 .as_nanos(),
             std::process::id()
         );
-        let resolver = Resolver::new(&root).ok();
-        let adapters: Vec<Box<dyn Adapter>> = vec![Box::new(ClaudeAdapter::new(resolver.clone()))];
+        let adapters: Vec<Box<dyn Adapter>> = vec![
+            Box::new(ClaudeAdapter::new(resolver.clone())),
+            Box::new(CodexAdapter::new(codex_resolver.clone())),
+        ];
         Self {
             client: Client { socket },
             resolver,
+            codex_resolver,
             adapters,
             epoch,
             sequence: 0,
@@ -81,6 +98,14 @@ impl Service {
             include_content: false,
             watch: None,
         }
+    }
+    pub fn with_codex_root(mut self, root: PathBuf) -> Self {
+        self.codex_resolver = CodexResolver::new(&root).ok();
+        self.adapters = vec![
+            Box::new(ClaudeAdapter::new(self.resolver.clone())),
+            Box::new(CodexAdapter::new(self.codex_resolver.clone())),
+        ];
+        self
     }
     fn adapter_for(&self, agent: &str) -> Option<&dyn Adapter> {
         self.adapters
@@ -313,9 +338,11 @@ impl Service {
                 return Self::error(out, id, code);
             }
             self.initialized = true;
+            let claude_available = self.adapter_for("claude").is_some_and(|a| a.is_available());
+            let codex_available = self.adapter_for("codex").is_some_and(|a| a.is_available());
             return Self::write(
                 out,
-                &json!({"id":id,"result":{"protocol":1,"bridge_version":env!("CARGO_PKG_VERSION"),"epoch":self.epoch,"capabilities":{"claude_timeline":self.resolver.is_some(),"record_content":true,"codex_timeline":false,"git":false,"prompts":false,"approvals":false,"questions":false,"routed_hosts":false}}}),
+                &json!({"id":id,"result":{"protocol":1,"bridge_version":env!("CARGO_PKG_VERSION"),"epoch":self.epoch,"capabilities":{"claude_timeline":claude_available,"record_content":true,"codex_timeline":codex_available,"git":false,"prompts":false,"approvals":false,"questions":false,"routed_hosts":false}}}),
             );
         }
         if !self.initialized {

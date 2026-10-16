@@ -39,7 +39,7 @@ impl RecordContext<'_> {
     }
 }
 impl Transcript {
-    fn attach_record(&mut self, id: &str, reference: &str) -> bool {
+    pub(crate) fn attach_record(&mut self, id: &str, reference: &str) -> bool {
         if let Some(entry) = self.entries.iter_mut().find(|e| e.id == id) {
             if entry.record_refs.iter().any(|r| r == reference) {
                 return true;

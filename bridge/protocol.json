@@ -1,18 +1,19 @@
 {
   "protocol": 1,
-  "bridge_version": "0.1.4",
+  "bridge_version": "0.2.0",
   "transport": "non-PTY stdio NDJSON; one watched pane per process",
   "launch": {
     "command": "herdcats-bridge serve --stdio",
     "flags": {
       "--socket": "Herdr Unix socket; defaults to HERDR_SOCKET_PATH",
       "--claude-root": "defaults to HOME/.claude/projects",
+      "--codex-root": "defaults to CODEX_HOME/sessions or HOME/.codex/sessions",
       "--poll-ms": "50..5000; default 300"
     }
   },
   "capabilities": {
     "claude_timeline": "true when transcript root is available; per-pane source validation still required",
-    "codex_timeline": false,
+    "codex_timeline": "true when the Codex root exists; prompts/approvals/questions/routed_hosts stay false",
     "git": false,
     "prompts": false,
     "approvals": false,
@@ -215,6 +216,7 @@
     "pane_unavailable",
     "protocol_mismatch",
     "record_too_large",
+    "session_cwd_mismatch",
     "session_mismatch",
     "session_reference_unavailable",
     "socket_required",
