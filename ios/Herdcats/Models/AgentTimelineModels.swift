@@ -55,6 +55,7 @@ struct AgentBridgeCapabilities: Codable, Equatable, Sendable {
 }
 struct AgentBridgePayload: Codable, Sendable {
     var `protocol`: Int?
+    var bridgeVersion: String?
     var version: String?
     var epoch: String?
     var capabilities: AgentBridgeCapabilities?

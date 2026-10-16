@@ -60,6 +60,58 @@ struct CodexTimelineDecodingTests {
         #expect(AgentBridgeClient.isVersionAtLeast("0.2.1", major: 0, minor: 2))
         #expect(AgentBridgeClient.isVersionAtLeast("1.0.0", major: 0, minor: 2))
     }
+
+    @Test func initializeFrameDecodingAndUnavailableResolution() throws {
+        // Real initialize frame from 0.1.4: codex_timeline false, bridge_version "0.1.4" -> helper_update_required
+        let json014 = """
+        {
+          "id": "init-1",
+          "result": {
+            "protocol": 1,
+            "bridge_version": "0.1.4",
+            "epoch": "epoch-014",
+            "capabilities": {
+              "claude_timeline": true,
+              "codex_timeline": false,
+              "record_content": true
+            }
+          }
+        }
+        """
+        let frame014 = try AgentBridgeFrame.decode(Data(json014.utf8))
+        guard let payload014 = frame014.result else {
+            Issue.record("Expected result payload in 0.1.4 frame")
+            return
+        }
+        #expect(payload014.bridgeVersion == "0.1.4")
+        #expect(payload014.capabilities?.codexTimeline == false)
+        #expect(AgentBridgeClient.unavailableCodeForCodex(handshake: payload014) == "helper_update_required")
+
+        // Real initialize frame from 0.2.0 with codex_timeline false -> transcript_root_unavailable
+        let json020 = """
+        {
+          "id": "init-2",
+          "result": {
+            "protocol": 1,
+            "bridge_version": "0.2.0",
+            "epoch": "epoch-020",
+            "capabilities": {
+              "claude_timeline": true,
+              "codex_timeline": false,
+              "record_content": true
+            }
+          }
+        }
+        """
+        let frame020 = try AgentBridgeFrame.decode(Data(json020.utf8))
+        guard let payload020 = frame020.result else {
+            Issue.record("Expected result payload in 0.2.0 frame")
+            return
+        }
+        #expect(payload020.bridgeVersion == "0.2.0")
+        #expect(payload020.capabilities?.codexTimeline == false)
+        #expect(AgentBridgeClient.unavailableCodeForCodex(handshake: payload020) == "transcript_root_unavailable")
+    }
 }
 
 @Suite("Codex timeline agent availability and gating")

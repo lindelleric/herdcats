@@ -85,9 +85,7 @@ actor AgentBridgeClient {
             }
             if agent == "codex" {
                 guard handshake.capabilities?.codexTimeline == true else {
-                    let isOldHelper = !Self.isVersionAtLeast(handshake.version, major: 0, minor: 2)
-                    let code = isOldHelper ? "helper_update_required" : "transcript_root_unavailable"
-                    throw AgentBridgeError.unavailable(code)
+                    throw AgentBridgeError.unavailable(Self.unavailableCodeForCodex(handshake: handshake))
                 }
             } else {
                 guard handshake.capabilities?.claudeTimeline == true else {
@@ -344,6 +342,11 @@ extension HerdrConnection {
 }
 
 extension AgentBridgeClient {
+    static func unavailableCodeForCodex(handshake: AgentBridgePayload) -> String {
+        let isOldHelper = !isVersionAtLeast(handshake.bridgeVersion ?? handshake.version, major: 0, minor: 2)
+        return isOldHelper ? "helper_update_required" : "transcript_root_unavailable"
+    }
+
     static func isVersionAtLeast(_ version: String?, major: Int, minor: Int) -> Bool {
         guard let version else { return false }
         let numbers = version.split(separator: ".").compactMap { Int($0) }
