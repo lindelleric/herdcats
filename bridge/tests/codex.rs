@@ -834,3 +834,130 @@ fn synthetic_rollout_skips_routine_records_and_preserves_only_agent_message_and_
     assert_eq!(entry.status.as_deref(), Some("failed"));
     assert_eq!(entry.details, None);
 }
+
+#[test]
+fn oversized_skip_types_produce_no_entries_and_turn_aborted_keeps_turn_id() {
+    let temp = Temp::new();
+    let file_path = temp.0.join("rollout.jsonl");
+
+    let pad = "x".repeat(MAX_RECORD + 1024);
+    let lines = vec![
+        json!({
+            "type": "session_meta",
+            "payload": { "id": THREAD_ID, "cwd": "/fixture/work" }
+        })
+        .to_string(),
+        json!({
+            "type": "response_item",
+            "payload": { "type": "compaction", "encrypted_content": pad }
+        })
+        .to_string(),
+        json!({
+            "type": "response_item",
+            "payload": { "type": "reasoning", "summary": [], "encrypted_content": pad }
+        })
+        .to_string(),
+        json!({
+            "type": "response_item",
+            "payload": { "type": "message", "role": "developer", "content": pad }
+        })
+        .to_string(),
+        json!({
+            "type": "response_item",
+            "payload": { "type": "message", "role": "system", "content": pad }
+        })
+        .to_string(),
+        json!({
+            "type": "event_msg",
+            "payload": { "type": "thread_settings_applied", "data": pad }
+        })
+        .to_string(),
+        json!({
+            "type": "event_msg",
+            "payload": { "type": "task_started", "data": pad }
+        })
+        .to_string(),
+        json!({
+            "type": "event_msg",
+            "payload": { "type": "item_completed", "data": pad }
+        })
+        .to_string(),
+        json!({
+            "type": "event_msg",
+            "payload": { "type": "task_complete", "data": pad }
+        })
+        .to_string(),
+        json!({
+            "type": "event_msg",
+            "payload": { "type": "token_count", "data": pad }
+        })
+        .to_string(),
+        json!({
+            "type": "event_msg",
+            "payload": { "type": "token_usage", "data": pad }
+        })
+        .to_string(),
+        json!({
+            "type": "turn_context",
+            "payload": { "data": pad }
+        })
+        .to_string(),
+        json!({
+            "type": "environment_context",
+            "payload": { "data": pad }
+        })
+        .to_string(),
+        json!({
+            "type": "world_state",
+            "payload": { "data": pad }
+        })
+        .to_string(),
+        json!({
+            "type": "token_usage_record",
+            "payload": { "data": pad }
+        })
+        .to_string(),
+        json!({
+            "type": "compacted",
+            "payload": { "data": pad }
+        })
+        .to_string(),
+        json!({
+            "type": "inter_agent_communication_metadata",
+            "payload": { "data": pad }
+        })
+        .to_string(),
+        json!({
+            "type": "event_msg",
+            "payload": {
+                "type": "turn_aborted",
+                "turn_id": "turn-oversized-42",
+                "data": pad
+            }
+        })
+        .to_string(),
+    ];
+
+    fs::write(&file_path, lines.join("\n") + "\n").unwrap();
+
+    let mut follower = Follower::with_content_for_agent(AgentType::Codex);
+    assert!(follower.refresh(&file_path, THREAD_ID).unwrap());
+
+    let transcript = &follower.transcript;
+
+    // All 16 skip record types must produce zero entries.
+    // The only emitted entry must be the turn_aborted entry with turn_id in its id.
+    assert_eq!(
+        transcript.entries.len(),
+        1,
+        "Expected exactly 1 entry (turn_aborted), got {:?}",
+        transcript.entries.iter().map(|e| &e.id).collect::<Vec<_>>()
+    );
+
+    let entry = &transcript.entries[0];
+    assert_eq!(entry.id, "turn_aborted:turn-oversized-42");
+    assert_eq!(entry.kind, "message");
+    assert_eq!(entry.text, "Turn interrupted");
+    assert_eq!(entry.status.as_deref(), Some("failed"));
+    assert_eq!(transcript.unknown_records, 0);
+}
