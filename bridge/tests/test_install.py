@@ -212,6 +212,97 @@ class InstallTests(unittest.TestCase):
                 installer_module.configure_codex_daemon(disable_daemon=False, is_interactive=True)
             self.assertIn('daemon_auto_start = false', config.read_text())
 
+    def test_codex_daemon_exact_key_matching(self):
+        codex_home = self.root / 'exact_key_codex'
+        codex_home.mkdir()
+        config = codex_home / 'config.toml'
+        config.write_text('daemon_auto_start_custom = true\n[features]\ndaemon_auto_start_extra = 42\n')
+        env = {**os.environ, 'HOME': str(self.root), 'CODEX_HOME': str(codex_home)}
+        result = subprocess.run(
+            [sys.executable, str(INSTALLER), '--binary', str(BINARY),
+             '--bin-dir', str(self.destination), '--codex-disable-daemon'],
+            env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        content = config.read_text()
+        self.assertIn('daemon_auto_start_custom = true', content)
+        self.assertIn('daemon_auto_start_extra = 42', content)
+        self.assertIn('daemon_auto_start = false', content)
+
+    def test_codex_daemon_table_header_with_trailing_comment(self):
+        codex_home = self.root / 'trailing_comment_codex'
+        codex_home.mkdir()
+        config = codex_home / 'config.toml'
+        config.write_text('[features] # trailing comment\ndaemon_auto_start = true # start it\n')
+        env = {**os.environ, 'HOME': str(self.root), 'CODEX_HOME': str(codex_home)}
+        result = subprocess.run(
+            [sys.executable, str(INSTALLER), '--binary', str(BINARY),
+             '--bin-dir', str(self.destination), '--codex-disable-daemon'],
+            env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        content = config.read_text()
+        self.assertIn('[features] # trailing comment', content)
+        self.assertIn('daemon_auto_start = false', content)
+        self.assertNotIn('daemon_auto_start = true', content)
+
+    def test_codex_daemon_dotted_key_before_first_table_vs_in_other_table(self):
+        # Case 1: dotted key before first table
+        codex_home1 = self.root / 'dotted_before_codex'
+        codex_home1.mkdir()
+        config1 = codex_home1 / 'config.toml'
+        config1.write_text('features.daemon_auto_start = true\n[user]\nname = "Alice"\n')
+        env1 = {**os.environ, 'HOME': str(self.root), 'CODEX_HOME': str(codex_home1)}
+        res1 = subprocess.run(
+            [sys.executable, str(INSTALLER), '--binary', str(BINARY),
+             '--bin-dir', str(self.destination), '--codex-disable-daemon'],
+            env=env1, capture_output=True, text=True, stdin=subprocess.DEVNULL
+        )
+        self.assertEqual(res1.returncode, 0, res1.stderr)
+        self.assertIn('features.daemon_auto_start = false', config1.read_text())
+
+        # Case 2: dotted key inside another table is not root features
+        codex_home2 = self.root / 'dotted_inside_codex'
+        codex_home2.mkdir()
+        config2 = codex_home2 / 'config.toml'
+        config2.write_text('[other]\nfeatures.daemon_auto_start = true\n')
+        env2 = {**os.environ, 'HOME': str(self.root), 'CODEX_HOME': str(codex_home2)}
+        res2 = subprocess.run(
+            [sys.executable, str(INSTALLER), '--binary', str(BINARY),
+             '--bin-dir', str(self.destination), '--replace', '--codex-disable-daemon'],
+            env=env2, capture_output=True, text=True, stdin=subprocess.DEVNULL
+        )
+        self.assertEqual(res2.returncode, 0, res2.stderr)
+        content2 = config2.read_text()
+        # [other] key preserved
+        self.assertIn('[other]\nfeatures.daemon_auto_start = true', content2)
+        # Root [features] added
+        self.assertIn('[features]\ndaemon_auto_start = false', content2)
+
+    def test_codex_daemon_error_does_not_fail_install(self):
+        codex_home = self.root / 'malformed_codex'
+        codex_home.mkdir()
+        config = codex_home / 'config.toml'
+        config.write_text('this is not valid toml = = = [[\n')
+        env = {**os.environ, 'HOME': str(self.root), 'CODEX_HOME': str(codex_home)}
+        result = subprocess.run(
+            [sys.executable, str(INSTALLER), '--binary', str(BINARY),
+             '--bin-dir', str(self.destination), '--replace', '--codex-disable-daemon'],
+            env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # Ensure install JSON is on stdout
+        out = json.loads(result.stdout)
+        self.assertIn('sha256', out)
+        # Ensure bridge_install_failed was NOT printed
+        self.assertNotIn('bridge_install_failed', result.stderr)
+        self.assertIn('Warning: failed to configure Codex daemon', result.stderr)
+        # File was not overwritten
+        self.assertEqual(config.read_text(), 'this is not valid toml = = = [[\n')
+        # No backup was created
+        self.assertEqual(list(codex_home.glob('*.bak*')), [])
+
+
 if __name__ == '__main__':
     unittest.main()
 
