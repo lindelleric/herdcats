@@ -1,0 +1,345 @@
+{
+  "claude-agent": {
+    "id": "3e39c684-d4fa-5ef3-ad91-dd79b8b05c3d",
+    "result": {
+      "agent": {
+        "agent": "claude",
+        "agent_session": {
+          "agent": "claude",
+          "kind": "id",
+          "source": "herdr:claude",
+          "value": "16246b9d-4c3d-54fc-b6d3-2a765d418491"
+        },
+        "agent_status": "idle",
+        "completion_seq": 10,
+        "cwd": "/fixture/work",
+        "focused": false,
+        "foreground_cwd": "/fixture/work",
+        "interactive_ready": true,
+        "name": "Fixture text",
+        "pane_id": "w1:p2",
+        "revision": 4,
+        "state_change_seq": 10,
+        "tab_id": "w1:t1",
+        "terminal_id": "fa4fb2f3-fe77-5bd1-b4e3-3ca19b06cd38",
+        "terminal_title": "Fixture text",
+        "terminal_title_stripped": "Fixture text",
+        "workspace_id": "w1"
+      },
+      "type": "agent_info"
+    }
+  },
+  "claude-resumed": {
+    "id": "3e39c684-d4fa-5ef3-ad91-dd79b8b05c3d",
+    "result": {
+      "agent": {
+        "agent": "claude",
+        "agent_session": {
+          "agent": "claude",
+          "kind": "id",
+          "source": "herdr:claude",
+          "value": "16246b9d-4c3d-54fc-b6d3-2a765d418491"
+        },
+        "agent_status": "idle",
+        "cwd": "/fixture/work",
+        "focused": false,
+        "foreground_cwd": "/fixture/work",
+        "interactive_ready": true,
+        "name": "Fixture text",
+        "pane_id": "w1:p2",
+        "revision": 8,
+        "state_change_seq": 18,
+        "tab_id": "w1:t1",
+        "terminal_id": "fa4fb2f3-fe77-5bd1-b4e3-3ca19b06cd38",
+        "terminal_title": "Fixture text",
+        "terminal_title_stripped": "Fixture text",
+        "workspace_id": "w1"
+      },
+      "type": "agent_info"
+    }
+  },
+  "claude-after-move": {
+    "id": "3e39c684-d4fa-5ef3-ad91-dd79b8b05c3d",
+    "result": {
+      "agent": {
+        "agent": "claude",
+        "agent_session": {
+          "agent": "claude",
+          "kind": "id",
+          "source": "herdr:claude",
+          "value": "16246b9d-4c3d-54fc-b6d3-2a765d418491"
+        },
+        "agent_status": "idle",
+        "cwd": "/fixture/work",
+        "focused": false,
+        "foreground_cwd": "/fixture/work",
+        "interactive_ready": true,
+        "name": "Fixture text",
+        "pane_id": "w2:p1",
+        "revision": 8,
+        "state_change_seq": 18,
+        "tab_id": "w2:t1",
+        "terminal_id": "fa4fb2f3-fe77-5bd1-b4e3-3ca19b06cd38",
+        "terminal_title": "Fixture text",
+        "terminal_title_stripped": "Fixture text",
+        "workspace_id": "w2"
+      },
+      "type": "agent_info"
+    }
+  },
+  "claude-second": {
+    "id": "3e39c684-d4fa-5ef3-ad91-dd79b8b05c3d",
+    "result": {
+      "agent": {
+        "agent": "claude",
+        "agent_session": {
+          "agent": "claude",
+          "kind": "id",
+          "source": "herdr:claude",
+          "value": "b42a592e-a1f7-5155-8514-c35ae96b7cb8"
+        },
+        "agent_status": "idle",
+        "cwd": "/fixture/work",
+        "focused": false,
+        "foreground_cwd": "/fixture/work",
+        "interactive_ready": true,
+        "name": "Fixture text",
+        "pane_id": "w1:p5",
+        "revision": 3,
+        "state_change_seq": 21,
+        "tab_id": "w1:t1",
+        "terminal_id": "2cafbf2a-e1cb-5a18-891f-bd45e1130629",
+        "terminal_title": "Fixture text",
+        "terminal_title_stripped": "Fixture text",
+        "workspace_id": "w1"
+      },
+      "type": "agent_info"
+    }
+  },
+  "codex-final": {
+    "id": "3e39c684-d4fa-5ef3-ad91-dd79b8b05c3d",
+    "result": {
+      "agent": {
+        "agent": "codex",
+        "agent_status": "idle",
+        "completion_seq": 8,
+        "cwd": "/fixture/work",
+        "focused": true,
+        "foreground_cwd": "/fixture/work",
+        "interactive_ready": true,
+        "name": "Fixture text",
+        "pane_id": "w1:p1",
+        "revision": 50,
+        "state_change_seq": 8,
+        "tab_id": "w1:t1",
+        "terminal_id": "7c9caece-4973-502c-b19f-46daf3ec36a9",
+        "terminal_title": "Fixture text",
+        "terminal_title_stripped": "Fixture text",
+        "workspace_id": "w1"
+      },
+      "type": "agent_info"
+    }
+  },
+  "codex-local-final": {
+    "id": "3e39c684-d4fa-5ef3-ad91-dd79b8b05c3d",
+    "result": {
+      "agent": {
+        "agent": "codex",
+        "agent_session": {
+          "agent": "codex",
+          "kind": "id",
+          "source": "herdr:codex",
+          "value": "0cb28315-2bd4-56bc-b4dd-7e7708d5a65b"
+        },
+        "agent_status": "idle",
+        "completion_seq": 13,
+        "cwd": "/fixture/work",
+        "focused": false,
+        "foreground_cwd": "/fixture/work",
+        "interactive_ready": true,
+        "name": "Fixture text",
+        "pane_id": "w1:p3",
+        "revision": 55,
+        "state_change_seq": 13,
+        "tab_id": "w1:t1",
+        "terminal_id": "ed30331f-99e9-5fbb-91cd-770413dce04c",
+        "terminal_title": "Fixture text",
+        "terminal_title_stripped": "Fixture text",
+        "workspace_id": "w1"
+      },
+      "type": "agent_info"
+    }
+  },
+  "hook-agent": {
+    "id": "3e39c684-d4fa-5ef3-ad91-dd79b8b05c3d",
+    "result": {
+      "agent": {
+        "agent": "codex",
+        "agent_session": {
+          "agent": "codex",
+          "kind": "id",
+          "source": "herdr:codex",
+          "value": "3824c244-0653-597b-833c-7d9493246092"
+        },
+        "agent_status": "idle",
+        "completion_seq": 20,
+        "cwd": "/fixture/work",
+        "focused": false,
+        "foreground_cwd": "/fixture/work",
+        "interactive_ready": true,
+        "name": "Fixture text",
+        "pane_id": "w1:p4",
+        "revision": 37,
+        "state_change_seq": 20,
+        "tab_id": "w1:t1",
+        "terminal_id": "026b8177-c400-5320-bd81-98d9fdb33b7e",
+        "terminal_title": "Fixture text",
+        "terminal_title_stripped": "Fixture text",
+        "workspace_id": "w1"
+      },
+      "type": "agent_info"
+    }
+  },
+  "hook-resumed": {
+    "id": "3e39c684-d4fa-5ef3-ad91-dd79b8b05c3d",
+    "result": {
+      "agent": {
+        "agent": "codex",
+        "agent_session": {
+          "agent": "codex",
+          "kind": "id",
+          "source": "herdr:codex",
+          "value": "3824c244-0653-597b-833c-7d9493246092"
+        },
+        "agent_status": "idle",
+        "completion_seq": 27,
+        "cwd": "/fixture/work",
+        "focused": false,
+        "foreground_cwd": "/fixture/work",
+        "interactive_ready": true,
+        "name": "Fixture text",
+        "pane_id": "w1:p4",
+        "revision": 42,
+        "state_change_seq": 27,
+        "tab_id": "w1:t1",
+        "terminal_id": "026b8177-c400-5320-bd81-98d9fdb33b7e",
+        "terminal_title": "Fixture text",
+        "terminal_title_stripped": "Fixture text",
+        "workspace_id": "w1"
+      },
+      "type": "agent_info"
+    }
+  },
+  "codex-after-move": {
+    "id": "3e39c684-d4fa-5ef3-ad91-dd79b8b05c3d",
+    "result": {
+      "agent": {
+        "agent": "codex",
+        "agent_session": {
+          "agent": "codex",
+          "kind": "id",
+          "source": "herdr:codex",
+          "value": "3824c244-0653-597b-833c-7d9493246092"
+        },
+        "agent_status": "idle",
+        "completion_seq": 27,
+        "cwd": "/fixture/work",
+        "focused": false,
+        "foreground_cwd": "/fixture/work",
+        "interactive_ready": true,
+        "name": "Fixture text",
+        "pane_id": "w3:p1",
+        "revision": 42,
+        "state_change_seq": 27,
+        "tab_id": "w3:t1",
+        "terminal_id": "026b8177-c400-5320-bd81-98d9fdb33b7e",
+        "terminal_title": "Fixture text",
+        "terminal_title_stripped": "Fixture text",
+        "workspace_id": "w3"
+      },
+      "type": "agent_info"
+    }
+  },
+  "claude-replacement": {
+    "id": "3e39c684-d4fa-5ef3-ad91-dd79b8b05c3d",
+    "result": {
+      "agent": {
+        "agent": "claude",
+        "agent_session": {
+          "agent": "claude",
+          "kind": "id",
+          "source": "herdr:claude",
+          "value": "a96f2423-e5a3-56de-bd09-b9bdba7283ee"
+        },
+        "agent_status": "idle",
+        "cwd": "/fixture/work",
+        "focused": false,
+        "foreground_cwd": "/fixture/work",
+        "interactive_ready": true,
+        "name": "Fixture text",
+        "pane_id": "w2:p1",
+        "revision": 14,
+        "state_change_seq": 32,
+        "tab_id": "w2:t1",
+        "terminal_id": "fa4fb2f3-fe77-5bd1-b4e3-3ca19b06cd38",
+        "terminal_title": "Fixture text",
+        "terminal_title_stripped": "Fixture text",
+        "workspace_id": "w2"
+      },
+      "type": "agent_info"
+    }
+  },
+  "claude-stopped": {
+    "id": "0700d9af-0697-5b5d-9a68-015e6daa0015",
+    "result": {
+      "pane": {
+        "agent_status": "unknown",
+        "cwd": "/fixture/work",
+        "focused": false,
+        "foreground_cwd": "/fixture/work",
+        "pane_id": "w2:p1",
+        "revision": 12,
+        "scroll": {
+          "max_offset_from_bottom": 0,
+          "offset_from_bottom": 0,
+          "viewport_rows": 40
+        },
+        "tab_id": "w2:t1",
+        "terminal_id": "fa4fb2f3-fe77-5bd1-b4e3-3ca19b06cd38",
+        "terminal_title": "Fixture text",
+        "terminal_title_stripped": "Fixture text",
+        "workspace_id": "w2"
+      },
+      "type": "pane_info"
+    }
+  },
+  "claude-question-state": {
+    "id": "3e39c684-d4fa-5ef3-ad91-dd79b8b05c3d",
+    "result": {
+      "agent": {
+        "agent": "claude",
+        "agent_session": {
+          "agent": "claude",
+          "kind": "id",
+          "source": "herdr:claude",
+          "value": "16246b9d-4c3d-54fc-b6d3-2a765d418491"
+        },
+        "agent_status": "blocked",
+        "cwd": "/fixture/work",
+        "focused": false,
+        "foreground_cwd": "/fixture/work",
+        "interactive_ready": true,
+        "name": "Fixture text",
+        "pane_id": "w2:p1",
+        "revision": 8,
+        "state_change_seq": 29,
+        "tab_id": "w2:t1",
+        "terminal_id": "fa4fb2f3-fe77-5bd1-b4e3-3ca19b06cd38",
+        "terminal_title": "Fixture text",
+        "terminal_title_stripped": "Fixture text",
+        "workspace_id": "w2"
+      },
+      "type": "agent_info"
+    }
+  }
+}

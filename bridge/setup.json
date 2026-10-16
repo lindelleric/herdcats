@@ -1,0 +1,86 @@
+{
+  "component": "herdcats-bridge",
+  "version": "0.1.4",
+  "protocol": 1,
+  "herdr_protocol": 22,
+  "supported_agent": "Claude with exact herdr:claude session reference",
+  "install_scope": "Explicit Install button on the displayed direct SSH host, or user-selected manual directory. No install on opening Timeline, sudo, hooks or persistent service.",
+  "requirements": [
+    "Rust 1.85 or later for a source build",
+    "Python 3.8 or later for installer",
+    "Herdr 0.9.3 protocol 22",
+    "Unix host with Claude transcript root readable by the SSH user"
+  ],
+  "steps": [
+    {
+      "description": "Build on the target host; Cargo.lock fixes dependency versions",
+      "command": "cargo build --manifest-path bridge/Cargo.toml --release --locked"
+    },
+    {
+      "description": "Probe without opening Herdr or reading transcripts",
+      "command": "bridge/target/release/herdcats-bridge --version-json"
+    },
+    {
+      "description": "Install explicitly; executes the selected trusted binary for compatibility checking",
+      "command": "python3 bridge/scripts/install.py --binary bridge/target/release/herdcats-bridge --bin-dir \"$HOME/.local/bin\""
+    },
+    {
+      "description": "For updates, use the same install command with --replace; symlink destinations are rejected",
+      "command": "python3 bridge/scripts/install.py --binary bridge/target/release/herdcats-bridge --bin-dir \"$HOME/.local/bin\" --replace"
+    },
+    {
+      "description": "Verify the installed companion",
+      "command": "\"$HOME/.local/bin/herdcats-bridge\" --version-json"
+    },
+    {
+      "description": "Open a Claude pane in Herdcats over direct SSH; Timeline launches the helper on demand",
+      "command": null
+    }
+  ],
+  "discovery": [
+    "$HOME/.local/bin/herdcats-bridge",
+    "SSH PATH",
+    "$HOME/.cargo/bin/herdcats-bridge",
+    "/opt/homebrew/bin/herdcats-bridge",
+    "/usr/local/bin/herdcats-bridge"
+  ],
+  "default_socket": "HERDR_SOCKET_PATH, otherwise ${XDG_CONFIG_HOME:-$HOME/.config}/herdr/herdr.sock",
+  "default_transcripts": "$HOME/.claude/projects",
+  "failure_behavior": "Absent native history leaves legacy Compose and Terminal available. A verified native identity retains ownership/status guards. Installation is never triggered by opening Timeline.",
+  "removal": "Remove only the installed herdcats-bridge file. No daemon, hooks or config are created by this installer.",
+  "limits": [
+    "Published native release builds/tests verified in CI",
+    "Public installer smoke verified on Apple Silicon in a temporary directory",
+    "Binaries not Developer ID signed/notarized",
+    "Codex, saved-machine routing and native approvals/questions remain gated"
+  ],
+  "onboarding": {
+    "status": "0.1.4 published and public installer verified",
+    "app_flow": [
+      "For a supported agent, missing helper automatically opens near-full-screen Timeline benefits and host-helper setup guidance",
+      "Dismiss or Use Terminal for now selects Terminal and remembers the SSH-host choice",
+      "Timeline toolbar icon retries and reopens guidance while helper is missing",
+      "Display SSH host/user/port and ~/.local/bin/herdcats-bridge before an explicit Install action",
+      "Probe existing helper, then install pinned release with progress; incompatible existing helper requires separate Replace authorization",
+      "After uncertain installation, check existing helper before allowing a retry; retain Manual setup copy instructions",
+      "Check again remains in guidance when unavailable; verified native Timeline closes the sheet and restores its default"
+    ],
+    "command": "curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v0.1.4/install.sh | sh -s -- --version 0.1.4",
+    "user_dependencies": [
+      "POSIX shell utilities including link",
+      "curl",
+      "sha256sum or shasum"
+    ],
+    "platforms": [
+      "macOS13+ arm64/x86_64",
+      "Linux glibc2.35+ arm64/x86_64"
+    ],
+    "release_workflow": ".github/workflows/bridge-release.yml",
+    "publication": "Four native builds and draft assembly passed in CI38670425066; user approved publication; public HTTPS installer verified in owned temporary HOME",
+    "download_boundary": "HTTPS release assets and same-channel SHA256SUMS; checksums are integrity checks, not independent signing",
+    "build_dependencies": "Rust and Python are required only for source-build/development path below",
+    "app_installer_integrity": "App pins the install.sh SHA256 before execution; installer checks native binary checksum. This does not add independent release signing.",
+    "agent_support": "UI uses agent-neutral language and detects the current pane agent; Timeline is offered only for implemented adapters (currently Claude). Other agents retain Terminal and Compose.",
+    "record_content": "App requires negotiated record_content support; older helpers reopen setup and require explicit replacement. Images and unfamiliar records expose complete source bytes."
+  }
+}

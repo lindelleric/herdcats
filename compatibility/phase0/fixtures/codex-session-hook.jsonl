@@ -1,0 +1,2 @@
+{"hook_event_name": "SessionStart", "session_id": "3824c244-0653-597b-833c-7d9493246092", "transcript_path": "/fixture/work", "source": "startup", "cwd": "/fixture/work"}
+{"hook_event_name": "SessionStart", "session_id": "3824c244-0653-597b-833c-7d9493246092", "transcript_path": "/fixture/work", "source": "resume", "cwd": "/fixture/work", "environment": {"CODEX_THREAD_ID": "", "HERDR_SOCKET_PATH": "/fixture/work", "HERDR_PANE_ID": "Fixture text", "HERDR_ENV": "Fixture text"}}

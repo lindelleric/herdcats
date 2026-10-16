@@ -1,0 +1,52 @@
+[
+  {
+    "type": "userMessage",
+    "id": "c56e51be-5d59-5251-81df-b5b59af26f4e",
+    "clientId": "433a2770-7c3f-5bb2-8f13-b8342f333d13",
+    "content": [
+      {
+        "type": "text",
+        "text": "Fixture text",
+        "text_elements": []
+      }
+    ]
+  },
+  {
+    "type": "agentMessage",
+    "id": "1d9abbc0-515a-508e-b5fc-29776d601361",
+    "text": "Fixture text",
+    "phase": "commentary",
+    "delivery": null,
+    "questions": null
+  },
+  {
+    "type": "commandExecution",
+    "id": "350879f0-bcc6-54ad-a6de-a5052661e9ef",
+    "pluginId": null,
+    "scriptPath": null,
+    "command": "Fixture text",
+    "cwd": "/fixture/work",
+    "processId": "5a3af26d-28b9-5cde-ac86-fa3ab7812306",
+    "source": "unifiedExecStartup",
+    "status": "completed",
+    "commandActions": [
+      {
+        "type": "read",
+        "command": "Fixture text",
+        "name": "Fixture text",
+        "path": "/fixture/work"
+      }
+    ],
+    "aggregatedOutput": "Fixture text",
+    "exitCode": 0,
+    "durationMs": 0
+  },
+  {
+    "type": "agentMessage",
+    "id": "8557e177-8c55-55b7-b135-97f94365c489",
+    "text": "Fixture text",
+    "phase": "final_answer",
+    "delivery": null,
+    "questions": null
+  }
+]

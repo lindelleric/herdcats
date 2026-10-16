@@ -1,0 +1,59 @@
+{
+  "date": "2026-10-15",
+  "status": "published_and_public_installer_verified",
+  "version": "0.1.4",
+  "tag": "herdcats-bridge-v0.1.4",
+  "source_commit": "7e1846646a5d36f851eb60a258803d0c3476c86a",
+  "url": "https://github.com/zhiyao/herdcats/releases/tag/herdcats-bridge-v0.1.4",
+  "ci_url": "https://github.com/zhiyao/herdcats/actions/runs/38670425066",
+  "native_builds": [
+    "darwin-arm64",
+    "darwin-x86_64",
+    "linux-arm64",
+    "linux-x86_64"
+  ],
+  "native_ci_result": "All four native test/Clippy/build/package jobs and draft assembly passed",
+  "binary_sha256": {
+    "herdcats-bridge-darwin-arm64": "bc8c111e5719afb9d3b20bdc524e8114d1b883578e067f9dd0044f2e8e767fa0",
+    "herdcats-bridge-darwin-x86_64": "7de4bbda45f36c072b96894eb8b12c389edb37034a854d961def120ddee8d895",
+    "herdcats-bridge-linux-arm64": "3b769873c95d8e87055814c3e42440d5f483590c8397de208f568d6624af72a4",
+    "herdcats-bridge-linux-x86_64": "61475fbed13bce1ab22b45076cde552d37d56fc123c53ccdf71aa7029d36a92b"
+  },
+  "installer_sha256": "979c4a0fa8a6620c1748e76ceaa4be0b90b8e7dba13538202ed8c540656092a3",
+  "public_install_smoke": {
+    "result": "passed",
+    "transport": "Unauthenticated GitHub HTTPS release installer; app-pinned digest verified before execution",
+    "target": "Owned temporary HOME and bin directory only",
+    "probe": {
+      "agents": [
+        "claude"
+      ],
+      "herdr_protocol": 22,
+      "name": "herdcats-bridge",
+      "protocol": 1,
+      "version": "0.1.4"
+    },
+    "started_agent_or_service": false,
+    "user_helper_changed": false
+  },
+  "validation": {
+    "rust_tests": 47,
+    "installer_distribution_tests": 33,
+    "clippy": "passed",
+    "ios_unit_tests": 396,
+    "ios_unit_skipped": 2,
+    "ios_ui_tests": 15,
+    "ios_ui_result": "passed",
+    "independent_review": "No remaining important findings after fixing unfamiliar text shape fallback",
+    "original_image_followup": "Passed actual Quick Look/image rendering and full fallback source; system chrome labels intentionally not assumed",
+    "pr_ci": "CI38670431390 passed: iOS, web, bridge on macOS26 and Ubuntu"
+  },
+  "publication_authorization": "Explicit user approval after automatic review requested authorization for public release",
+  "app_latest_release_preserved": "v0.4.0",
+  "limits": [
+    "Claude only; Codex, routed hosts and native approval/question responses remain gated",
+    "Verified source hard limit64MiB; retained entries1000; references to retired entries unavailable",
+    "macOS binaries unsigned/unnotarized",
+    "App draft PR not merged; no phone deployment"
+  ]
+}

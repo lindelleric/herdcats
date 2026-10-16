@@ -1,0 +1,60 @@
+{
+  "date": "2026-10-14",
+  "status": "published_and_public_installer_verified",
+  "tag": "herdcats-bridge-v0.1.3",
+  "version": "0.1.3",
+  "source_commit": "efd1eba",
+  "url": "https://github.com/zhiyao/herdcats/releases/tag/herdcats-bridge-v0.1.3",
+  "ci_url": "https://github.com/zhiyao/herdcats/actions/runs/38535142834",
+  "native_builds": [
+    "darwin-arm64",
+    "darwin-x86_64",
+    "linux-arm64",
+    "linux-x86_64"
+  ],
+  "native_ci_result": "All four native jobs and draft assembly passed on attempt2. First Intel attempt had transient herdr_unavailable in unchanged socket test;100 direct local stress runs passed before retry.",
+  "binary_sha256": {
+    "herdcats-bridge-darwin-arm64": "d2c91594f2d2a3c3e24633be9f545c6ad8782a8a2e39edd2e2ca3f711bf9d35b",
+    "herdcats-bridge-darwin-x86_64": "6df41a331183ffe48c643f0e6e53a17a87c2ff46a459a24c7ef92f8804a4404b",
+    "herdcats-bridge-linux-arm64": "305fe7c8f718e85e5f6c38fe5dd8932a142f495635122c22d973ad1f3c88cf98",
+    "herdcats-bridge-linux-x86_64": "17fa547815508ea2b699229995853f845fc8034ee835318002e3e73d1e5cd2ed"
+  },
+  "installer_sha256": "7e04cf29f32a45d53594346dec0aec7f5dcea697b162303e6bae1987f56795d4",
+  "public_install_smoke": {
+    "result": "passed",
+    "transport": "Real unauthenticated GitHub HTTPS download through published shell installer",
+    "target": "Owned temporary directory only",
+    "probe": {
+      "name": "herdcats-bridge",
+      "version": "0.1.3",
+      "protocol": 1,
+      "herdr_protocol": 22,
+      "agents": [
+        "claude"
+      ]
+    },
+    "started_agent_or_service": false
+  },
+  "local_validation": {
+    "rust": 41,
+    "python_distribution": 24,
+    "compatibility_evidence": 10,
+    "ios_unit_executed": 376,
+    "ios_unit_skipped": 1,
+    "ios_ui": 6,
+    "ios_note": "Full local test started before remote dependency merge; combined-state CI separately verifies merged branch"
+  },
+  "limits": [
+    "Claude native timeline only; Codex, routed hosts and native approval/question responses remain gated",
+    "macOS13+; Linux glibc2.35+; arm64/x86_64",
+    "No Developer ID signing/notarization",
+    "App feature branch not merged; no phone/TestFlight/App Store deployment"
+  ],
+  "app_latest_release_preserved": "v0.4.0",
+  "failed_predecessor": {
+    "version": "0.1.1",
+    "published": false,
+    "ci_url": "https://github.com/zhiyao/herdcats/actions/runs/38522445028",
+    "reason": "Linux arm64 timestamp collision regression; fixed and verified in0.1.2"
+  }
+}

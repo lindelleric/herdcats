@@ -1,0 +1,53 @@
+{
+  "date": "2026-10-14",
+  "status": "published_and_public_installer_verified",
+  "tag": "herdcats-bridge-v0.1.0",
+  "version": "0.1.0",
+  "source_commit": "ededff4",
+  "url": "https://github.com/zhiyao/herdcats/releases/tag/herdcats-bridge-v0.1.0",
+  "ci_url": "https://github.com/zhiyao/herdcats/actions/runs/38505344824",
+  "native_builds": [
+    "darwin-arm64",
+    "darwin-x86_64",
+    "linux-arm64",
+    "linux-x86_64"
+  ],
+  "native_ci_result": "all four passed tests, Clippy, release build and packaging; draft assembly passed",
+  "binary_sha256": {
+    "herdcats-bridge-darwin-arm64": "f8bed04683bb23dcf39775d4e399a6b14546f6621d0f9bbe4665532ab2fbf6f3",
+    "herdcats-bridge-darwin-x86_64": "ac9c284c9f6eec27079866b257c7f7c31ece8dc483fa17120ffcae1c9b729869",
+    "herdcats-bridge-linux-arm64": "91315e493400c9d1d70645f7726a2140deb3297c571b2efd80ebb6844487cec7",
+    "herdcats-bridge-linux-x86_64": "1d950ca76c641f203762b5359f87dbb11be69419cee4f8650791abd4af6394c8"
+  },
+  "installer_sha256": "21ad8a206aab0cf30ef75b1dc38e118b19fb6101e0a78e942f7921e90431ca83",
+  "public_install_smoke": {
+    "result": "passed",
+    "transport": "Real unauthenticated GitHub HTTPS download through published shell installer",
+    "target": "Owned temporary directory only",
+    "probe": {
+      "name": "herdcats-bridge",
+      "version": "0.1.0",
+      "protocol": 1,
+      "herdr_protocol": 22,
+      "agents": [
+        "claude"
+      ]
+    },
+    "started_agent_or_service": false
+  },
+  "local_validation": {
+    "rust": 27,
+    "python_distribution": 20,
+    "compatibility_evidence": 10,
+    "ios_unit_executed": 373,
+    "ios_unit_skipped": 1,
+    "ios_ui": 4
+  },
+  "limits": [
+    "Claude native timeline only; Codex, routed hosts and native approval/question responses remain gated",
+    "macOS13+; Linux glibc2.35+; arm64/x86_64",
+    "No Developer ID signing/notarization",
+    "App feature branch not merged; no phone/TestFlight/App Store deployment"
+  ],
+  "app_latest_release_preserved": "v0.4.0"
+}
