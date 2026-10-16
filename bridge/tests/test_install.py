@@ -302,6 +302,55 @@ class InstallTests(unittest.TestCase):
         # No backup was created
         self.assertEqual(list(codex_home.glob('*.bak*')), [])
 
+    def test_codex_daemon_quoted_keys_and_tables(self):
+        # Case 1: Double-quoted key in [features]
+        codex_home1 = self.root / 'quoted_key_codex'
+        codex_home1.mkdir()
+        config1 = codex_home1 / 'config.toml'
+        config1.write_text('[features]\n"daemon_auto_start" = true\n')
+        env1 = {**os.environ, 'HOME': str(self.root), 'CODEX_HOME': str(codex_home1)}
+        res1 = subprocess.run(
+            [sys.executable, str(INSTALLER), '--binary', str(BINARY),
+             '--bin-dir', str(self.destination), '--replace', '--codex-disable-daemon'],
+            env=env1, capture_output=True, text=True, stdin=subprocess.DEVNULL
+        )
+        self.assertEqual(res1.returncode, 0, res1.stderr)
+        content1 = config1.read_text()
+        self.assertIn('daemon_auto_start = false', content1)
+        self.assertNotIn('"daemon_auto_start" = true', content1)
+
+        # Case 2: Quoted dotted key before table
+        codex_home2 = self.root / 'quoted_dotted_codex'
+        codex_home2.mkdir()
+        config2 = codex_home2 / 'config.toml'
+        config2.write_text('"features"."daemon_auto_start" = true\n[user]\nname = "Alice"\n')
+        env2 = {**os.environ, 'HOME': str(self.root), 'CODEX_HOME': str(codex_home2)}
+        res2 = subprocess.run(
+            [sys.executable, str(INSTALLER), '--binary', str(BINARY),
+             '--bin-dir', str(self.destination), '--replace', '--codex-disable-daemon'],
+            env=env2, capture_output=True, text=True, stdin=subprocess.DEVNULL
+        )
+        self.assertEqual(res2.returncode, 0, res2.stderr)
+        content2 = config2.read_text()
+        self.assertIn('features.daemon_auto_start = false', content2)
+        self.assertNotIn('"features"."daemon_auto_start" = true', content2)
+
+        # Case 3: Single-quoted table and key
+        codex_home3 = self.root / 'single_quoted_codex'
+        codex_home3.mkdir()
+        config3 = codex_home3 / 'config.toml'
+        config3.write_text("['features']\n'daemon_auto_start' = true\n")
+        env3 = {**os.environ, 'HOME': str(self.root), 'CODEX_HOME': str(codex_home3)}
+        res3 = subprocess.run(
+            [sys.executable, str(INSTALLER), '--binary', str(BINARY),
+             '--bin-dir', str(self.destination), '--replace', '--codex-disable-daemon'],
+            env=env3, capture_output=True, text=True, stdin=subprocess.DEVNULL
+        )
+        self.assertEqual(res3.returncode, 0, res3.stderr)
+        content3 = config3.read_text()
+        self.assertIn('daemon_auto_start = false', content3)
+        self.assertNotIn("'daemon_auto_start' = true", content3)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -165,14 +165,14 @@ def configure_codex_daemon(disable_daemon=False, is_interactive=False):
         table_match = re.match(r'^\s*\[([^\]]+)\](?:\s*#.*)?$', line)
         if table_match:
             has_seen_table = True
-            table_name = table_match.group(1).strip()
+            table_name = table_match.group(1).strip().strip('"\'')
             in_features = (table_name == 'features')
             if in_features:
                 has_features_section = True
             continue
 
         if in_features:
-            key_match = re.match(r'^\s*daemon_auto_start\s*=\s*(.*)$', line)
+            key_match = re.match(r'^\s*(?:"daemon_auto_start"|\'daemon_auto_start\'|daemon_auto_start)\s*=\s*(.*)$', line)
             if key_match:
                 val = key_match.group(1).split('#', 1)[0].strip().lower()
                 if val == 'false':
@@ -180,7 +180,10 @@ def configure_codex_daemon(disable_daemon=False, is_interactive=False):
                 daemon_line_idx = i
                 is_dotted = False
         elif not has_seen_table:
-            dotted_match = re.match(r'^\s*features\.daemon_auto_start\s*=\s*(.*)$', line)
+            dotted_match = re.match(
+                r'^\s*(?:"features"|\'features\'|features)\s*\.\s*(?:"daemon_auto_start"|\'daemon_auto_start\'|daemon_auto_start)\s*=\s*(.*)$',
+                line,
+            )
             if dotted_match:
                 val = dotted_match.group(1).split('#', 1)[0].strip().lower()
                 if val == 'false':
@@ -204,7 +207,7 @@ def configure_codex_daemon(disable_daemon=False, is_interactive=False):
             new_lines.append(line)
             if not inserted:
                 table_match = re.match(r'^\s*\[([^\]]+)\](?:\s*#.*)?$', line)
-                if table_match and table_match.group(1).strip() == 'features':
+                if table_match and table_match.group(1).strip().strip('"\'') == 'features':
                     new_lines.append('daemon_auto_start = false\n')
                     inserted = True
         new_content = ''.join(new_lines)

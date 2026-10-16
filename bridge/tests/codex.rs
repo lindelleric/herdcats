@@ -1,5 +1,6 @@
 use herdcats_bridge::{
     adapter::Adapter,
+    claude::Transcript,
     codex::{CodexAdapter, CodexResolver},
     follower::{AgentType, Follower, MAX_RECORD},
     herdr::{Pane, SessionRef},
@@ -680,5 +681,73 @@ fn adapter_cache_hit_does_not_rescan_directory() {
         scan_counter.load(Ordering::SeqCst),
         2,
         "Cache miss after deletion must re-scan"
+    );
+}
+
+#[test]
+fn civil_from_days_february_boundaries() {
+    use herdcats_bridge::codex::civil_from_days;
+
+    // 2026-02-26 (regression for civil_from_days divisor formula)
+    assert_eq!(civil_from_days(20510), (2026, 2, 26));
+
+    // Leap year 2024
+    assert_eq!(civil_from_days(19781), (2024, 2, 28));
+    assert_eq!(civil_from_days(19782), (2024, 2, 29));
+    assert_eq!(civil_from_days(19783), (2024, 3, 1));
+
+    // Non-leap year 2023
+    assert_eq!(civil_from_days(19416), (2023, 2, 28));
+    assert_eq!(civil_from_days(19417), (2023, 3, 1));
+
+    // Century leap year 2000
+    assert_eq!(civil_from_days(11016), (2000, 2, 29));
+
+    // Century non-leap year 1900
+    assert_eq!(civil_from_days(-25509), (1900, 2, 28));
+    assert_eq!(civil_from_days(-25508), (1900, 3, 1));
+}
+
+#[test]
+fn preserve_codex_record_unfamiliar_record_creates_bounded_bubble() {
+    let mut transcript = Transcript::default();
+
+    // 1. Unfamiliar top-level record
+    let unknown_row = json!({
+        "type": "future_experiment",
+        "payload": {"param": 42}
+    });
+    let bytes1 = serde_json::to_vec(&unknown_row).unwrap();
+    transcript
+        .preserve_codex_record(&bytes1, THREAD_ID, 100)
+        .unwrap();
+
+    assert_eq!(transcript.entries.len(), 1);
+    assert_eq!(transcript.entries[0].kind, "record");
+    assert_eq!(transcript.entries[0].text, "future_experiment");
+    assert_eq!(
+        transcript.entries[0].content_ref.as_deref(),
+        Some(format!("source:100:{}", bytes1.len()).as_str())
+    );
+
+    // 2. Unfamiliar response_item
+    let unknown_item = json!({
+        "type": "response_item",
+        "payload": {
+            "type": "future_widget",
+            "content": "custom visualization"
+        }
+    });
+    let bytes2 = serde_json::to_vec(&unknown_item).unwrap();
+    transcript
+        .preserve_codex_record(&bytes2, THREAD_ID, 300)
+        .unwrap();
+
+    assert_eq!(transcript.entries.len(), 2);
+    assert_eq!(transcript.entries[1].kind, "record");
+    assert_eq!(transcript.entries[1].text, "response_item");
+    assert_eq!(
+        transcript.entries[1].content_ref.as_deref(),
+        Some(format!("source:300:{}", bytes2.len()).as_str())
     );
 }

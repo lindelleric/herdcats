@@ -35,7 +35,7 @@ pub fn civil_from_days(days: i64) -> (i32, u32, u32) {
     let z = days + 719468;
     let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
     let doe = (z - era * 146097) as u32;
-    let yoe = (doe - doe / 1020 + doe / 1461 - doe / 146096) / 365;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
     let y = yoe as i64 + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
@@ -962,6 +962,34 @@ impl Transcript {
                 }
             }
         }
-        Ok(())
+
+        if self
+            .entries
+            .iter()
+            .any(|e| e.record_refs.contains(&reference))
+        {
+            return Ok(());
+        }
+
+        let label = if kind.is_empty() {
+            "Session record"
+        } else {
+            kind
+        };
+        let (label_text, label_truncated) = bounded(label);
+        let raw_str = std::str::from_utf8(part).unwrap_or("");
+        let (details, details_truncated) = bounded(raw_str);
+        self.upsert(Entry {
+            id: format!("content:{offset}:0"),
+            kind: "record".into(),
+            text: label_text,
+            role: None,
+            tool_name: None,
+            status: None,
+            details: Some(details),
+            truncated: details_truncated || label_truncated,
+            content_ref: Some(reference.clone()),
+            record_refs: vec![reference],
+        })
     }
 }
