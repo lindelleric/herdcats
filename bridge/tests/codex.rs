@@ -83,7 +83,7 @@ fn follower_parses_phase1_codex_fixtures() {
         .iter()
         .filter(|e| e.kind == "message")
         .collect();
-    assert_eq!(messages.len(), 4);
+    assert_eq!(messages.len(), 5);
     assert_eq!(messages[0].role.as_deref(), Some("user"));
     assert_eq!(messages[1].role.as_deref(), Some("user"));
     assert!(
@@ -92,7 +92,10 @@ fn follower_parses_phase1_codex_fixtures() {
             .contains("Run exactly this shell command: echo herdcats-probe > probe2.txt")
     );
     assert_eq!(messages[2].role.as_deref(), Some("assistant"));
-    assert_eq!(messages[3].role.as_deref(), Some("user"));
+    assert_eq!(messages[3].role.as_deref(), Some("assistant"));
+    assert_eq!(messages[3].text, "Turn interrupted");
+    assert_eq!(messages[3].status.as_deref(), Some("failed"));
+    assert_eq!(messages[4].role.as_deref(), Some("user"));
 
     let tools: Vec<_> = transcript
         .entries
@@ -183,7 +186,7 @@ fn resolver_resolves_rollout_by_exact_uuid_and_directory_structure() {
             .iter()
             .filter(|e| e.kind == "message")
             .count(),
-        4
+        5
     );
 }
 
@@ -745,9 +748,89 @@ fn preserve_codex_record_unfamiliar_record_creates_bounded_bubble() {
 
     assert_eq!(transcript.entries.len(), 2);
     assert_eq!(transcript.entries[1].kind, "record");
-    assert_eq!(transcript.entries[1].text, "response_item");
+    assert_eq!(transcript.entries[1].text, "future_widget");
     assert_eq!(
         transcript.entries[1].content_ref.as_deref(),
         Some(format!("source:300:{}", bytes2.len()).as_str())
     );
+}
+
+#[test]
+fn synthetic_rollout_skips_routine_records_and_preserves_only_agent_message_and_unknown() {
+    let temp = Temp::new();
+    let file_path = temp.0.join("rollout.jsonl");
+
+    let records = vec![
+        json!({"type": "session_meta", "payload": {"id": THREAD_ID, "cwd": "/test/cwd"}}),
+        json!({"type": "response_item", "payload": {"type": "reasoning", "summary": [], "encrypted_content": "enc-bytes-123"}}),
+        json!({"type": "response_item", "payload": {"type": "compaction", "encrypted_content": "comp-bytes-456"}}),
+        json!({"type": "compacted", "payload": {"index": 1}}),
+        json!({"type": "event_msg", "payload": {"type": "thread_settings_applied"}}),
+        json!({"type": "inter_agent_communication_metadata", "payload": {"trigger_turn": true}}),
+        json!({"type": "turn_context", "payload": {"model": "o3"}}),
+        json!({"type": "environment_context", "payload": {"cwd": "/test/cwd"}}),
+        json!({"type": "event_msg", "payload": {"type": "task_started"}}),
+        json!({"type": "event_msg", "payload": {"type": "token_count"}}),
+        json!({"type": "event_msg", "payload": {"type": "token_usage"}}),
+        json!({"type": "event_msg", "payload": {"type": "item_completed"}}),
+        json!({"type": "event_msg", "payload": {"type": "task_complete"}}),
+        json!({"type": "event_msg", "payload": {"type": "turn_aborted", "turn_id": "turn-test-1"}}),
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "agent_message",
+                "author": "planner",
+                "recipient": "worker",
+                "content": [{"type": "text", "text": "synthetic message"}]
+            }
+        }),
+        json!({
+            "type": "genuinely_unknown_record",
+            "payload": {"arbitrary_field": 42}
+        }),
+    ];
+
+    let mut content = String::new();
+    for r in &records {
+        content.push_str(&r.to_string());
+        content.push('\n');
+    }
+    fs::write(&file_path, content).unwrap();
+
+    let mut follower = Follower::with_content_for_agent(AgentType::Codex);
+    assert!(follower.refresh(&file_path, THREAD_ID).unwrap());
+
+    let transcript = &follower.transcript;
+
+    // Routine records must produce ZERO record entries except agent_message and genuinely_unknown_record
+    let record_entries: Vec<_> = transcript
+        .entries
+        .iter()
+        .filter(|e| e.kind == "record")
+        .collect();
+
+    assert_eq!(
+        record_entries.len(),
+        2,
+        "Only agent_message and unknown type should produce record entries, got: {:?}",
+        record_entries
+            .iter()
+            .map(|e| (&e.text, &e.kind))
+            .collect::<Vec<_>>()
+    );
+
+    assert_eq!(record_entries[0].text, "agent_message");
+    assert_eq!(record_entries[1].text, "genuinely_unknown_record");
+
+    // turn_aborted should render a short status entry ("Turn interrupted"), not a record dump
+    let turn_aborted_entry = transcript
+        .entries
+        .iter()
+        .find(|e| e.id == "turn_aborted:turn-test-1");
+    assert!(turn_aborted_entry.is_some());
+    let entry = turn_aborted_entry.unwrap();
+    assert_eq!(entry.kind, "message");
+    assert_eq!(entry.text, "Turn interrupted");
+    assert_eq!(entry.status.as_deref(), Some("failed"));
+    assert_eq!(entry.details, None);
 }

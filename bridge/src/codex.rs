@@ -439,213 +439,363 @@ fn codex_text_content(value: &Value) -> String {
         .unwrap_or_default()
 }
 
+fn has_visible_summary_text(summary: &Value) -> bool {
+    if let Some(s) = summary.as_str() {
+        return !s.trim().is_empty();
+    }
+    if let Some(text) = summary["text"].as_str() {
+        return !text.trim().is_empty();
+    }
+    if let Some(arr) = summary.as_array() {
+        return arr.iter().any(|item| {
+            if let Some(text) = item.as_str() {
+                !text.trim().is_empty()
+            } else if let Some(text) = item["text"].as_str() {
+                !text.trim().is_empty()
+            } else {
+                false
+            }
+        });
+    }
+    false
+}
+
+#[derive(Debug)]
+pub(crate) enum CodexRecordAction<'a> {
+    SessionMeta {
+        id: &'a str,
+    },
+    Skip,
+    Message {
+        id: &'a str,
+        role: &'a str,
+        text: String,
+    },
+    FunctionCall {
+        call_id: &'a str,
+        name: &'a str,
+        args: String,
+    },
+    CustomToolCall {
+        call_id: &'a str,
+        name: &'a str,
+        input: String,
+    },
+    ToolOutput {
+        call_id: &'a str,
+        output: String,
+    },
+    Error {
+        id: &'a str,
+        message: &'a str,
+    },
+    TurnAborted {
+        turn_id: &'a str,
+    },
+    Unknown {
+        label: &'a str,
+    },
+}
+
+pub(crate) fn classify_codex_record(record: &Value) -> Result<CodexRecordAction<'_>> {
+    let kind = record["type"].as_str().unwrap_or("");
+    match kind {
+        "session_meta" => {
+            let id = record["payload"]["id"]
+                .as_str()
+                .or_else(|| record["payload"]["session_id"].as_str())
+                .unwrap_or("");
+            Ok(CodexRecordAction::SessionMeta { id })
+        }
+        "turn_context"
+        | "environment_context"
+        | "world_state"
+        | "token_usage_record"
+        | "compacted"
+        | "inter_agent_communication_metadata" => Ok(CodexRecordAction::Skip),
+        "event_msg" => {
+            let payload = &record["payload"];
+            let event_type = payload["type"].as_str().unwrap_or("");
+            match event_type {
+                "turn_aborted" => {
+                    let turn_id = payload["turn_id"]
+                        .as_str()
+                        .or_else(|| payload["root_turn_id"].as_str())
+                        .unwrap_or("");
+                    Ok(CodexRecordAction::TurnAborted { turn_id })
+                }
+                "thread_settings_applied"
+                | "task_started"
+                | "item_completed"
+                | "task_complete"
+                | "token_count"
+                | "token_usage" => Ok(CodexRecordAction::Skip),
+                _ => Ok(CodexRecordAction::Unknown {
+                    label: if event_type.is_empty() {
+                        "event_msg"
+                    } else {
+                        event_type
+                    },
+                }),
+            }
+        }
+        "response_item" => {
+            let payload = &record["payload"];
+            let item_type = payload["type"].as_str().unwrap_or("");
+            match item_type {
+                "compaction" => Ok(CodexRecordAction::Skip),
+                "reasoning" => {
+                    if !has_visible_summary_text(&payload["summary"]) {
+                        Ok(CodexRecordAction::Skip)
+                    } else {
+                        Ok(CodexRecordAction::Unknown { label: "reasoning" })
+                    }
+                }
+                "message" => {
+                    let role = payload["role"].as_str().unwrap_or("");
+                    if role == "developer" || role == "system" {
+                        return Ok(CodexRecordAction::Skip);
+                    }
+                    if !matches!(role, "user" | "assistant") {
+                        return Ok(CodexRecordAction::Unknown { label: "message" });
+                    }
+                    let id = payload["id"]
+                        .as_str()
+                        .filter(|s| !s.is_empty() && s.len() <= 256)
+                        .ok_or("invalid_transcript")?;
+                    let text = codex_text_content(&payload["content"]);
+                    Ok(CodexRecordAction::Message { id, role, text })
+                }
+                "function_call" => {
+                    let id = payload["id"]
+                        .as_str()
+                        .filter(|s| !s.is_empty() && s.len() <= 256)
+                        .ok_or("invalid_transcript")?;
+                    let call_id = payload["call_id"].as_str().unwrap_or(id);
+                    let name = payload["name"]
+                        .as_str()
+                        .filter(|s| !s.is_empty() && s.len() <= 256)
+                        .ok_or("invalid_transcript")?;
+                    let args = if let Some(s) = payload["arguments"].as_str() {
+                        s.to_owned()
+                    } else if payload["arguments"].is_object() || payload["arguments"].is_array() {
+                        payload["arguments"].to_string()
+                    } else {
+                        String::new()
+                    };
+                    Ok(CodexRecordAction::FunctionCall {
+                        call_id,
+                        name,
+                        args,
+                    })
+                }
+                "custom_tool_call" => {
+                    let id = payload["id"]
+                        .as_str()
+                        .filter(|s| !s.is_empty() && s.len() <= 256)
+                        .ok_or("invalid_transcript")?;
+                    let call_id = payload["call_id"].as_str().unwrap_or(id);
+                    let name = payload["name"]
+                        .as_str()
+                        .filter(|s| !s.is_empty() && s.len() <= 256)
+                        .ok_or("invalid_transcript")?;
+                    let input = if let Some(s) = payload["input"].as_str() {
+                        s.to_owned()
+                    } else if payload["input"].is_object() || payload["input"].is_array() {
+                        payload["input"].to_string()
+                    } else {
+                        String::new()
+                    };
+                    Ok(CodexRecordAction::CustomToolCall {
+                        call_id,
+                        name,
+                        input,
+                    })
+                }
+                "function_call_output" | "custom_tool_call_output" => {
+                    let call_id = payload["call_id"]
+                        .as_str()
+                        .filter(|s| !s.is_empty() && s.len() <= 256)
+                        .ok_or("invalid_transcript")?;
+                    let output = if let Some(s) = payload["output"].as_str() {
+                        s.to_owned()
+                    } else if payload["output"].is_object() || payload["output"].is_array() {
+                        payload["output"].to_string()
+                    } else {
+                        String::new()
+                    };
+                    Ok(CodexRecordAction::ToolOutput { call_id, output })
+                }
+                "error" => {
+                    let message = payload["message"].as_str().unwrap_or("Error");
+                    let id = payload["id"].as_str().unwrap_or("error");
+                    Ok(CodexRecordAction::Error { id, message })
+                }
+                _ => Ok(CodexRecordAction::Unknown {
+                    label: if item_type.is_empty() {
+                        "response_item"
+                    } else {
+                        item_type
+                    },
+                }),
+            }
+        }
+        _ => Ok(CodexRecordAction::Unknown {
+            label: if kind.is_empty() {
+                "Session record"
+            } else {
+                kind
+            },
+        }),
+    }
+}
+
 impl Transcript {
     pub fn apply_codex(&mut self, record: &Value, thread_id: &str) -> Result<()> {
-        let kind = record["type"].as_str().unwrap_or("");
-        match kind {
-            "session_meta" => {
-                let id = record["payload"]["id"]
-                    .as_str()
-                    .or_else(|| record["payload"]["session_id"].as_str())
-                    .unwrap_or("");
+        let action = classify_codex_record(record)?;
+        match action {
+            CodexRecordAction::SessionMeta { id } => {
                 if !id.eq_ignore_ascii_case(thread_id) {
                     return Err("session_mismatch");
                 }
                 Ok(())
             }
-            "response_item" => {
-                let payload = &record["payload"];
-                let item_type = payload["type"].as_str().unwrap_or("");
-                match item_type {
-                    "message" => {
-                        let role = payload["role"].as_str().unwrap_or("");
-                        if role == "developer" || role == "system" {
-                            return Ok(());
-                        }
-                        if !matches!(role, "user" | "assistant") {
-                            self.unknown_records += 1;
-                            return Ok(());
-                        }
-                        let id = payload["id"]
-                            .as_str()
-                            .filter(|s| !s.is_empty() && s.len() <= 256)
-                            .ok_or("invalid_transcript")?;
-                        let text = codex_text_content(&payload["content"]);
-                        if !text.is_empty() {
-                            let (text, truncated) = bounded(&text);
-                            self.upsert(Entry {
-                                id: format!("message:{id}"),
-                                kind: "message".into(),
-                                text,
-                                role: Some(role.into()),
-                                tool_name: None,
-                                status: None,
-                                details: None,
-                                truncated,
-                                content_ref: None,
-                                record_refs: Vec::new(),
-                            })?;
-                        }
-                        Ok(())
-                    }
-                    "function_call" => {
-                        let id = payload["id"]
-                            .as_str()
-                            .filter(|s| !s.is_empty() && s.len() <= 256)
-                            .ok_or("invalid_transcript")?;
-                        let call_id = payload["call_id"].as_str().unwrap_or(id);
-                        let name = payload["name"]
-                            .as_str()
-                            .filter(|s| !s.is_empty() && s.len() <= 256)
-                            .ok_or("invalid_transcript")?;
-                        let (name, name_truncated) = bounded(name);
-                        let args = if let Some(s) = payload["arguments"].as_str() {
-                            s.to_owned()
-                        } else if payload["arguments"].is_object()
-                            || payload["arguments"].is_array()
-                        {
-                            payload["arguments"].to_string()
-                        } else {
-                            String::new()
-                        };
-                        let (details, truncated) = bounded(&args);
-                        let key = format!("tool:{call_id}");
-                        let old = self.entries.iter().find(|e| e.id == key);
-                        let status = old
-                            .and_then(|e| e.status.clone())
-                            .unwrap_or_else(|| "running".into());
-                        let text = old.map(|e| e.text.clone()).unwrap_or_default();
-                        let output_truncated = old.is_some_and(|e| e.truncated);
-                        self.upsert(Entry {
-                            id: key,
-                            kind: "tool".into(),
-                            text,
-                            role: None,
-                            tool_name: Some(name),
-                            status: Some(status),
-                            details: Some(details),
-                            truncated: truncated || name_truncated || output_truncated,
-                            content_ref: None,
-                            record_refs: Vec::new(),
-                        })
-                    }
-                    "custom_tool_call" => {
-                        let id = payload["id"]
-                            .as_str()
-                            .filter(|s| !s.is_empty() && s.len() <= 256)
-                            .ok_or("invalid_transcript")?;
-                        let call_id = payload["call_id"].as_str().unwrap_or(id);
-                        let name = payload["name"]
-                            .as_str()
-                            .filter(|s| !s.is_empty() && s.len() <= 256)
-                            .ok_or("invalid_transcript")?;
-                        let (name, name_truncated) = bounded(name);
-                        let input = if let Some(s) = payload["input"].as_str() {
-                            s.to_owned()
-                        } else if payload["input"].is_object() || payload["input"].is_array() {
-                            payload["input"].to_string()
-                        } else {
-                            String::new()
-                        };
-                        let (details, truncated) = bounded(&input);
-                        let key = format!("tool:{call_id}");
-                        let old = self.entries.iter().find(|e| e.id == key);
-                        let status = old
-                            .and_then(|e| e.status.clone())
-                            .unwrap_or_else(|| "running".into());
-                        let text = old.map(|e| e.text.clone()).unwrap_or_default();
-                        let output_truncated = old.is_some_and(|e| e.truncated);
-                        self.upsert(Entry {
-                            id: key,
-                            kind: "tool".into(),
-                            text,
-                            role: None,
-                            tool_name: Some(name),
-                            status: Some(status),
-                            details: Some(details),
-                            truncated: truncated || name_truncated || output_truncated,
-                            content_ref: None,
-                            record_refs: Vec::new(),
-                        })
-                    }
-                    "function_call_output" | "custom_tool_call_output" => {
-                        let call_id = payload["call_id"]
-                            .as_str()
-                            .filter(|s| !s.is_empty() && s.len() <= 256)
-                            .ok_or("invalid_transcript")?;
-                        let output = if let Some(s) = payload["output"].as_str() {
-                            s.to_owned()
-                        } else if payload["output"].is_object() || payload["output"].is_array() {
-                            payload["output"].to_string()
-                        } else {
-                            String::new()
-                        };
-                        let (text, truncated) = bounded(&output);
-                        let key = format!("tool:{call_id}");
-                        if let Some(old) = self.entries.iter_mut().find(|e| e.id == key) {
-                            old.text = text;
-                            old.status = Some("completed".into());
-                            old.truncated |= truncated;
-                        } else {
-                            self.upsert(Entry {
-                                id: key,
-                                kind: "tool".into(),
-                                text,
-                                role: None,
-                                tool_name: None,
-                                status: Some("completed".into()),
-                                details: None,
-                                truncated,
-                                content_ref: None,
-                                record_refs: Vec::new(),
-                            })?;
-                        }
-                        Ok(())
-                    }
-                    "error" => {
-                        let msg = payload["message"].as_str().unwrap_or("Error");
-                        let (text, truncated) = bounded(msg);
-                        let id = payload["id"].as_str().unwrap_or("error");
-                        self.upsert(Entry {
-                            id: format!("message:{id}"),
-                            kind: "message".into(),
-                            text,
-                            role: Some("assistant".into()),
-                            tool_name: None,
-                            status: Some("failed".into()),
-                            details: None,
-                            truncated,
-                            content_ref: None,
-                            record_refs: Vec::new(),
-                        })
-                    }
-                    _ => {
-                        self.unknown_records += 1;
-                        Ok(())
+            CodexRecordAction::Skip => Ok(()),
+            CodexRecordAction::Message { id, role, text } => {
+                if !text.is_empty() {
+                    let (text, truncated) = bounded(&text);
+                    self.upsert(Entry {
+                        id: format!("message:{id}"),
+                        kind: "message".into(),
+                        text,
+                        role: Some(role.into()),
+                        tool_name: None,
+                        status: None,
+                        details: None,
+                        truncated,
+                        content_ref: None,
+                        record_refs: Vec::new(),
+                    })?;
+                }
+                Ok(())
+            }
+            CodexRecordAction::FunctionCall {
+                call_id,
+                name,
+                args,
+            } => {
+                let (name, name_truncated) = bounded(name);
+                let (details, truncated) = bounded(&args);
+                let key = format!("tool:{call_id}");
+                let old = self.entries.iter().find(|e| e.id == key);
+                let status = old
+                    .and_then(|e| e.status.clone())
+                    .unwrap_or_else(|| "running".into());
+                let text = old.map(|e| e.text.clone()).unwrap_or_default();
+                let output_truncated = old.is_some_and(|e| e.truncated);
+                self.upsert(Entry {
+                    id: key,
+                    kind: "tool".into(),
+                    text,
+                    role: None,
+                    tool_name: Some(name),
+                    status: Some(status),
+                    details: Some(details),
+                    truncated: truncated || name_truncated || output_truncated,
+                    content_ref: None,
+                    record_refs: Vec::new(),
+                })
+            }
+            CodexRecordAction::CustomToolCall {
+                call_id,
+                name,
+                input,
+            } => {
+                let (name, name_truncated) = bounded(name);
+                let (details, truncated) = bounded(&input);
+                let key = format!("tool:{call_id}");
+                let old = self.entries.iter().find(|e| e.id == key);
+                let status = old
+                    .and_then(|e| e.status.clone())
+                    .unwrap_or_else(|| "running".into());
+                let text = old.map(|e| e.text.clone()).unwrap_or_default();
+                let output_truncated = old.is_some_and(|e| e.truncated);
+                self.upsert(Entry {
+                    id: key,
+                    kind: "tool".into(),
+                    text,
+                    role: None,
+                    tool_name: Some(name),
+                    status: Some(status),
+                    details: Some(details),
+                    truncated: truncated || name_truncated || output_truncated,
+                    content_ref: None,
+                    record_refs: Vec::new(),
+                })
+            }
+            CodexRecordAction::ToolOutput { call_id, output } => {
+                let (text, truncated) = bounded(&output);
+                let key = format!("tool:{call_id}");
+                if let Some(old) = self.entries.iter_mut().find(|e| e.id == key) {
+                    old.text = text;
+                    old.status = Some("completed".into());
+                    old.truncated |= truncated;
+                } else {
+                    self.upsert(Entry {
+                        id: key,
+                        kind: "tool".into(),
+                        text,
+                        role: None,
+                        tool_name: None,
+                        status: Some("completed".into()),
+                        details: None,
+                        truncated,
+                        content_ref: None,
+                        record_refs: Vec::new(),
+                    })?;
+                }
+                Ok(())
+            }
+            CodexRecordAction::Error { id, message } => {
+                let (text, truncated) = bounded(message);
+                self.upsert(Entry {
+                    id: format!("message:{id}"),
+                    kind: "message".into(),
+                    text,
+                    role: Some("assistant".into()),
+                    tool_name: None,
+                    status: Some("failed".into()),
+                    details: None,
+                    truncated,
+                    content_ref: None,
+                    record_refs: Vec::new(),
+                })
+            }
+            CodexRecordAction::TurnAborted { turn_id } => {
+                for entry in self.entries.iter_mut() {
+                    if entry.kind == "tool" && entry.status.as_deref() == Some("running") {
+                        entry.status = Some("failed".into());
                     }
                 }
+                let id = if turn_id.is_empty() {
+                    "turn_aborted".to_string()
+                } else {
+                    format!("turn_aborted:{turn_id}")
+                };
+                self.upsert(Entry {
+                    id,
+                    kind: "message".into(),
+                    text: "Turn interrupted".into(),
+                    role: Some("assistant".into()),
+                    tool_name: None,
+                    status: Some("failed".into()),
+                    details: None,
+                    truncated: false,
+                    content_ref: None,
+                    record_refs: Vec::new(),
+                })
             }
-            "event_msg" => {
-                let event_type = record["payload"]["type"].as_str().unwrap_or("");
-                match event_type {
-                    "turn_aborted" => {
-                        for entry in self.entries.iter_mut() {
-                            if entry.kind == "tool" && entry.status.as_deref() == Some("running") {
-                                entry.status = Some("failed".into());
-                            }
-                        }
-                        Ok(())
-                    }
-                    "task_started" | "item_completed" | "task_complete" | "token_count"
-                    | "token_usage" => Ok(()),
-                    _ => {
-                        self.unknown_records += 1;
-                        Ok(())
-                    }
-                }
-            }
-            "turn_context" | "environment_context" | "world_state" | "token_usage_record" => Ok(()),
-            _ => {
+            CodexRecordAction::Unknown { .. } => {
                 self.unknown_records += 1;
                 Ok(())
             }
@@ -886,9 +1036,24 @@ impl Transcript {
                                 entry.status = Some("failed".into());
                             }
                         }
-                        Ok(())
+                        self.upsert(Entry {
+                            id: "turn_aborted".into(),
+                            kind: "message".into(),
+                            text: "Turn interrupted".into(),
+                            role: Some("assistant".into()),
+                            tool_name: None,
+                            status: Some("failed".into()),
+                            details: None,
+                            truncated: false,
+                            content_ref: None,
+                            record_refs: Vec::new(),
+                        })
                     }
-                    "task_started" | "item_completed" | "task_complete" | "token_count"
+                    "thread_settings_applied"
+                    | "task_started"
+                    | "item_completed"
+                    | "task_complete"
+                    | "token_count"
                     | "token_usage" => Ok(()),
                     _ => {
                         self.unknown_records += 1;
@@ -896,7 +1061,12 @@ impl Transcript {
                     }
                 }
             }
-            "turn_context" | "environment_context" | "world_state" | "token_usage_record" => Ok(()),
+            "turn_context"
+            | "environment_context"
+            | "world_state"
+            | "token_usage_record"
+            | "compacted"
+            | "inter_agent_communication_metadata" => Ok(()),
             _ => {
                 self.unknown_records += 1;
                 Ok(())
@@ -911,85 +1081,54 @@ impl Transcript {
         offset: usize,
     ) -> Result<()> {
         let row: Value = serde_json::from_slice(part).map_err(|_| "invalid_transcript")?;
-        let kind = row["type"].as_str().unwrap_or("");
-        if matches!(
-            kind,
-            "session_meta"
-                | "turn_context"
-                | "environment_context"
-                | "world_state"
-                | "token_usage_record"
-        ) {
-            return Ok(());
-        }
-        if kind == "event_msg" {
-            let event_type = row["payload"]["type"].as_str().unwrap_or("");
-            if matches!(
-                event_type,
-                "task_started" | "item_completed" | "task_complete" | "token_count" | "token_usage"
-            ) {
-                return Ok(());
-            }
-        }
+        let action = classify_codex_record(&row)?;
         let reference = format!("source:{offset}:{}", part.len());
-        if kind == "response_item" {
-            let payload = &row["payload"];
-            let item_type = payload["type"].as_str().unwrap_or("");
-            if item_type == "message" {
-                let role = payload["role"].as_str().unwrap_or("");
-                if role == "developer" || role == "system" {
+        match action {
+            CodexRecordAction::SessionMeta { .. } | CodexRecordAction::Skip => Ok(()),
+            CodexRecordAction::Message { id, .. } | CodexRecordAction::Error { id, .. } => {
+                self.attach_record(&format!("message:{id}"), &reference);
+                Ok(())
+            }
+            CodexRecordAction::FunctionCall { call_id, .. }
+            | CodexRecordAction::CustomToolCall { call_id, .. }
+            | CodexRecordAction::ToolOutput { call_id, .. } => {
+                self.attach_record(&format!("tool:{call_id}"), &reference);
+                Ok(())
+            }
+            CodexRecordAction::TurnAborted { turn_id } => {
+                let id = if turn_id.is_empty() {
+                    "turn_aborted".to_string()
+                } else {
+                    format!("turn_aborted:{turn_id}")
+                };
+                self.attach_record(&id, &reference);
+                Ok(())
+            }
+            CodexRecordAction::Unknown { label } => {
+                if self
+                    .entries
+                    .iter()
+                    .any(|e| e.record_refs.contains(&reference))
+                {
                     return Ok(());
                 }
-                if let Some(id) = payload["id"].as_str() {
-                    if self.attach_record(&format!("message:{id}"), &reference) {
-                        return Ok(());
-                    }
-                }
-            } else if matches!(
-                item_type,
-                "function_call"
-                    | "custom_tool_call"
-                    | "function_call_output"
-                    | "custom_tool_call_output"
-            ) {
-                let call_id = payload["call_id"]
-                    .as_str()
-                    .or_else(|| payload["id"].as_str());
-                if let Some(id) = call_id {
-                    if self.attach_record(&format!("tool:{id}"), &reference) {
-                        return Ok(());
-                    }
-                }
+
+                let (label_text, label_truncated) = bounded(label);
+                let raw_str = std::str::from_utf8(part).unwrap_or("");
+                let (details, details_truncated) = bounded(raw_str);
+                self.upsert(Entry {
+                    id: format!("content:{offset}:0"),
+                    kind: "record".into(),
+                    text: label_text,
+                    role: None,
+                    tool_name: None,
+                    status: None,
+                    details: Some(details),
+                    truncated: details_truncated || label_truncated,
+                    content_ref: Some(reference.clone()),
+                    record_refs: vec![reference],
+                })
             }
         }
-
-        if self
-            .entries
-            .iter()
-            .any(|e| e.record_refs.contains(&reference))
-        {
-            return Ok(());
-        }
-
-        let label = if kind.is_empty() {
-            "Session record"
-        } else {
-            kind
-        };
-        let (label_text, label_truncated) = bounded(label);
-        let raw_str = std::str::from_utf8(part).unwrap_or("");
-        let (details, details_truncated) = bounded(raw_str);
-        self.upsert(Entry {
-            id: format!("content:{offset}:0"),
-            kind: "record".into(),
-            text: label_text,
-            role: None,
-            tool_name: None,
-            status: None,
-            details: Some(details),
-            truncated: details_truncated || label_truncated,
-            content_ref: Some(reference.clone()),
-            record_refs: vec![reference],
-        })
     }
 }
