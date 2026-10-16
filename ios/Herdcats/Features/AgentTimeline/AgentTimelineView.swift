@@ -219,7 +219,8 @@ struct AgentTimelineView: View {
                         ? "The helper was not found yet. Run the command on your SSH host, then check again."
                         : explanation(code)
                 }
-                if ["helper_missing", "helper_update_required"].contains(code) && !showsSetup { beginSetup() }
+                let canPinnedInstallerSupport = agent.map { HostHelperSetupPlan.agents.contains($0) } ?? true
+                if ["helper_missing", "helper_update_required"].contains(code) && !showsSetup && canPinnedInstallerSupport { beginSetup() }
             case .disconnected:
                 if isCheckingSetup {
                     isCheckingSetup = false
@@ -245,7 +246,7 @@ struct AgentTimelineView: View {
             AgentBridgeSetupView(
                 isChecking: isCheckingSetup, feedback: setupFeedback,
                 stage: helperStage, target: setupTarget,
-                canInstall: connectionState.isReady && appModel.supportsHostServices && appModel.connectionIdentity == setupTarget,
+                canInstall: connectionState.isReady && appModel.supportsHostServices && appModel.connectionIdentity == setupTarget && (agent.map { HostHelperSetupPlan.agents.contains($0) } ?? true),
                 onInstall: startHelperInstallation,
                 onCheckAgain: {
                     setupFeedback = nil
@@ -365,6 +366,9 @@ struct AgentTimelineView: View {
                             ? "Existing helper version \(version ?? "unknown") will be replaced at the location shown. Tap Replace to authorize this update."
                             : "An existing helper was found elsewhere. Install a managed copy at the location shown; the other copy will remain unchanged."
                     }
+                case .unsupportedByPinnedInstaller(let agent):
+                    helperStage = .idle
+                    setupFeedback = "This version of Herdcats can't install a \(agent.capitalized)-capable helper yet."
                 case .install: throw HostHelperSetupError.invalidResponse
                 }
             } catch {
@@ -445,7 +449,8 @@ struct AgentTimelineView: View {
             } description: {
                 Text(explanation(code))
             } actions: {
-                if ["helper_missing", "helper_update_required", "unsupported_agent", "protocol_mismatch", "record_too_large"].contains(code) {
+                let canPinnedInstallerSupport = agent.map { HostHelperSetupPlan.agents.contains($0) } ?? true
+                if ["helper_missing", "helper_update_required", "unsupported_agent", "protocol_mismatch", "record_too_large"].contains(code) && canPinnedInstallerSupport {
                     Button(isCodex && isHelperOld ? "Update helper" : "Set up Timeline") { beginSetup() }
                         .buttonStyle(.herdrPrimary)
                         .accessibilityIdentifier("timeline-helper-setup")
@@ -459,15 +464,18 @@ struct AgentTimelineView: View {
     func explanation(_ code: String) -> String {
         switch code {
         case "helper_missing":
+            if agent == "codex" {
+                return "This version of Herdcats can't install a Codex-capable helper yet."
+            }
             return "Install the small host helper to see this session as native messages. Terminal is available now."
         case "helper_update_required":
             if agent == "codex" {
-                return "Update the Herdcats helper to see Codex conversations."
+                return "This version of Herdcats can't install a Codex-capable helper yet."
             }
             return "Update the host helper to display session images."
         case "unsupported_agent":
             if agent == "codex" {
-                return "Update the Herdcats helper to see Codex conversations."
+                return "This version of Herdcats can't install a Codex-capable helper yet."
             }
             return "Timeline is not available for this agent yet. You can still send messages below or use Terminal."
         case "routed_host_unsupported": return "Native history is not available through saved machines yet. Messages can still be sent below."

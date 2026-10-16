@@ -219,8 +219,9 @@ struct CodexTimelineGatingTests {
             onSetupComplete: {}
         )
         // Verify explanation texts for Codex
-        #expect(view.explanation("helper_update_required") == "Update the Herdcats helper to see Codex conversations.")
-        #expect(view.explanation("unsupported_agent") == "Update the Herdcats helper to see Codex conversations.")
+        #expect(view.explanation("helper_update_required") == "This version of Herdcats can't install a Codex-capable helper yet.")
+        #expect(view.explanation("unsupported_agent") == "This version of Herdcats can't install a Codex-capable helper yet.")
+        #expect(view.explanation("helper_missing") == "This version of Herdcats can't install a Codex-capable helper yet.")
     }
 
     @Test func codexPaneDisplaysNoSessionReferenceState() {

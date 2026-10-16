@@ -194,6 +194,7 @@ enum HostHelperSetupDecision: Equatable, Sendable {
     case ready, missing
     case replacementRequired(HostHelperProbe)
     case install(replace: Bool)
+    case unsupportedByPinnedInstaller(String)
 }
 enum HostHelperSetupStage: Equatable, Sendable {
     case idle, checking, installing, verifying, uncertain, installed

@@ -361,6 +361,8 @@ extension AgentBridgeClient {
 enum HostHelperSetupPlan {
     static let version = "0.1.4"
     static let installerSHA256 = "979c4a0fa8a6620c1748e76ceaa4be0b90b8e7dba13538202ed8c540656092a3"
+    /// Supported agents bundled in this pinned release. Must be updated when bumping version / installerSHA256.
+    static let agents: [String] = ["claude"]
     static func installationScript(replace: Bool) -> String {
         return #"""
         set -eu
@@ -389,7 +391,11 @@ enum HostHelperSetupPlan {
 }
 
 extension HostHelperSetupPlan {
-    static func decision(probe: HostHelperProbe, replace: Bool, checkOnly: Bool) -> HostHelperSetupDecision {
+    static func decision(probe: HostHelperProbe, replace: Bool, checkOnly: Bool, agent: String? = nil) -> HostHelperSetupDecision {
+        if case .present(_, _, true) = probe { return .ready }
+        if let agent, !agents.contains(agent) {
+            return .unsupportedByPinnedInstaller(agent)
+        }
         switch probe {
         case .missing: return checkOnly ? .missing : .install(replace: false)
         case .present(_, let managed, let compatible):
@@ -528,7 +534,7 @@ extension HerdrConnection {
         try Task.checkCancellation()
         try requireGeneration(owned)
         let probe = try HostHelperProbe(output: output, agent: agent)
-        let decision = HostHelperSetupPlan.decision(probe: probe, replace: replace, checkOnly: checkOnly)
+        let decision = HostHelperSetupPlan.decision(probe: probe, replace: replace, checkOnly: checkOnly, agent: agent)
         guard case .install(let replaceManaged) = decision else { return decision }
         await onStage(.installing)
         try Task.checkCancellation()
