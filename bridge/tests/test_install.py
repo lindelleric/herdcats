@@ -351,7 +351,57 @@ class InstallTests(unittest.TestCase):
         self.assertIn('daemon_auto_start = false', content3)
         self.assertNotIn("'daemon_auto_start' = true", content3)
 
+    def test_codex_daemon_multiline_string_not_rewritten(self):
+        codex_home = self.root / 'multiline_codex'
+        codex_home.mkdir()
+        config = codex_home / 'config.toml'
+        original_content = 'prompt = """\n[features]\ndaemon_auto_start = true\n"""\n'
+        config.write_text(original_content)
+        env = {**os.environ, 'HOME': str(self.root), 'CODEX_HOME': str(codex_home)}
+        result = subprocess.run(
+            [sys.executable, str(INSTALLER), '--binary', str(BINARY),
+             '--bin-dir', str(self.destination), '--replace', '--codex-disable-daemon'],
+            env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # Content must remain completely byte-identical; multiline string was not modified
+        self.assertEqual(config.read_text(), original_content)
+        self.assertIn('Validation failed', result.stderr)
+
+    def test_codex_daemon_no_tomllib_fallback(self):
+        import io
+        from unittest.mock import patch
+        sys.path.insert(0, str(ROOT / 'scripts'))
+        import install as installer_module
+
+        codex_home = self.root / 'no_tomllib_codex'
+        codex_home.mkdir()
+        config = codex_home / 'config.toml'
+        initial_content = '[features]\ndaemon_auto_start = true\n'
+        config.write_text(initial_content)
+
+        with patch.dict(os.environ, {'CODEX_HOME': str(codex_home)}):
+            with patch.object(installer_module, 'tomllib', None):
+                # 1. With disable_daemon=True: prints notice to stderr, exits 0, does not touch config
+                stderr_capture = io.StringIO()
+                with patch('sys.stderr', stderr_capture):
+                    installer_module.configure_codex_daemon(disable_daemon=True, is_interactive=False)
+
+                self.assertIn('To disable Codex daemon, please add daemon_auto_start = false', stderr_capture.getvalue())
+                self.assertIn(str(config), stderr_capture.getvalue())
+                self.assertEqual(config.read_text(), initial_content)
+
+                # 2. Interactive: skips prompt, prints notice, does not touch config
+                stderr_capture_interactive = io.StringIO()
+                with patch('sys.stderr', stderr_capture_interactive):
+                    with patch('sys.stdin', io.StringIO('y\n')):
+                        installer_module.configure_codex_daemon(disable_daemon=False, is_interactive=True)
+
+                self.assertIn('To disable Codex daemon, please add daemon_auto_start = false', stderr_capture_interactive.getvalue())
+                self.assertEqual(config.read_text(), initial_content)
+
 
 if __name__ == '__main__':
     unittest.main()
+
 

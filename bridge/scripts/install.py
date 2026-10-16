@@ -120,6 +120,17 @@ def configure_codex_daemon(disable_daemon=False, is_interactive=False):
     if not codex_dir.is_dir() and not shutil.which('codex'):
         return
 
+    config_path = codex_dir / 'config.toml'
+
+    # If tomllib is unavailable on Python <3.11, do NOT attempt to rewrite the config at all
+    if tomllib is None:
+        if disable_daemon or is_interactive:
+            sys.stderr.write(
+                f"\nTo disable Codex daemon, please add daemon_auto_start = false under [features] in {config_path} manually.\n"
+            )
+            sys.stderr.flush()
+        return
+
     should_disable = False
     if disable_daemon:
         should_disable = True
@@ -129,7 +140,7 @@ def configure_codex_daemon(disable_daemon=False, is_interactive=False):
             "so Herdcats cannot identify Codex panes without disabling it.\n"
             "Cost: Codex background sessions stop working.\n"
             "Note: An already running daemon keeps running until stopped or until codex is started with --no-daemon.\n"
-            f"Disable Codex shared daemon (set features.daemon_auto_start = false in {codex_dir / 'config.toml'})? [y/N]: "
+            f"Disable Codex shared daemon (set features.daemon_auto_start = false in {config_path})? [y/N]: "
         )
         sys.stderr.flush()
         try:
@@ -141,8 +152,6 @@ def configure_codex_daemon(disable_daemon=False, is_interactive=False):
 
     if not should_disable:
         return
-
-    config_path = codex_dir / 'config.toml'
     if config_path.is_file():
         content = config_path.read_text(encoding='utf-8')
     else:
