@@ -525,3 +525,160 @@ fn follower_record_content_preserves_content_references() {
         }
     }
 }
+
+#[test]
+fn resolver_v7_timestamp_maps_to_day_dirs_and_resolves() {
+    let temp = Temp::new();
+    let thread_v7 = "01a14495-5600-7000-8000-000000000001";
+    let ts_ms = herdcats_bridge::codex::parse_uuid_v7_timestamp_ms(thread_v7).unwrap();
+    assert_eq!(ts_ms, 1792152000000); // 2026-10-16 12:00:00 UTC
+    let candidate_dirs = herdcats_bridge::codex::v7_candidate_day_dirs(ts_ms);
+    assert_eq!(
+        candidate_dirs,
+        vec![(2026, 10, 15), (2026, 10, 16), (2026, 10, 17)]
+    );
+
+    let day_dir = temp.0.join("2026/10/16");
+    fs::create_dir_all(&day_dir).unwrap();
+    let rollout_file = day_dir.join(format!("rollout-2026-10-16T12-00-00-{thread_v7}.jsonl"));
+    fs::write(
+        &rollout_file,
+        format!(
+            "{}\n",
+            json!({"type": "session_meta", "payload": {"id": thread_v7, "cwd": "/test/cwd"}})
+        ),
+    )
+    .unwrap();
+
+    let resolver = CodexResolver::new(&temp.0).unwrap();
+    let pane = make_pane(
+        Some(thread_v7),
+        "herdr:codex",
+        "codex",
+        "codex",
+        "id",
+        "/test/cwd",
+    );
+    let (resolved_id, file) = resolver.resolve(thread_v7, &pane).unwrap();
+    assert_eq!(resolved_id, thread_v7);
+    assert_eq!(
+        file.metadata().unwrap().len(),
+        rollout_file.metadata().unwrap().len()
+    );
+}
+
+#[test]
+fn resolver_resolves_file_in_neighbouring_day_dir() {
+    let temp = Temp::new();
+    let thread_v7 = "01a14495-5600-7000-8000-000000000001"; // 2026-10-16 UTC
+
+    // Place file in neighbouring day 2026/10/15 (e.g. UTC-10 timezone offset)
+    let day_dir = temp.0.join("2026/10/15");
+    fs::create_dir_all(&day_dir).unwrap();
+    let rollout_file = day_dir.join(format!("rollout-2026-10-15T22-00-00-{thread_v7}.jsonl"));
+    fs::write(
+        &rollout_file,
+        format!(
+            "{}\n",
+            json!({"type": "session_meta", "payload": {"id": thread_v7, "cwd": "/test/cwd"}})
+        ),
+    )
+    .unwrap();
+
+    let resolver = CodexResolver::new(&temp.0).unwrap();
+    let pane = make_pane(
+        Some(thread_v7),
+        "herdr:codex",
+        "codex",
+        "codex",
+        "id",
+        "/test/cwd",
+    );
+    let (resolved_id, _) = resolver.resolve(thread_v7, &pane).unwrap();
+    assert_eq!(resolved_id, thread_v7);
+
+    // If file was in 2026/10/10 (outside +/- 1 day window), resolution must fail
+    let outside_dir = temp.0.join("2026/10/10");
+    fs::create_dir_all(&outside_dir).unwrap();
+    let thread_v7_outside = "01a14495-5600-7000-8000-000000000002";
+    let rollout_outside = outside_dir.join(format!(
+        "rollout-2026-10-10T12-00-00-{thread_v7_outside}.jsonl"
+    ));
+    fs::write(
+        &rollout_outside,
+        format!(
+            "{}\n",
+            json!({"type": "session_meta", "payload": {"id": thread_v7_outside, "cwd": "/test/cwd"}})
+        ),
+    )
+    .unwrap();
+    let pane_outside = make_pane(
+        Some(thread_v7_outside),
+        "herdr:codex",
+        "codex",
+        "codex",
+        "id",
+        "/test/cwd",
+    );
+    assert_eq!(
+        resolver
+            .resolve(thread_v7_outside, &pane_outside)
+            .unwrap_err(),
+        "transcript_unavailable"
+    );
+}
+
+#[test]
+fn adapter_cache_hit_does_not_rescan_directory() {
+    let temp = Temp::new();
+    let thread_v7 = "01a14495-5600-7000-8000-000000000001";
+    let day_dir = temp.0.join("2026/10/16");
+    fs::create_dir_all(&day_dir).unwrap();
+    let rollout_file = day_dir.join(format!("rollout-2026-10-16T12-00-00-{thread_v7}.jsonl"));
+    fs::write(
+        &rollout_file,
+        format!(
+            "{}\n",
+            json!({"type": "session_meta", "payload": {"id": thread_v7, "cwd": "/test/cwd"}})
+        ),
+    )
+    .unwrap();
+
+    let resolver = CodexResolver::new(&temp.0).unwrap();
+    let scan_counter = resolver.scan_count.clone();
+    let adapter = CodexAdapter::new(Some(resolver));
+    let pane = make_pane(
+        Some(thread_v7),
+        "herdr:codex",
+        "codex",
+        "codex",
+        "id",
+        "/test/cwd",
+    );
+
+    // First call: cold cache, must scan
+    let (id1, _) = adapter.resolve_and_open(&pane).unwrap();
+    assert_eq!(id1, thread_v7);
+    assert_eq!(scan_counter.load(Ordering::SeqCst), 1);
+
+    // Second call: warm cache hit, must NOT scan again
+    let (id2, _) = adapter.resolve_and_open(&pane).unwrap();
+    assert_eq!(id2, thread_v7);
+    assert_eq!(
+        scan_counter.load(Ordering::SeqCst),
+        1,
+        "Cache hit must not re-scan directory"
+    );
+
+    // Third call after removing the file: cache hit fails open_and_verify, re-scans, returns transcript_unavailable
+    fs::remove_file(&rollout_file).unwrap();
+    assert_eq!(
+        adapter.resolve_and_open(&pane).unwrap_err(),
+        "transcript_unavailable"
+    );
+    assert_eq!(
+        scan_counter.load(Ordering::SeqCst),
+        2,
+        "Cache miss after deletion must re-scan"
+    );
+}

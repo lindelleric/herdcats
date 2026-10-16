@@ -18,6 +18,7 @@ use std::{
 pub struct CodexResolver {
     pub root: PathBuf,
     anchor: fs::File,
+    pub scan_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Clone for CodexResolver {
@@ -25,8 +26,52 @@ impl Clone for CodexResolver {
         Self {
             root: self.root.clone(),
             anchor: self.anchor.try_clone().expect("anchor clone"),
+            scan_count: self.scan_count.clone(),
         }
     }
+}
+
+pub fn civil_from_days(days: i64) -> (i32, u32, u32) {
+    let z = days + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1020 + doe / 1461 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y as i32, m, d)
+}
+
+pub fn parse_uuid_v7_timestamp_ms(thread_id: &str) -> Option<u64> {
+    if thread_id.len() != 36 {
+        return None;
+    }
+    let bytes = thread_id.as_bytes();
+    if bytes[8] != b'-' || bytes[13] != b'-' || bytes[18] != b'-' || bytes[23] != b'-' {
+        return None;
+    }
+    if bytes[14] != b'7' {
+        return None;
+    }
+    let variant = bytes[19];
+    if !matches!(variant, b'8' | b'9' | b'a' | b'b' | b'A' | b'B') {
+        return None;
+    }
+    let p1 = u64::from_str_radix(std::str::from_utf8(&bytes[0..8]).ok()?, 16).ok()?;
+    let p2 = u64::from_str_radix(std::str::from_utf8(&bytes[9..13]).ok()?, 16).ok()?;
+    Some((p1 << 16) | p2)
+}
+
+pub fn v7_candidate_day_dirs(ts_ms: u64) -> Vec<(i32, u32, u32)> {
+    let days = (ts_ms / 1000) as i64 / 86400;
+    vec![
+        civil_from_days(days - 1),
+        civil_from_days(days),
+        civil_from_days(days + 1),
+    ]
 }
 
 impl CodexResolver {
@@ -38,100 +83,42 @@ impl CodexResolver {
             return Err("transcript_root_unavailable");
         }
         let anchor = crate::resolver::open_absolute(&root, true)?;
-        Ok(Self { root, anchor })
+        Ok(Self {
+            root,
+            anchor,
+            scan_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        })
     }
 
-    pub fn resolve(&self, thread_id: &str, pane: &Pane) -> Result<(String, fs::File)> {
+    pub fn resolve_relative(&self, thread_id: &str) -> Result<PathBuf> {
         // Validate strictly before touching the filesystem
         if !session_id(thread_id) {
             return Err("invalid_session_reference");
         }
+        self.scan_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let thread_suffix = format!("-{thread_id}.jsonl");
         let thread_suffix_lower = format!("-{}.jsonl", thread_id.to_ascii_lowercase());
 
         let mut matches = Vec::new();
         let mut count = 0;
 
-        // Traverse YYYY/MM/DD/rollout-*-<thread-id>.jsonl
-        let root_entries = fs::read_dir(&self.root).map_err(|_| "transcript_root_unavailable")?;
-        for year_entry in root_entries {
-            count += 1;
-            if count > 50000 {
-                return Err("transcript_index_too_large");
-            }
-            let year_entry = year_entry.map_err(|_| "transcript_root_unavailable")?;
-            let year_path = year_entry.path();
-            let year_meta =
-                fs::symlink_metadata(&year_path).map_err(|_| "transcript_unavailable")?;
-            if year_meta.file_type().is_symlink() || !year_meta.is_dir() {
-                continue;
-            }
-            let year_name = year_entry.file_name();
-            let year_str = year_name.to_str().unwrap_or("");
-            if year_str.len() != 4 || !year_str.chars().all(|c| c.is_ascii_digit()) {
-                continue;
-            }
-
-            let month_entries = match fs::read_dir(&year_path) {
-                Ok(entries) => entries,
-                Err(_) => continue,
-            };
-            for month_entry in month_entries {
-                count += 1;
-                if count > 50000 {
-                    return Err("transcript_index_too_large");
+        if let Some(ts_ms) = parse_uuid_v7_timestamp_ms(thread_id) {
+            // UUIDv7: look only in the UTC date of that timestamp plus/minus 1 day
+            let candidates = v7_candidate_day_dirs(ts_ms);
+            for (y, m, d) in candidates {
+                let mut day_paths = vec![self.root.join(format!("{y:04}/{m:02}/{d:02}"))];
+                if m < 10 || d < 10 {
+                    day_paths.push(self.root.join(format!("{y:04}/{m}/{d}")));
                 }
-                let month_entry = match month_entry {
-                    Ok(e) => e,
-                    Err(_) => continue,
-                };
-                let month_path = month_entry.path();
-                let month_meta = match fs::symlink_metadata(&month_path) {
-                    Ok(m) => m,
-                    Err(_) => continue,
-                };
-                if month_meta.file_type().is_symlink() || !month_meta.is_dir() {
-                    continue;
-                }
-                let month_name = month_entry.file_name();
-                let month_str = month_name.to_str().unwrap_or("");
-                if month_str.is_empty()
-                    || month_str.len() > 2
-                    || !month_str.chars().all(|c| c.is_ascii_digit())
-                {
-                    continue;
-                }
-
-                let day_entries = match fs::read_dir(&month_path) {
-                    Ok(entries) => entries,
-                    Err(_) => continue,
-                };
-                for day_entry in day_entries {
-                    count += 1;
-                    if count > 50000 {
-                        return Err("transcript_index_too_large");
-                    }
-                    let day_entry = match day_entry {
-                        Ok(e) => e,
-                        Err(_) => continue,
-                    };
-                    let day_path = day_entry.path();
+                for day_path in day_paths {
                     let day_meta = match fs::symlink_metadata(&day_path) {
-                        Ok(m) => m,
+                        Ok(meta) => meta,
                         Err(_) => continue,
                     };
                     if day_meta.file_type().is_symlink() || !day_meta.is_dir() {
                         continue;
                     }
-                    let day_name = day_entry.file_name();
-                    let day_str = day_name.to_str().unwrap_or("");
-                    if day_str.is_empty()
-                        || day_str.len() > 2
-                        || !day_str.chars().all(|c| c.is_ascii_digit())
-                    {
-                        continue;
-                    }
-
                     let file_entries = match fs::read_dir(&day_path) {
                         Ok(entries) => entries,
                         Err(_) => continue,
@@ -164,21 +151,150 @@ impl CodexResolver {
                                 Ok(r) => r.to_path_buf(),
                                 Err(_) => continue,
                             };
-                            matches.push(relative);
+                            if !matches.contains(&relative) {
+                                matches.push(relative);
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // Fall back to the bounded full walk only if the ID is not v7
+            let root_entries =
+                fs::read_dir(&self.root).map_err(|_| "transcript_root_unavailable")?;
+            for year_entry in root_entries {
+                count += 1;
+                if count > 50000 {
+                    return Err("transcript_index_too_large");
+                }
+                let year_entry = year_entry.map_err(|_| "transcript_root_unavailable")?;
+                let year_path = year_entry.path();
+                let year_meta =
+                    fs::symlink_metadata(&year_path).map_err(|_| "transcript_unavailable")?;
+                if year_meta.file_type().is_symlink() || !year_meta.is_dir() {
+                    continue;
+                }
+                let year_name = year_entry.file_name();
+                let year_str = year_name.to_str().unwrap_or("");
+                if year_str.len() != 4 || !year_str.chars().all(|c| c.is_ascii_digit()) {
+                    continue;
+                }
+
+                let month_entries = match fs::read_dir(&year_path) {
+                    Ok(entries) => entries,
+                    Err(_) => continue,
+                };
+                for month_entry in month_entries {
+                    count += 1;
+                    if count > 50000 {
+                        return Err("transcript_index_too_large");
+                    }
+                    let month_entry = match month_entry {
+                        Ok(e) => e,
+                        Err(_) => continue,
+                    };
+                    let month_path = month_entry.path();
+                    let month_meta = match fs::symlink_metadata(&month_path) {
+                        Ok(m) => m,
+                        Err(_) => continue,
+                    };
+                    if month_meta.file_type().is_symlink() || !month_meta.is_dir() {
+                        continue;
+                    }
+                    let month_name = month_entry.file_name();
+                    let month_str = month_name.to_str().unwrap_or("");
+                    if month_str.is_empty()
+                        || month_str.len() > 2
+                        || !month_str.chars().all(|c| c.is_ascii_digit())
+                    {
+                        continue;
+                    }
+
+                    let day_entries = match fs::read_dir(&month_path) {
+                        Ok(entries) => entries,
+                        Err(_) => continue,
+                    };
+                    for day_entry in day_entries {
+                        count += 1;
+                        if count > 50000 {
+                            return Err("transcript_index_too_large");
+                        }
+                        let day_entry = match day_entry {
+                            Ok(e) => e,
+                            Err(_) => continue,
+                        };
+                        let day_path = day_entry.path();
+                        let day_meta = match fs::symlink_metadata(&day_path) {
+                            Ok(m) => m,
+                            Err(_) => continue,
+                        };
+                        if day_meta.file_type().is_symlink() || !day_meta.is_dir() {
+                            continue;
+                        }
+                        let day_name = day_entry.file_name();
+                        let day_str = day_name.to_str().unwrap_or("");
+                        if day_str.is_empty()
+                            || day_str.len() > 2
+                            || !day_str.chars().all(|c| c.is_ascii_digit())
+                        {
+                            continue;
+                        }
+
+                        let file_entries = match fs::read_dir(&day_path) {
+                            Ok(entries) => entries,
+                            Err(_) => continue,
+                        };
+                        for file_entry in file_entries {
+                            count += 1;
+                            if count > 50000 {
+                                return Err("transcript_index_too_large");
+                            }
+                            let file_entry = match file_entry {
+                                Ok(e) => e,
+                                Err(_) => continue,
+                            };
+                            let file_path = file_entry.path();
+                            let file_meta = match fs::symlink_metadata(&file_path) {
+                                Ok(m) => m,
+                                Err(_) => continue,
+                            };
+                            if file_meta.file_type().is_symlink() || !file_meta.is_file() {
+                                continue;
+                            }
+                            let file_name = file_entry.file_name();
+                            let file_str = file_name.to_str().unwrap_or("");
+                            let file_str_lower = file_str.to_ascii_lowercase();
+                            if file_str.starts_with("rollout-")
+                                && (file_str.ends_with(&thread_suffix)
+                                    || file_str_lower.ends_with(&thread_suffix_lower))
+                            {
+                                let relative = match file_path.strip_prefix(&self.root) {
+                                    Ok(r) => r.to_path_buf(),
+                                    Err(_) => continue,
+                                };
+                                matches.push(relative);
+                            }
                         }
                     }
                 }
             }
         }
 
-        let relative_path = match matches.len() {
-            0 => return Err("transcript_unavailable"),
-            1 => matches.remove(0),
-            _ => return Err("ambiguous_session"),
-        };
+        match matches.len() {
+            0 => Err("transcript_unavailable"),
+            1 => Ok(matches.remove(0)),
+            _ => Err("ambiguous_session"),
+        }
+    }
 
+    pub fn open_and_verify(
+        &self,
+        relative_path: &Path,
+        thread_id: &str,
+        pane: &Pane,
+    ) -> Result<fs::File> {
         // Confined open beneath the pinned root anchor: O_NOFOLLOW on every level
-        let mut file = open_beneath(&self.anchor, &relative_path, false)?;
+        let mut file = open_beneath(&self.anchor, relative_path, false)?;
 
         // Inspect record 0
         let mut reader = BufReader::new(&mut file);
@@ -213,17 +329,27 @@ impl CodexResolver {
         file.seek(SeekFrom::Start(0))
             .map_err(|_| "transcript_unavailable")?;
 
+        Ok(file)
+    }
+
+    pub fn resolve(&self, thread_id: &str, pane: &Pane) -> Result<(String, fs::File)> {
+        let relative_path = self.resolve_relative(thread_id)?;
+        let file = self.open_and_verify(&relative_path, thread_id, pane)?;
         Ok((thread_id.to_string(), file))
     }
 }
 
 pub struct CodexAdapter {
     pub resolver: Option<CodexResolver>,
+    cache: std::sync::Mutex<std::collections::HashMap<String, PathBuf>>,
 }
 
 impl CodexAdapter {
     pub fn new(resolver: Option<CodexResolver>) -> Self {
-        Self { resolver }
+        Self {
+            resolver,
+            cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
     }
 }
 
@@ -258,7 +384,28 @@ impl Adapter for CodexAdapter {
             .resolver
             .as_ref()
             .ok_or("transcript_root_unavailable")?;
-        resolver.resolve(&reference.value, pane)
+
+        let thread_id = &reference.value;
+
+        // Fast path: try cached relative path
+        let cached_rel = self.cache.lock().unwrap().get(thread_id).cloned();
+        if let Some(cached_rel) = cached_rel {
+            match resolver.open_and_verify(&cached_rel, thread_id, pane) {
+                Ok(file) => return Ok((thread_id.to_string(), file)),
+                Err("session_cwd_mismatch") => return Err("session_cwd_mismatch"),
+                Err(_) => {
+                    self.cache.lock().unwrap().remove(thread_id);
+                }
+            }
+        }
+
+        let rel = resolver.resolve_relative(thread_id)?;
+        let file = resolver.open_and_verify(&rel, thread_id, pane)?;
+        self.cache
+            .lock()
+            .unwrap()
+            .insert(thread_id.to_string(), rel);
+        Ok((thread_id.to_string(), file))
     }
 
     fn new_follower(&self, include_content: bool) -> Follower {
