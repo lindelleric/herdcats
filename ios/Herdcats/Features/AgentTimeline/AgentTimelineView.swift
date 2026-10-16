@@ -50,14 +50,15 @@ struct AgentTimelineView: View {
         AgentTimelineConnectionState(
             phase: appModel.phase, generation: appModel.ownership.transportGeneration)
     }
-    private struct TaskKey: Equatable {
+    struct TaskKey: Equatable {
         let paneId: String
+        let agent: String?
         let connection: AgentTimelineConnectionState
         let isActive: Bool
         let retry: Int
     }
     private var taskKey: TaskKey {
-        TaskKey(paneId: paneId, connection: connectionState, isActive: scenePhase == .active, retry: retry)
+        TaskKey(paneId: paneId, agent: agent, connection: connectionState, isActive: scenePhase == .active, retry: retry)
     }
     var body: some View {
         ScrollViewReader { proxy in

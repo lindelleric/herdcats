@@ -283,3 +283,21 @@ struct CodexTimelinePromptRoutingTests {
         #expect(!HerdrConnection.shouldTypeAndEnterForTimelinePrompt(agent: "cursor", agentStatus: "working"))
     }
 }
+
+@Suite("Codex timeline task key")
+struct CodexTimelineTaskKeyTests {
+    @Test func timelineTaskKeyRestartsOnAgentChange() {
+        let conn = AgentTimelineConnectionState(
+            phase: .connected(host: "host", username: "user"),
+            generation: ConnectionGeneration(rawValue: 1)
+        )
+        let keyCodex = AgentTimelineView.TaskKey(paneId: "p1", agent: "codex", connection: conn, isActive: true, retry: 0)
+        let keyClaude = AgentTimelineView.TaskKey(paneId: "p1", agent: "claude", connection: conn, isActive: true, retry: 0)
+        let keyNil = AgentTimelineView.TaskKey(paneId: "p1", agent: nil, connection: conn, isActive: true, retry: 0)
+        #expect(keyCodex != keyClaude)
+        #expect(keyCodex != keyNil)
+        #expect(keyClaude != keyNil)
+        #expect(keyCodex == AgentTimelineView.TaskKey(paneId: "p1", agent: "codex", connection: conn, isActive: true, retry: 0))
+    }
+}
+
