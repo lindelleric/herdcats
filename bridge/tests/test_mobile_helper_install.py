@@ -61,6 +61,7 @@ out.write_bytes(data)
                 'HB_CONTRACT=\'{"agents":["claude"],"herdr_protocol":22,"name":"herdcats-bridge","protocol":1,"version":"\'"$HB_VERSION"\'"}\'',
                 installer_path.read_text(),
             )
+            text = re.sub(r'HB_VERSION=0\.2\.0', 'HB_VERSION=0.1.4', text)
             pinned.write_text(text)
             installer_path = pinned
         self.env = {**os.environ, 'HOME':str(self.home), 'PATH':str(self.fake)+':'+os.environ['PATH'], 'HC_INSTALLER':str(installer_path), 'HC_BINARY':str(self.binary), 'TMPDIR':str(self.root)}
