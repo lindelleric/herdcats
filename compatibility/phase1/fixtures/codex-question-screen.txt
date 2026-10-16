@@ -1,0 +1,15 @@
+› Use your request_user_input tool (not plain text) to ask me two questions: 'Pick a color' with options Red and Blue,
+  and 'Pick a size' with options Small and Large. Do nothing else.
+• Pick a color
+  • Red
+  • Blue
+  Pick a size
+  • Small
+  • Large
+• Working (9s • esc to interrupt) · Running hooks
+• Queued follow-up inputs
+  ? 2 questions
+    ⇧← to answer
+› Ask Codex to do anything
+  GPT-6.1-Sol medium · Context 96% left · weekly 34% left
+  ? for shortcuts                                                                              ⚠ 1 warning · f2 to view

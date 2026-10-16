@@ -1,0 +1,161 @@
+{
+  "phase": 1,
+  "status": "complete_pending_upstream_filing",
+  "date": "2026-10-16",
+  "versions": {
+    "herdr": "0.9.3",
+    "herdr_integration_codex": 8,
+    "protocol": 22,
+    "codex_tui": "0.162.1",
+    "codex_daemon": "0.163.0",
+    "claude": "2.1.301"
+  },
+  "production_changes": false,
+  "scope": "Spikes before the Codex timeline, approvals and questions: Codex identity under the shared daemon, agent roadmap, upstream proposals, live interaction capture.",
+  "results": [
+    {
+      "id": "codex_daemon_identity_root_cause",
+      "status": "observed_root_cause",
+      "evidence": [
+        "ps eww of the managed app-server daemon: HERDR_PANE_ID is the pane that first started the daemon; the daemon is reparented to launchd and outlives that pane",
+        "herdr pane get <daemon HERDR_PANE_ID>: pane_not_found",
+        "~/.config/herdr/herdr-server.log: every herdr:codex pane.report_agent_session since 2026-10-14 completed with outcome=error, two per session start",
+        "4 of 4 live Codex panes have no agent_session while claude, cursor, pi and antigravity_cli panes do"
+      ],
+      "finding": "With the default shared daemon, Codex runs SessionStart hooks inside the daemon process. The Herdr hook reads HERDR_PANE_ID from its own environment, which the daemon froze from whichever pane launched it first. Every report therefore targets one stale pane. Today that pane is gone, so Herdr rejects the report and Codex panes never get a session reference."
+    },
+    {
+      "id": "codex_daemon_misattribution_risk",
+      "status": "inferred_safety_bug",
+      "evidence": [
+        "codex_daemon_identity_root_cause"
+      ],
+      "finding": "If the daemon's frozen pane still hosted a Codex agent, Herdr would attach every daemon session to that one pane. The hook's CODEX_THREAD_ID guard does not prevent this because the daemon environment has no inherited thread ID. A present reference is therefore not proof that the pane runs that thread. The Codex adapter should fail closed with session_mismatch when the rollout's session_meta cwd differs from the pane's foreground_cwd. That is a consistency check on an exact reference, not a guess; it catches cross-project misattribution but not two panes in the same directory, which needs the upstream fix."
+    },
+    {
+      "id": "codex_hook_input_has_no_client_context",
+      "status": "source_verified",
+      "evidence": [
+        "codex 0.163.0 embedded schema session-start.command.input: additionalProperties false; fields cwd, hook_event_name, model, permission_mode, session_id, source, transcript_path"
+      ],
+      "finding": "A hook running in the daemon cannot learn which client or pane started the thread. The phase 0 fixture's environment field was added by the probe, not by Codex."
+    },
+    {
+      "id": "codex_app_server_has_no_client_environment",
+      "status": "source_verified",
+      "evidence": [
+        "codex app-server generate-json-schema (0.162.1): ThreadStartParams and ThreadResumeParams carry no client environment; InitializeParams.clientInfo is name/title/version only"
+      ],
+      "finding": "The TUI does not forward HERDR_PANE_ID or any opaque client tag to the daemon, so there is no supported path from a daemon hook back to the pane."
+    },
+    {
+      "id": "codex_logs_do_not_map_tui_to_thread",
+      "status": "observed",
+      "evidence": [
+        "~/.codex/logs_2.sqlite read-only: process_uuid is pid:<pid>:<uuid>; only the daemon process logs non-null thread_id, TUI processes log thread_id NULL"
+      ],
+      "finding": "Matching a pane's foreground TUI PID to a thread through Codex logs is not possible, and would rely on an undocumented store anyway. Rejected."
+    },
+    {
+      "id": "codex_no_daemon_workaround",
+      "status": "observed_pass_in_phase0",
+      "evidence": [
+        "../phase0/report.json codex_local_identity"
+      ],
+      "finding": "codex --no-daemon runs hooks in the TUI process, which inherits the pane environment, so the Herdr integration reports an exact session ID. This is the only working path until upstream changes land."
+    },
+    {
+      "id": "duplicate_herdr_hook_registration",
+      "status": "observed_local_config",
+      "evidence": [
+        "~/.codex/hooks.json registers herdr-agent-state.sh session twice under SessionStart"
+      ],
+      "finding": "Local configuration issue, not a protocol finding: each session start sends two identical reports. Harmless once reports succeed, but doubles failures in the log. Left for the user to clean up; Herdcats does not edit agent configuration."
+    },
+    {
+      "id": "claude_approval_identification",
+      "status": "observed_pass",
+      "evidence": "fixtures/claude-hooks.jsonl, fixtures/claude-transcript.jsonl",
+      "finding": "The transcript holds the assistant tool_use before the dialog appears, and PreToolUse carries its tool_use_id. PermissionRequest has no tool_use_id but shares prompt_id and identical tool_input with that PreToolUse, which is the correlation key. permission_suggestions are present (addDirectories, destination session) but do not reproduce the screen's options: option 3 (switch to auto mode) has no suggestion, and the screen says 'from this project'. The live dialog stays the authority for labels (Q13)."
+    },
+    {
+      "id": "claude_approval_answer",
+      "status": "observed_pass",
+      "evidence": "live: digit 1 approved once; probe.txt written; tool_result recorded under the same tool_use_id; status returned to idle",
+      "finding": "Claude numbered menus act on a digit immediately, no Enter. Long option labels wrap onto indented lines and must be joined (fixtures/claude-approval-screen.txt)."
+    },
+    {
+      "id": "claude_question",
+      "status": "observed_pass",
+      "evidence": "fixtures/claude-hooks.jsonl, fixtures/claude-question-screen.txt, fixtures/claude-transcript.jsonl",
+      "finding": "AskUserQuestion goes through PermissionRequest with the full structured questions (header, options with descriptions, multiSelect). The terminal shows one tab per question plus Submit. Digits select in single-select and toggle in multi-select; Tab advances; Submit is option 1 on the review tab. The transcript's toolUseResult.answers records the answers."
+    },
+    {
+      "id": "codex_approval_identification",
+      "status": "observed_pass",
+      "evidence": "fixtures/codex-hooks.jsonl, fixtures/codex-pending-rollout.jsonl",
+      "finding": "PermissionRequest carries command and the model's justification but no call ID. The matching PreToolUse (same command and turn_id) has an exec-* ID. In code mode the rollout's pending call is a JavaScript custom_tool_call (tools.exec_command with sandbox_permissions require_escalated), so rollout-only detection would require parsing model-authored JS. The non-deciding hook (Q23) is the reliable structured source for Codex."
+    },
+    {
+      "id": "codex_approval_answer",
+      "status": "observed_pass",
+      "evidence": "fixtures/codex-approval-screen.txt; live esc",
+      "finding": "Options carry letter shortcuts (y, p, esc). Digits only move the highlight; Enter confirms. Esc cancels the call and aborts the turn (turn_aborted, 'aborted by user'); 'tell Codex what to do differently' is then an ordinary prompt in the composer (Q14)."
+    },
+    {
+      "id": "codex_guardian_reviewer",
+      "status": "observed",
+      "evidence": "user config approvals_reviewer = guardian_subagent; escalation ran with no dialog; rerun with -c approvals_reviewer=user showed the dialog",
+      "finding": "With Codex's automatic reviewer enabled, escalations are decided by a subagent and no human dialog appears. Herdcats must treat that as normal and never expect every PermissionRequest to produce a dialog."
+    },
+    {
+      "id": "non_deciding_hooks_safe",
+      "status": "observed_pass",
+      "evidence": "Codex and Claude PermissionRequest hooks printed nothing and exited 0; both dialogs still appeared",
+      "finding": "An empty PermissionRequest hook leaves the terminal dialog in place for both agents (Q23 is viable). The 'hook returned invalid session start JSON output' warning seen in every Codex capture comes from the user's own global SessionStart hooks that print plain text (it appeared in a folder with no probe hooks), not from empty output. Helper hooks should still print nothing or valid JSON."
+    },
+    {
+      "id": "codex_hook_trust_review",
+      "status": "observed",
+      "evidence": "live: 'Hooks need review — 5 hooks are new or changed' on first launch with project hooks",
+      "finding": "Codex makes the user review new or changed hooks before they run, recording trusted_hash entries in config.toml. Helper-installed hooks will trigger this once; onboarding must say so."
+    },
+    {
+      "id": "codex_question_async",
+      "status": "observed_pass",
+      "evidence": "fixtures/codex-hooks.jsonl, fixtures/codex-question-answer-rollout.jsonl, fixtures/codex-question-picker-screen.txt",
+      "finding": "Codex questions use request_user_input_async: the call returns {accepted: true}, the AgentMessage carries delivery 'async' plus structured questions, and the model sleeps waiting for input while Herdr reports blocked. The TUI queues '? N question(s) · <countdown> — ⇧← to answer'; ⇧← opens a numbered picker (options plus Other) with 'enter submit · ⌃] skip · ⇧→ main prompt'. A digit selected and submitted Blue. The answer is recorded as a user message <send_user_message_question_reply> whose questionItemId is [request_user_input_async, call_id, index], so a pending question is exactly an async call with no reply referencing its call_id. No PermissionRequest fires for questions. Codex also has a synchronous request_user_input picker (multi-select, 'Submit with N unanswered', auto-resolve timer) not exercised here."
+    },
+    {
+      "id": "input_timing",
+      "status": "observed",
+      "evidence": "live: keys sent during Claude startup were dropped; Herdr blocked status lagged the dialog by up to ~2s",
+      "finding": "The helper must wait for the dialog on screen (not only Herdr status) before sending keys, and re-read the screen after sending to confirm the dialog advanced."
+    }
+  ],
+  "decisions": {
+    "q21": "Ship the Codex timeline with a 'Codex session not identified' state. The host helper installer offers, with explicit consent and never silently, to set features.daemon_auto_start = false in ~/.codex/config.toml (the remedy Moshi uses); the app state points to that setting. Never fall back to cwd or newest-thread guesses.",
+    "q23": "With consent, the host helper installs its own non-deciding PermissionRequest hooks for Claude and Codex. They return immediately with no decision and only record the structured request (tool, input, request ID, Claude permission_suggestions) for the helper. The terminal dialog stays authoritative; answers remain guarded keystrokes with a final screen check."
+  },
+  "prior_art": {
+    "moshi": "Host daemon (moshi-hook) installs its own agent hooks, reads local transcripts through an SSH-forwarded gateway, refuses to guess sessions, sends prompts and Escape through the multiplexer, shows Approve/Deny only when deliverable unambiguously, and asks to disable Codex daemon_auto_start because the shared daemon shows the wrong pane's conversation.",
+    "blocking_hook_approvers": "claude-remote-approver, Moshline: blocking PermissionRequest hook with ~120s timeout, fallback to the terminal prompt by returning ask; Always Approve via permission_suggestions. Rejected for Herdcats because the desk dialog is withheld while the hook waits."
+  },
+  "upstream": {
+    "codex": "Forward an allowlisted client environment (or an opaque client tag) from the TUI to the daemon at thread start/resume and expose it to hooks, so integrations can attribute daemon-run hooks to the originating terminal.",
+    "herdr": [
+      "Codex integration: do not report from a process whose HERDR_PANE_ID does not own the reporting process (for example, verify the socket peer PID belongs to the pane's process tree), closing the misattribution risk.",
+      "Optional transcript locator on report_agent_session: transcript {path, format}. The Codex hook already receives transcript_path and discards it."
+    ]
+  },
+  "pending": [
+    "upstream_filing (drafts ready; filing needs maintainer approval)"
+  ],
+  "verification": {
+    "command": "python3 compatibility/phase1/verify.py",
+    "tests": 11,
+    "result": "passed"
+  },
+  "roadmap": "agent-roadmap.json",
+  "fixtures": "fixtures/ built by build_fixtures.py from disposable herdr sessions (hcspike, hcspike2); manifest.json pins hashes"
+}
