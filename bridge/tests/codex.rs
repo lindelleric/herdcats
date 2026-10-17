@@ -10,7 +10,11 @@ use std::{
     fs::{self, File},
     io::Write,
     path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 const THREAD_ID: &str = "f7b6ed8d-54fd-5ac3-bf0b-25eaa0e19912";
@@ -633,7 +637,7 @@ fn resolver_resolves_file_in_neighbouring_day_dir() {
 }
 
 #[test]
-fn adapter_cache_hit_does_not_rescan_directory() {
+fn adapter_cache_hit_saves_session_meta_read_for_v7() {
     let temp = Temp::new();
     let thread_v7 = "01a14495-5600-7000-8000-000000000001";
     let day_dir = temp.0.join("2026/10/16");
@@ -649,7 +653,7 @@ fn adapter_cache_hit_does_not_rescan_directory() {
     .unwrap();
 
     let resolver = CodexResolver::new(&temp.0).unwrap();
-    let scan_counter = resolver.scan_count.clone();
+    let meta_read_counter = resolver.meta_read_count.clone();
     let adapter = CodexAdapter::new(Some(resolver));
     let pane = make_pane(
         Some(thread_v7),
@@ -660,30 +664,183 @@ fn adapter_cache_hit_does_not_rescan_directory() {
         "/test/cwd",
     );
 
-    // First call: cold cache, must scan
+    // First call: cold cache, reads session_meta
     let (id1, _) = adapter.resolve_and_open(&pane).unwrap();
     assert_eq!(id1, thread_v7);
-    assert_eq!(scan_counter.load(Ordering::SeqCst), 1);
+    assert_eq!(meta_read_counter.load(Ordering::SeqCst), 1);
 
-    // Second call: warm cache hit, must NOT scan again
+    // Second call: warm cache hit with same stamp, does NOT re-read session_meta
     let (id2, _) = adapter.resolve_and_open(&pane).unwrap();
     assert_eq!(id2, thread_v7);
     assert_eq!(
-        scan_counter.load(Ordering::SeqCst),
+        meta_read_counter.load(Ordering::SeqCst),
         1,
-        "Cache hit must not re-scan directory"
+        "Cache hit with same stamp must not re-read session_meta"
     );
 
-    // Third call after removing the file: cache hit fails open_and_verify, re-scans, returns transcript_unavailable
+    // Third call after removing the file: fails and clears cache
     fs::remove_file(&rollout_file).unwrap();
     assert_eq!(
         adapter.resolve_and_open(&pane).unwrap_err(),
         "transcript_unavailable"
     );
+}
+
+#[test]
+fn adapter_non_v7_cache_skips_full_walk_within_30s() {
+    let temp = Temp::new();
+    let thread_non_v7 = "11111111-2222-4333-8444-555555555555";
+    let day_dir = temp.0.join("2026/05/01");
+    fs::create_dir_all(&day_dir).unwrap();
+    let rollout_file = day_dir.join(format!("rollout-2026-05-01T10-00-00-{thread_non_v7}.jsonl"));
+    fs::write(
+        &rollout_file,
+        format!(
+            "{}\n",
+            json!({"type": "session_meta", "payload": {"id": thread_non_v7, "cwd": "/test/cwd"}})
+        ),
+    )
+    .unwrap();
+
+    let resolver = CodexResolver::new(&temp.0).unwrap();
+    let scan_counter = resolver.scan_count.clone();
+    let adapter = CodexAdapter::new(Some(resolver));
+    let pane = make_pane(
+        Some(thread_non_v7),
+        "herdr:codex",
+        "codex",
+        "codex",
+        "id",
+        "/test/cwd",
+    );
+
+    // First call: cold cache, must scan
+    let (id1, _) = adapter.resolve_and_open(&pane).unwrap();
+    assert_eq!(id1, thread_non_v7);
+    assert_eq!(scan_counter.load(Ordering::SeqCst), 1);
+
+    // Second call: within 30s, warm cache hit, must NOT full-walk scan again
+    let (id2, _) = adapter.resolve_and_open(&pane).unwrap();
+    assert_eq!(id2, thread_non_v7);
     assert_eq!(
         scan_counter.load(Ordering::SeqCst),
-        2,
-        "Cache miss after deletion must re-scan"
+        1,
+        "Cache hit within 30s must not re-scan directory"
+    );
+}
+
+#[test]
+fn v7_duplicate_appears_after_first_lookup_fails_with_ambiguous_session() {
+    let temp = Temp::new();
+    let thread_v7 = "01a14495-5600-7000-8000-000000000001";
+    let day_dir = temp.0.join("2026/10/16");
+    fs::create_dir_all(&day_dir).unwrap();
+    let rollout_file1 = day_dir.join(format!("rollout-2026-10-16T12-00-00-{thread_v7}.jsonl"));
+    fs::write(
+        &rollout_file1,
+        format!(
+            "{}\n",
+            json!({"type": "session_meta", "payload": {"id": thread_v7, "cwd": "/test/cwd"}})
+        ),
+    )
+    .unwrap();
+
+    let resolver = CodexResolver::new(&temp.0).unwrap();
+    let adapter = CodexAdapter::new(Some(resolver));
+    let pane = make_pane(
+        Some(thread_v7),
+        "herdr:codex",
+        "codex",
+        "codex",
+        "id",
+        "/test/cwd",
+    );
+
+    // First lookup succeeds
+    let (id1, _) = adapter.resolve_and_open(&pane).unwrap();
+    assert_eq!(id1, thread_v7);
+
+    // Duplicate appears in neighbouring day dir (within +-1 day)
+    let day_dir_neighbour = temp.0.join("2026/10/15");
+    fs::create_dir_all(&day_dir_neighbour).unwrap();
+    let rollout_file2 =
+        day_dir_neighbour.join(format!("rollout-2026-10-15T12-00-00-{thread_v7}.jsonl"));
+    fs::write(
+        &rollout_file2,
+        format!(
+            "{}\n",
+            json!({"type": "session_meta", "payload": {"id": thread_v7, "cwd": "/test/cwd"}})
+        ),
+    )
+    .unwrap();
+
+    // Next poll fails with ambiguous_session
+    assert_eq!(
+        adapter.resolve_and_open(&pane).unwrap_err(),
+        "ambiguous_session"
+    );
+}
+
+#[test]
+fn non_v7_duplicate_detected_after_interval_with_injected_clock() {
+    let temp = Temp::new();
+    // Non-v7 thread ID (version 4)
+    let thread_non_v7 = "11111111-2222-4333-8444-555555555555";
+    let day_dir1 = temp.0.join("2026/05/01");
+    fs::create_dir_all(&day_dir1).unwrap();
+    let rollout_file1 = day_dir1.join(format!("rollout-2026-05-01T10-00-00-{thread_non_v7}.jsonl"));
+    fs::write(
+        &rollout_file1,
+        format!(
+            "{}\n",
+            json!({"type": "session_meta", "payload": {"id": thread_non_v7, "cwd": "/test/cwd"}})
+        ),
+    )
+    .unwrap();
+
+    let start = Instant::now();
+    let offset_secs = Arc::new(AtomicU64::new(0));
+    let offset_clone = offset_secs.clone();
+    let clock = Arc::new(move || start + Duration::from_secs(offset_clone.load(Ordering::SeqCst)));
+
+    let resolver = CodexResolver::new(&temp.0).unwrap();
+    let adapter = CodexAdapter::with_clock(Some(resolver), clock);
+    let pane = make_pane(
+        Some(thread_non_v7),
+        "herdr:codex",
+        "codex",
+        "codex",
+        "id",
+        "/test/cwd",
+    );
+
+    // First lookup at t=0s: full walk, succeeds
+    let (id1, _) = adapter.resolve_and_open(&pane).unwrap();
+    assert_eq!(id1, thread_non_v7);
+
+    // Duplicate appears in another directory
+    let day_dir2 = temp.0.join("2026/06/01");
+    fs::create_dir_all(&day_dir2).unwrap();
+    let rollout_file2 = day_dir2.join(format!("rollout-2026-06-01T10-00-00-{thread_non_v7}.jsonl"));
+    fs::write(
+        &rollout_file2,
+        format!(
+            "{}\n",
+            json!({"type": "session_meta", "payload": {"id": thread_non_v7, "cwd": "/test/cwd"}})
+        ),
+    )
+    .unwrap();
+
+    // At t=10s (< 30s): full walk is NOT redone, uses cached path
+    offset_secs.store(10, Ordering::SeqCst);
+    let (id2, _) = adapter.resolve_and_open(&pane).unwrap();
+    assert_eq!(id2, thread_non_v7);
+
+    // At t=31s (>= 30s): full walk is redone, detects duplicate, fails closed
+    offset_secs.store(31, Ordering::SeqCst);
+    assert_eq!(
+        adapter.resolve_and_open(&pane).unwrap_err(),
+        "ambiguous_session"
     );
 }
 

@@ -10,13 +10,39 @@ use serde_json::Value;
 use std::{
     fs,
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant},
 };
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileStamp {
+    pub dev: u64,
+    pub ino: u64,
+    pub len: u64,
+    pub mtime: (i64, i64),
+}
+
+impl FileStamp {
+    pub fn of(m: &fs::Metadata) -> Self {
+        Self {
+            dev: m.dev(),
+            ino: m.ino(),
+            len: m.len(),
+            mtime: (m.mtime(), m.mtime_nsec()),
+        }
+    }
+}
 
 pub struct CodexResolver {
     pub root: PathBuf,
     anchor: fs::File,
-    pub scan_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    pub scan_count: Arc<AtomicUsize>,
+    pub meta_read_count: Arc<AtomicUsize>,
 }
 
 impl Clone for CodexResolver {
@@ -25,6 +51,7 @@ impl Clone for CodexResolver {
             root: self.root.clone(),
             anchor: self.anchor.try_clone().expect("anchor clone"),
             scan_count: self.scan_count.clone(),
+            meta_read_count: self.meta_read_count.clone(),
         }
     }
 }
@@ -87,7 +114,8 @@ impl CodexResolver {
         Ok(Self {
             root,
             anchor,
-            scan_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            scan_count: Arc::new(AtomicUsize::new(0)),
+            meta_read_count: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -288,6 +316,54 @@ impl CodexResolver {
         }
     }
 
+    pub fn read_first_record(file: &mut fs::File) -> Result<Value> {
+        let mut reader = BufReader::new((&mut *file).take(MAX_RECORD as u64));
+        let mut line = Vec::new();
+        reader
+            .read_until(b'\n', &mut line)
+            .map_err(|_| "transcript_unavailable")?;
+        if line.is_empty() {
+            return Err("invalid_transcript");
+        }
+        if line.last() != Some(&b'\n') {
+            if line.len() >= MAX_RECORD {
+                return Err("source_too_large");
+            }
+            return Err("invalid_transcript");
+        }
+        serde_json::from_slice(&line).map_err(|_| "invalid_transcript")
+    }
+
+    pub fn verify_session_meta(
+        first_record: &Value,
+        thread_id: &str,
+        pane: &Pane,
+    ) -> Result<String> {
+        if first_record["type"].as_str() != Some("session_meta") {
+            return Err("invalid_transcript");
+        }
+        let meta_id = first_record["payload"]["id"]
+            .as_str()
+            .or_else(|| first_record["payload"]["session_id"].as_str())
+            .ok_or("invalid_transcript")?;
+        if !meta_id.eq_ignore_ascii_case(thread_id) {
+            return Err("session_mismatch");
+        }
+        let meta_cwd = first_record["payload"]["cwd"]
+            .as_str()
+            .ok_or("invalid_transcript")?;
+        Self::verify_pane_cwd(meta_cwd, pane)?;
+        Ok(meta_cwd.to_string())
+    }
+
+    pub fn verify_pane_cwd(meta_cwd: &str, pane: &Pane) -> Result<()> {
+        let pane_cwd = pane.foreground_cwd.as_deref().or(pane.cwd.as_deref());
+        if pane_cwd.map(|p| p.trim_end_matches('/')) != Some(meta_cwd.trim_end_matches('/')) {
+            return Err("session_cwd_mismatch");
+        }
+        Ok(())
+    }
+
     pub fn open_and_verify(
         &self,
         relative_path: &Path,
@@ -302,40 +378,9 @@ impl CodexResolver {
             return Err("source_too_large");
         }
 
-        // Inspect record 0, capped at MAX_RECORD
-        let mut reader = BufReader::new((&mut file).take(MAX_RECORD as u64));
-        let mut line = Vec::new();
-        reader
-            .read_until(b'\n', &mut line)
-            .map_err(|_| "transcript_unavailable")?;
-        if line.is_empty() {
-            return Err("invalid_transcript");
-        }
-        if line.last() != Some(&b'\n') {
-            if line.len() >= MAX_RECORD {
-                return Err("source_too_large");
-            }
-            return Err("invalid_transcript");
-        }
-        let first_record: Value =
-            serde_json::from_slice(&line).map_err(|_| "invalid_transcript")?;
-        if first_record["type"].as_str() != Some("session_meta") {
-            return Err("invalid_transcript");
-        }
-        let meta_id = first_record["payload"]["id"]
-            .as_str()
-            .or_else(|| first_record["payload"]["session_id"].as_str())
-            .ok_or("invalid_transcript")?;
-        if !meta_id.eq_ignore_ascii_case(thread_id) {
-            return Err("session_mismatch");
-        }
-        let meta_cwd = first_record["payload"]["cwd"]
-            .as_str()
-            .ok_or("invalid_transcript")?;
-        let pane_cwd = pane.foreground_cwd.as_deref().or(pane.cwd.as_deref());
-        if pane_cwd.map(|p| p.trim_end_matches('/')) != Some(meta_cwd.trim_end_matches('/')) {
-            return Err("session_cwd_mismatch");
-        }
+        self.meta_read_count.fetch_add(1, Ordering::SeqCst);
+        let first_record = Self::read_first_record(&mut file)?;
+        Self::verify_session_meta(&first_record, thread_id, pane)?;
 
         // Seek file back to 0 for the follower
         file.seek(SeekFrom::Start(0))
@@ -351,16 +396,33 @@ impl CodexResolver {
     }
 }
 
+#[derive(Clone, Debug)]
+struct CachedSession {
+    rel: PathBuf,
+    stamp: FileStamp,
+    meta_cwd: String,
+    last_walk: Option<Instant>,
+}
+
 pub struct CodexAdapter {
     pub resolver: Option<CodexResolver>,
-    cache: std::sync::Mutex<std::collections::HashMap<String, PathBuf>>,
+    cache: Mutex<std::collections::HashMap<String, CachedSession>>,
+    clock: Arc<dyn Fn() -> Instant + Send + Sync>,
 }
 
 impl CodexAdapter {
     pub fn new(resolver: Option<CodexResolver>) -> Self {
+        Self::with_clock(resolver, Arc::new(Instant::now))
+    }
+
+    pub fn with_clock(
+        resolver: Option<CodexResolver>,
+        clock: Arc<dyn Fn() -> Instant + Send + Sync>,
+    ) -> Self {
         Self {
             resolver,
-            cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+            cache: Mutex::new(std::collections::HashMap::new()),
+            clock,
         }
     }
 }
@@ -398,25 +460,122 @@ impl Adapter for CodexAdapter {
             .ok_or("transcript_root_unavailable")?;
 
         let thread_id = &reference.value;
+        let is_v7 = parse_uuid_v7_timestamp_ms(thread_id).is_some();
+        let now = (self.clock)();
 
-        // Fast path: try cached relative path
-        let cached_rel = self.cache.lock().unwrap().get(thread_id).cloned();
-        if let Some(cached_rel) = cached_rel {
-            match resolver.open_and_verify(&cached_rel, thread_id, pane) {
-                Ok(file) => return Ok((thread_id.to_string(), file)),
-                Err("session_cwd_mismatch") => return Err("session_cwd_mismatch"),
-                Err(_) => {
-                    self.cache.lock().unwrap().remove(thread_id);
+        let (rel, walk_occurred) = if is_v7 {
+            // For UUIDv7 ids: re-list the +-1 day directories on every lookup (they are cheap, 3 dirs)
+            // and fail with ambiguous_session if more than one file matches.
+            let rel = resolver.resolve_relative(thread_id)?;
+            (rel, false)
+        } else {
+            // For non-v7 ids (full walk): redo the walk at most every 30 s while a cached path exists,
+            // and fail closed as soon as a duplicate shows up.
+            let cached_opt = self.cache.lock().unwrap().get(thread_id).cloned();
+            match cached_opt {
+                Some(cached) => {
+                    let elapsed = cached
+                        .last_walk
+                        .map(|t| now.duration_since(t))
+                        .unwrap_or(Duration::from_secs(31));
+                    if elapsed < Duration::from_secs(30) {
+                        (cached.rel, false)
+                    } else {
+                        match resolver.resolve_relative(thread_id) {
+                            Ok(rel) => (rel, true),
+                            Err(e) => {
+                                self.cache.lock().unwrap().remove(thread_id);
+                                return Err(e);
+                            }
+                        }
+                    }
+                }
+                None => {
+                    let rel = resolver.resolve_relative(thread_id)?;
+                    (rel, true)
                 }
             }
-        }
+        };
 
-        let rel = resolver.resolve_relative(thread_id)?;
-        let file = resolver.open_and_verify(&rel, thread_id, pane)?;
-        self.cache
-            .lock()
-            .unwrap()
-            .insert(thread_id.to_string(), rel);
+        let mut file = match open_beneath(&resolver.anchor, &rel, false) {
+            Ok(f) => f,
+            Err(e) => {
+                self.cache.lock().unwrap().remove(thread_id);
+                if !is_v7 && !walk_occurred {
+                    let fresh_rel = resolver.resolve_relative(thread_id)?;
+                    let mut fresh_file = open_beneath(&resolver.anchor, &fresh_rel, false)?;
+                    let fresh_meta = fresh_file
+                        .metadata()
+                        .map_err(|_| "transcript_unavailable")?;
+                    if fresh_meta.len() > MAX_SOURCE {
+                        return Err("source_too_large");
+                    }
+                    resolver.meta_read_count.fetch_add(1, Ordering::SeqCst);
+                    let record = CodexResolver::read_first_record(&mut fresh_file)?;
+                    let meta_cwd = CodexResolver::verify_session_meta(&record, thread_id, pane)?;
+                    fresh_file
+                        .seek(SeekFrom::Start(0))
+                        .map_err(|_| "transcript_unavailable")?;
+                    let stamp = FileStamp::of(&fresh_meta);
+                    self.cache.lock().unwrap().insert(
+                        thread_id.to_string(),
+                        CachedSession {
+                            rel: fresh_rel,
+                            stamp,
+                            meta_cwd,
+                            last_walk: Some(now),
+                        },
+                    );
+                    return Ok((thread_id.to_string(), fresh_file));
+                }
+                return Err(e);
+            }
+        };
+
+        let meta = file.metadata().map_err(|_| "transcript_unavailable")?;
+        if meta.len() > MAX_SOURCE {
+            return Err("source_too_large");
+        }
+        let stamp = FileStamp::of(&meta);
+
+        let cached_entry = self.cache.lock().unwrap().get(thread_id).cloned();
+        let meta_cwd = if let Some(ref cached) = cached_entry {
+            if cached.rel == rel && cached.stamp == stamp {
+                // Unchanged file (same dev/ino/len/mtime): skip re-reading session_meta!
+                CodexResolver::verify_pane_cwd(&cached.meta_cwd, pane)?;
+                cached.meta_cwd.clone()
+            } else {
+                resolver.meta_read_count.fetch_add(1, Ordering::SeqCst);
+                let record = CodexResolver::read_first_record(&mut file)?;
+                CodexResolver::verify_session_meta(&record, thread_id, pane)?
+            }
+        } else {
+            resolver.meta_read_count.fetch_add(1, Ordering::SeqCst);
+            let record = CodexResolver::read_first_record(&mut file)?;
+            CodexResolver::verify_session_meta(&record, thread_id, pane)?
+        };
+
+        file.seek(SeekFrom::Start(0))
+            .map_err(|_| "transcript_unavailable")?;
+
+        let last_walk = if is_v7 {
+            None
+        } else if walk_occurred || cached_entry.as_ref().and_then(|c| c.last_walk).is_none() {
+            Some(now)
+        } else {
+            cached_entry.and_then(|c| c.last_walk)
+        };
+
+        self.cache.lock().unwrap().insert(
+            thread_id.to_string(),
+            CachedSession {
+                rel,
+                stamp,
+                meta_cwd,
+                last_walk,
+            },
+        );
+
         Ok((thread_id.to_string(), file))
     }
 
