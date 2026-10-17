@@ -1082,3 +1082,179 @@ fn follower_preserves_image_only_user_message_in_rollout() {
     assert_eq!(text_entry.text, "I see the image.");
     assert!(!text_entry.record_refs.is_empty());
 }
+
+#[test]
+fn oversized_call_id_turn_id_and_error_id_rejected_and_page_cursor_works() {
+    let mut transcript = Transcript::default();
+    let oversized = "x".repeat(300);
+
+    // 1. function_call: oversized call_id fails closed with invalid_transcript
+    let bad_fc = json!({
+        "type": "response_item",
+        "payload": {
+            "type": "function_call",
+            "id": "fc-valid-id-1",
+            "call_id": oversized,
+            "name": "exec_cmd",
+            "arguments": "{}"
+        }
+    });
+    assert_eq!(
+        transcript.apply_codex(&bad_fc, THREAD_ID),
+        Err("invalid_transcript")
+    );
+
+    // Valid function_call is accepted
+    let valid_fc = json!({
+        "type": "response_item",
+        "payload": {
+            "type": "function_call",
+            "id": "fc-valid-id-1",
+            "call_id": "fc-call-id-1",
+            "name": "exec_cmd",
+            "arguments": "{}"
+        }
+    });
+    transcript.apply_codex(&valid_fc, THREAD_ID).unwrap();
+    assert_eq!(transcript.entries.len(), 1);
+
+    // 2. custom_tool_call: oversized call_id fails closed with invalid_transcript
+    let bad_ctc = json!({
+        "type": "response_item",
+        "payload": {
+            "type": "custom_tool_call",
+            "id": "ctc-valid-id-2",
+            "call_id": oversized,
+            "name": "custom_exec",
+            "input": "{}"
+        }
+    });
+    assert_eq!(
+        transcript.apply_codex(&bad_ctc, THREAD_ID),
+        Err("invalid_transcript")
+    );
+
+    // Valid custom_tool_call (fallback to id when call_id is absent) is accepted
+    let valid_ctc = json!({
+        "type": "response_item",
+        "payload": {
+            "type": "custom_tool_call",
+            "id": "ctc-valid-id-2",
+            "name": "custom_exec",
+            "input": "{}"
+        }
+    });
+    transcript.apply_codex(&valid_ctc, THREAD_ID).unwrap();
+    assert_eq!(transcript.entries.len(), 2);
+
+    // 3. event_msg turn_aborted: oversized turn_id fails closed with invalid_transcript
+    let bad_turn = json!({
+        "type": "event_msg",
+        "payload": {
+            "type": "turn_aborted",
+            "turn_id": oversized
+        }
+    });
+    assert_eq!(
+        transcript.apply_codex(&bad_turn, THREAD_ID),
+        Err("invalid_transcript")
+    );
+
+    // event_msg turn_aborted: oversized root_turn_id (when turn_id absent) fails closed
+    let bad_root_turn = json!({
+        "type": "event_msg",
+        "payload": {
+            "type": "turn_aborted",
+            "root_turn_id": oversized
+        }
+    });
+    assert_eq!(
+        transcript.apply_codex(&bad_root_turn, THREAD_ID),
+        Err("invalid_transcript")
+    );
+
+    // Valid turn_aborted is accepted
+    let valid_turn = json!({
+        "type": "event_msg",
+        "payload": {
+            "type": "turn_aborted",
+            "turn_id": "turn-valid-3"
+        }
+    });
+    transcript.apply_codex(&valid_turn, THREAD_ID).unwrap();
+    assert_eq!(transcript.entries.len(), 3);
+
+    // 4. response_item error: oversized id fails closed with invalid_transcript
+    let bad_err = json!({
+        "type": "response_item",
+        "payload": {
+            "type": "error",
+            "id": oversized,
+            "message": "Error details"
+        }
+    });
+    assert_eq!(
+        transcript.apply_codex(&bad_err, THREAD_ID),
+        Err("invalid_transcript")
+    );
+
+    // Valid error (absent id defaults to "error") is accepted
+    let valid_err = json!({
+        "type": "response_item",
+        "payload": {
+            "type": "error",
+            "message": "Recoverable failure"
+        }
+    });
+    transcript.apply_codex(&valid_err, THREAD_ID).unwrap();
+    assert_eq!(transcript.entries.len(), 4);
+
+    // 5. Assert page and cursor still work on the resulting transcript entries
+    let page_result = herdcats_bridge::service::page(&transcript.entries, transcript.entries.len());
+    let page_entries = page_result["entries"].as_array().unwrap();
+    assert_eq!(page_entries.len(), 4);
+    assert_eq!(page_result["has_more"], false);
+    assert_eq!(page_result["before"], "tool:fc-call-id-1");
+
+    // All entry keys remain safely bounded
+    for entry in &transcript.entries {
+        assert!(
+            entry.id.len() <= 256 + 16,
+            "Entry id too long: {}",
+            entry.id
+        );
+    }
+}
+
+#[test]
+fn follower_fails_closed_on_oversized_codex_entry_keys() {
+    let temp = Temp::new();
+    let file_path = temp.0.join("bad_keys_rollout.jsonl");
+
+    let records = vec![
+        json!({"type": "session_meta", "payload": {"id": THREAD_ID, "cwd": "/test/cwd"}}),
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "id": "valid-fc-id",
+                "call_id": "x".repeat(300),
+                "name": "test_tool",
+                "arguments": "{}"
+            }
+        }),
+    ];
+
+    let mut content = String::new();
+    for r in &records {
+        content.push_str(&r.to_string());
+        content.push('\n');
+    }
+    fs::write(&file_path, content).unwrap();
+
+    let mut follower = Follower::with_content_for_agent(AgentType::Codex);
+    assert_eq!(
+        follower.refresh(&file_path, THREAD_ID).unwrap_err(),
+        "invalid_transcript"
+    );
+}

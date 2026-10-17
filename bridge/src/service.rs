@@ -49,7 +49,7 @@ pub struct Service {
     include_content: bool,
     watch: Option<Watch>,
 }
-fn page(entries: &[Entry], before: usize) -> Value {
+pub fn page(entries: &[Entry], before: usize) -> Value {
     let mut start = before.saturating_sub(100);
     // Leave room for envelope and identity; JSON escaping can expand source text.
     while start < before

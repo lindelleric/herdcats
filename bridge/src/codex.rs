@@ -496,6 +496,29 @@ pub(crate) enum CodexRecordAction<'a> {
     },
 }
 
+pub(crate) fn entry_key_part(s: &str) -> Result<&str> {
+    if !s.is_empty() && s.len() <= 256 {
+        Ok(s)
+    } else {
+        Err("invalid_transcript")
+    }
+}
+
+fn optional_entry_key_part(val: &Value) -> Result<Option<&str>> {
+    match val {
+        Value::Null => Ok(None),
+        Value::String(s) => entry_key_part(s).map(Some),
+        _ => Err("invalid_transcript"),
+    }
+}
+
+fn required_entry_key_part(val: &Value) -> Result<&str> {
+    match val {
+        Value::String(s) => entry_key_part(s),
+        _ => Err("invalid_transcript"),
+    }
+}
+
 pub(crate) fn classify_codex_record(record: &Value) -> Result<CodexRecordAction<'_>> {
     let kind = record["type"].as_str().unwrap_or("");
     match kind {
@@ -517,10 +540,10 @@ pub(crate) fn classify_codex_record(record: &Value) -> Result<CodexRecordAction<
             let event_type = payload["type"].as_str().unwrap_or("");
             match event_type {
                 "turn_aborted" => {
-                    let turn_id = payload["turn_id"]
-                        .as_str()
-                        .or_else(|| payload["root_turn_id"].as_str())
-                        .unwrap_or("");
+                    let turn_id = match optional_entry_key_part(&payload["turn_id"])? {
+                        Some(id) => id,
+                        None => optional_entry_key_part(&payload["root_turn_id"])?.unwrap_or(""),
+                    };
                     Ok(CodexRecordAction::TurnAborted { turn_id })
                 }
                 "thread_settings_applied"
@@ -558,23 +581,14 @@ pub(crate) fn classify_codex_record(record: &Value) -> Result<CodexRecordAction<
                     if !matches!(role, "user" | "assistant") {
                         return Ok(CodexRecordAction::Unknown { label: "message" });
                     }
-                    let id = payload["id"]
-                        .as_str()
-                        .filter(|s| !s.is_empty() && s.len() <= 256)
-                        .ok_or("invalid_transcript")?;
+                    let id = required_entry_key_part(&payload["id"])?;
                     let text = codex_text_content(&payload["content"]);
                     Ok(CodexRecordAction::Message { id, role, text })
                 }
                 "function_call" => {
-                    let id = payload["id"]
-                        .as_str()
-                        .filter(|s| !s.is_empty() && s.len() <= 256)
-                        .ok_or("invalid_transcript")?;
-                    let call_id = payload["call_id"].as_str().unwrap_or(id);
-                    let name = payload["name"]
-                        .as_str()
-                        .filter(|s| !s.is_empty() && s.len() <= 256)
-                        .ok_or("invalid_transcript")?;
+                    let id = required_entry_key_part(&payload["id"])?;
+                    let call_id = optional_entry_key_part(&payload["call_id"])?.unwrap_or(id);
+                    let name = required_entry_key_part(&payload["name"])?;
                     let args = if let Some(s) = payload["arguments"].as_str() {
                         s.to_owned()
                     } else if payload["arguments"].is_object() || payload["arguments"].is_array() {
@@ -589,15 +603,9 @@ pub(crate) fn classify_codex_record(record: &Value) -> Result<CodexRecordAction<
                     })
                 }
                 "custom_tool_call" => {
-                    let id = payload["id"]
-                        .as_str()
-                        .filter(|s| !s.is_empty() && s.len() <= 256)
-                        .ok_or("invalid_transcript")?;
-                    let call_id = payload["call_id"].as_str().unwrap_or(id);
-                    let name = payload["name"]
-                        .as_str()
-                        .filter(|s| !s.is_empty() && s.len() <= 256)
-                        .ok_or("invalid_transcript")?;
+                    let id = required_entry_key_part(&payload["id"])?;
+                    let call_id = optional_entry_key_part(&payload["call_id"])?.unwrap_or(id);
+                    let name = required_entry_key_part(&payload["name"])?;
                     let input = if let Some(s) = payload["input"].as_str() {
                         s.to_owned()
                     } else if payload["input"].is_object() || payload["input"].is_array() {
@@ -612,10 +620,7 @@ pub(crate) fn classify_codex_record(record: &Value) -> Result<CodexRecordAction<
                     })
                 }
                 "function_call_output" | "custom_tool_call_output" => {
-                    let call_id = payload["call_id"]
-                        .as_str()
-                        .filter(|s| !s.is_empty() && s.len() <= 256)
-                        .ok_or("invalid_transcript")?;
+                    let call_id = required_entry_key_part(&payload["call_id"])?;
                     let output = if let Some(s) = payload["output"].as_str() {
                         s.to_owned()
                     } else if payload["output"].is_object() || payload["output"].is_array() {
@@ -627,7 +632,7 @@ pub(crate) fn classify_codex_record(record: &Value) -> Result<CodexRecordAction<
                 }
                 "error" => {
                     let message = payload["message"].as_str().unwrap_or("Error");
-                    let id = payload["id"].as_str().unwrap_or("error");
+                    let id = optional_entry_key_part(&payload["id"])?.unwrap_or("error");
                     Ok(CodexRecordAction::Error { id, message })
                 }
                 _ => Ok(CodexRecordAction::Unknown {
