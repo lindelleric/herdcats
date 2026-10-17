@@ -156,12 +156,13 @@ pub fn disable_daemon_in_dir(codex_dir: &Path) -> CodexConfigResult {
         let feat = doc.get_mut("features").unwrap();
         let tbl = feat.as_table_like_mut().unwrap();
         if let Some(item) = tbl.get_mut("daemon_auto_start") {
-            if let Some(val) = item.as_value_mut() {
-                let decor = val.decor().clone();
-                *val = Value::from(false);
-                *val.decor_mut() = decor;
-            } else {
-                *item = Item::Value(Value::from(false));
+            match item.as_value_mut() {
+                Some(val) if !val.is_array() && !val.is_inline_table() => {
+                    let decor = val.decor().clone();
+                    *val = Value::from(false);
+                    *val.decor_mut() = decor;
+                }
+                _ => return CodexConfigResult::Error("daemon_setting_unsupported"),
             }
         } else {
             tbl.insert("daemon_auto_start", toml_edit::value(false));

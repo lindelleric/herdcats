@@ -86,6 +86,8 @@ struct CodexDaemonConfigResult: Decodable, Equatable, Sendable {
                 return "Could not update Codex config: config.toml contains invalid TOML."
             case "features_not_table":
                 return "Could not update Codex config: features in config.toml is not a table."
+            case "daemon_setting_unsupported":
+                return "Could not update Codex config: daemon_auto_start in config.toml has an unsupported shape. Edit it by hand."
             case "config_symlink":
                 return "Could not update Codex config: config.toml is a symbolic link."
             case "write_failed":

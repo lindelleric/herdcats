@@ -399,8 +399,6 @@ impl CodexResolver {
 #[derive(Clone, Debug)]
 struct CachedSession {
     rel: PathBuf,
-    stamp: FileStamp,
-    meta_cwd: String,
     last_walk: Option<Instant>,
 }
 
@@ -512,17 +510,14 @@ impl Adapter for CodexAdapter {
                     }
                     resolver.meta_read_count.fetch_add(1, Ordering::SeqCst);
                     let record = CodexResolver::read_first_record(&mut fresh_file)?;
-                    let meta_cwd = CodexResolver::verify_session_meta(&record, thread_id, pane)?;
+                    CodexResolver::verify_session_meta(&record, thread_id, pane)?;
                     fresh_file
                         .seek(SeekFrom::Start(0))
                         .map_err(|_| "transcript_unavailable")?;
-                    let stamp = FileStamp::of(&fresh_meta);
                     self.cache.lock().unwrap().insert(
                         thread_id.to_string(),
                         CachedSession {
                             rel: fresh_rel,
-                            stamp,
-                            meta_cwd,
                             last_walk: Some(now),
                         },
                     );
@@ -536,24 +531,13 @@ impl Adapter for CodexAdapter {
         if meta.len() > MAX_SOURCE {
             return Err("source_too_large");
         }
-        let stamp = FileStamp::of(&meta);
-
         let cached_entry = self.cache.lock().unwrap().get(thread_id).cloned();
-        let meta_cwd = if let Some(ref cached) = cached_entry {
-            if cached.rel == rel && cached.stamp == stamp {
-                // Unchanged file (same dev/ino/len/mtime): skip re-reading session_meta!
-                CodexResolver::verify_pane_cwd(&cached.meta_cwd, pane)?;
-                cached.meta_cwd.clone()
-            } else {
-                resolver.meta_read_count.fetch_add(1, Ordering::SeqCst);
-                let record = CodexResolver::read_first_record(&mut file)?;
-                CodexResolver::verify_session_meta(&record, thread_id, pane)?
-            }
-        } else {
-            resolver.meta_read_count.fetch_add(1, Ordering::SeqCst);
-            let record = CodexResolver::read_first_record(&mut file)?;
-            CodexResolver::verify_session_meta(&record, thread_id, pane)?
-        };
+        // The first record authorizes the file, and an equal metadata stamp cannot prove
+        // it is unchanged (same-length in-place rewrites on coarse-timestamp filesystems),
+        // so it is verified on every open.
+        resolver.meta_read_count.fetch_add(1, Ordering::SeqCst);
+        let record = CodexResolver::read_first_record(&mut file)?;
+        CodexResolver::verify_session_meta(&record, thread_id, pane)?;
 
         file.seek(SeekFrom::Start(0))
             .map_err(|_| "transcript_unavailable")?;
@@ -566,15 +550,10 @@ impl Adapter for CodexAdapter {
             cached_entry.and_then(|c| c.last_walk)
         };
 
-        self.cache.lock().unwrap().insert(
-            thread_id.to_string(),
-            CachedSession {
-                rel,
-                stamp,
-                meta_cwd,
-                last_walk,
-            },
-        );
+        self.cache
+            .lock()
+            .unwrap()
+            .insert(thread_id.to_string(), CachedSession { rel, last_walk });
 
         Ok((thread_id.to_string(), file))
     }

@@ -637,7 +637,7 @@ fn resolver_resolves_file_in_neighbouring_day_dir() {
 }
 
 #[test]
-fn adapter_cache_hit_saves_session_meta_read_for_v7() {
+fn adapter_cache_hit_still_reverifies_session_meta_for_v7() {
     let temp = Temp::new();
     let thread_v7 = "01a14495-5600-7000-8000-000000000001";
     let day_dir = temp.0.join("2026/10/16");
@@ -669,13 +669,26 @@ fn adapter_cache_hit_saves_session_meta_read_for_v7() {
     assert_eq!(id1, thread_v7);
     assert_eq!(meta_read_counter.load(Ordering::SeqCst), 1);
 
-    // Second call: warm cache hit with same stamp, does NOT re-read session_meta
+    // Second call: warm cache with an identical stamp still re-reads session_meta
     let (id2, _) = adapter.resolve_and_open(&pane).unwrap();
     assert_eq!(id2, thread_v7);
+    assert_eq!(meta_read_counter.load(Ordering::SeqCst), 2);
+
+    // Same-length in-place rewrite of the first record with the mtime restored
+    let mtime = fs::metadata(&rollout_file).unwrap().modified().unwrap();
+    let rewritten = fs::read_to_string(&rollout_file)
+        .unwrap()
+        .replace("/test/cwd", "/test/cwx");
+    fs::write(&rollout_file, rewritten).unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&rollout_file)
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
     assert_eq!(
-        meta_read_counter.load(Ordering::SeqCst),
-        1,
-        "Cache hit with same stamp must not re-read session_meta"
+        adapter.resolve_and_open(&pane).unwrap_err(),
+        "session_cwd_mismatch"
     );
 
     // Third call after removing the file: fails and clears cache

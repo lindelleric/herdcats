@@ -249,6 +249,26 @@ fn test_features_not_a_table() {
 }
 
 #[test]
+fn test_daemon_setting_with_unsupported_shape_is_left_alone() {
+    for config in [
+        "[features.daemon_auto_start]\ncustom = true\n",
+        "[features]\ndaemon_auto_start = [true]\n",
+        "[features]\ndaemon_auto_start = { custom = true }\n",
+    ] {
+        let temp = TempCodex::new("daemon-unsupported-shape");
+        let config_path = temp.path.join("config.toml");
+        fs::write(&config_path, config).unwrap();
+        let res = disable_daemon_in_dir(&temp.path);
+        assert_eq!(
+            res,
+            CodexConfigResult::Error("daemon_setting_unsupported"),
+            "{config}"
+        );
+        assert_eq!(fs::read_to_string(&config_path).unwrap(), config);
+    }
+}
+
+#[test]
 fn test_symlink_rejected() {
     let temp = TempCodex::new("symlink");
     let target = temp.path.join("target.toml");
