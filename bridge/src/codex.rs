@@ -806,6 +806,38 @@ impl Transcript {
         self.apply_codex(&row, thread_id)
     }
 
+    fn push_codex_record_fallback(
+        &mut self,
+        label: &str,
+        part: &[u8],
+        offset: usize,
+        reference: String,
+    ) -> Result<()> {
+        if self
+            .entries
+            .iter()
+            .any(|e| e.record_refs.contains(&reference))
+        {
+            return Ok(());
+        }
+
+        let (label_text, label_truncated) = bounded(label);
+        let raw_str = std::str::from_utf8(part).unwrap_or("");
+        let (details, details_truncated) = bounded(raw_str);
+        self.upsert(Entry {
+            id: format!("content:{offset}:0"),
+            kind: "record".into(),
+            text: label_text,
+            role: None,
+            tool_name: None,
+            status: None,
+            details: Some(details),
+            truncated: details_truncated || label_truncated,
+            content_ref: Some(reference.clone()),
+            record_refs: vec![reference],
+        })
+    }
+
     pub fn preserve_codex_record(
         &mut self,
         part: &[u8],
@@ -817,8 +849,16 @@ impl Transcript {
         let reference = format!("source:{offset}:{}", part.len());
         match action {
             CodexRecordAction::SessionMeta { .. } | CodexRecordAction::Skip => Ok(()),
-            CodexRecordAction::Message { id, .. } | CodexRecordAction::Error { id, .. } => {
-                self.attach_record(&format!("message:{id}"), &reference);
+            CodexRecordAction::Message { id, .. } => {
+                if !self.attach_record(&format!("message:{id}"), &reference) {
+                    self.push_codex_record_fallback("message", part, offset, reference)?;
+                }
+                Ok(())
+            }
+            CodexRecordAction::Error { id, .. } => {
+                if !self.attach_record(&format!("message:{id}"), &reference) {
+                    self.push_codex_record_fallback("error", part, offset, reference)?;
+                }
                 Ok(())
             }
             CodexRecordAction::FunctionCall { call_id, .. }
@@ -837,29 +877,7 @@ impl Transcript {
                 Ok(())
             }
             CodexRecordAction::Unknown { label } => {
-                if self
-                    .entries
-                    .iter()
-                    .any(|e| e.record_refs.contains(&reference))
-                {
-                    return Ok(());
-                }
-
-                let (label_text, label_truncated) = bounded(label);
-                let raw_str = std::str::from_utf8(part).unwrap_or("");
-                let (details, details_truncated) = bounded(raw_str);
-                self.upsert(Entry {
-                    id: format!("content:{offset}:0"),
-                    kind: "record".into(),
-                    text: label_text,
-                    role: None,
-                    tool_name: None,
-                    status: None,
-                    details: Some(details),
-                    truncated: details_truncated || label_truncated,
-                    content_ref: Some(reference.clone()),
-                    record_refs: vec![reference],
-                })
+                self.push_codex_record_fallback(label, part, offset, reference)
             }
         }
     }

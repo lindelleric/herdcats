@@ -961,3 +961,124 @@ fn oversized_skip_types_produce_no_entries_and_turn_aborted_keeps_turn_id() {
     assert_eq!(entry.status.as_deref(), Some("failed"));
     assert_eq!(transcript.unknown_records, 0);
 }
+
+#[test]
+fn preserve_codex_record_image_only_message_creates_bounded_bubble() {
+    let mut transcript = Transcript::default();
+
+    let image_msg = json!({
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "id": "msg_img_123",
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+                    }
+                }
+            ]
+        }
+    });
+
+    // 1. apply_codex inserts nothing because text is empty
+    transcript.apply_codex(&image_msg, THREAD_ID).unwrap();
+    assert_eq!(transcript.entries.len(), 0);
+
+    // 2. preserve_codex_record creates a bounded record bubble because attach_record finds no entry
+    let bytes = serde_json::to_vec(&image_msg).unwrap();
+    transcript
+        .preserve_codex_record(&bytes, THREAD_ID, 500)
+        .unwrap();
+
+    assert_eq!(transcript.entries.len(), 1);
+    assert_eq!(transcript.entries[0].kind, "record");
+    assert_eq!(transcript.entries[0].text, "message");
+    assert_eq!(
+        transcript.entries[0].content_ref.as_deref(),
+        Some(format!("source:500:{}", bytes.len()).as_str())
+    );
+    assert!(transcript.entries[0].details.is_some());
+
+    // 3. Re-preserving the same offset does not duplicate the record entry
+    transcript
+        .preserve_codex_record(&bytes, THREAD_ID, 500)
+        .unwrap();
+    assert_eq!(transcript.entries.len(), 1);
+}
+
+#[test]
+fn follower_preserves_image_only_user_message_in_rollout() {
+    let temp = Temp::new();
+    let file_path = temp.0.join("image_rollout.jsonl");
+
+    let records = vec![
+        json!({"type": "session_meta", "payload": {"id": THREAD_ID, "cwd": "/test/cwd"}}),
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "msg_user_img",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/jpeg;base64,/9j/4AAQSkZJRg=="
+                        }
+                    }
+                ]
+            }
+        }),
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "msg_assistant_reply",
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "I see the image."
+                    }
+                ]
+            }
+        }),
+    ];
+
+    let mut content = String::new();
+    for r in &records {
+        content.push_str(&r.to_string());
+        content.push('\n');
+    }
+    fs::write(&file_path, content).unwrap();
+
+    let mut follower = Follower::with_content_for_agent(AgentType::Codex);
+    assert!(follower.refresh(&file_path, THREAD_ID).unwrap());
+
+    let transcript = &follower.transcript;
+
+    // Both the image-only message (as a record bubble) and the assistant text message must exist
+    assert_eq!(
+        transcript.entries.len(),
+        2,
+        "Expected 2 entries: 1 record bubble for image input and 1 assistant message, got: {:?}",
+        transcript
+            .entries
+            .iter()
+            .map(|e| (&e.kind, &e.text))
+            .collect::<Vec<_>>()
+    );
+
+    let img_entry = &transcript.entries[0];
+    assert_eq!(img_entry.kind, "record");
+    assert_eq!(img_entry.text, "message");
+    assert!(img_entry.content_ref.is_some());
+
+    let text_entry = &transcript.entries[1];
+    assert_eq!(text_entry.kind, "message");
+    assert_eq!(text_entry.text, "I see the image.");
+    assert!(!text_entry.record_refs.is_empty());
+}
