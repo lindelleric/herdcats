@@ -359,3 +359,111 @@ fn test_cli_subcommand_exits_0_and_prints_json() {
     let stdout4 = String::from_utf8(output4.stdout).unwrap();
     assert_eq!(stdout4.trim(), r#"{"error":"config_invalid"}"#);
 }
+
+#[test]
+fn test_codex_home_resolution_and_defaults() {
+    use herdcats_bridge::codex_config::resolve_codex_dir_from;
+    use herdcats_bridge::service::Service;
+
+    // Absolute CODEX_HOME takes precedence
+    assert_eq!(
+        resolve_codex_dir_from(Some("/custom/codex"), Some("/home/user")),
+        Some(PathBuf::from("/custom/codex"))
+    );
+    assert_eq!(
+        Service::codex_root_default_from(Some("/custom/codex"), Some("/home/user")),
+        Some(PathBuf::from("/custom/codex/sessions"))
+    );
+
+    // Empty CODEX_HOME falls back to HOME/.codex/sessions
+    assert_eq!(
+        resolve_codex_dir_from(Some(""), Some("/home/user")),
+        Some(PathBuf::from("/home/user/.codex"))
+    );
+    assert_eq!(
+        Service::codex_root_default_from(Some(""), Some("/home/user")),
+        Some(PathBuf::from("/home/user/.codex/sessions"))
+    );
+
+    // Relative CODEX_HOME is ignored and falls back to HOME/.codex/sessions
+    assert_eq!(
+        resolve_codex_dir_from(Some("relative/codex"), Some("/home/user")),
+        Some(PathBuf::from("/home/user/.codex"))
+    );
+    assert_eq!(
+        Service::codex_root_default_from(Some("relative/codex"), Some("/home/user")),
+        Some(PathBuf::from("/home/user/.codex/sessions"))
+    );
+
+    // Relative HOME is ignored and yields None
+    assert_eq!(
+        resolve_codex_dir_from(Some("relative/codex"), Some("relative/home")),
+        None
+    );
+    assert_eq!(
+        Service::codex_root_default_from(Some("relative/codex"), Some("relative/home")),
+        None
+    );
+    assert_eq!(
+        resolve_codex_dir_from(None::<&str>, Some("relative/home")),
+        None
+    );
+    assert_eq!(
+        Service::codex_root_default_from(None::<&str>, Some("relative/home")),
+        None
+    );
+
+    // Empty HOME is ignored and yields None
+    assert_eq!(resolve_codex_dir_from(None::<&str>, Some("")), None);
+    assert_eq!(
+        Service::codex_root_default_from(None::<&str>, Some("")),
+        None
+    );
+}
+
+#[test]
+fn test_cli_empty_and_relative_codex_home_falls_back_to_home() {
+    let temp = TempCodex::new("cli-fallback");
+    let codex_home = temp.path.join(".codex");
+    fs::create_dir_all(&codex_home).unwrap();
+    let config_path = codex_home.join("config.toml");
+    fs::write(&config_path, "[features]\ndaemon_auto_start = true\n").unwrap();
+
+    let binary = env!("CARGO_BIN_EXE_herdcats-bridge");
+
+    // Empty CODEX_HOME falls back to HOME/.codex
+    let output_empty = std::process::Command::new(binary)
+        .args(["codex-config", "disable-daemon"])
+        .env("CODEX_HOME", "")
+        .env("HOME", &temp.path)
+        .output()
+        .unwrap();
+    assert_eq!(output_empty.status.code(), Some(0));
+    let stdout = String::from_utf8(output_empty.stdout).unwrap();
+    let val: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(val["status"], "changed");
+
+    // Relative CODEX_HOME is ignored and falls back to HOME/.codex (now already_disabled)
+    let output_rel = std::process::Command::new(binary)
+        .args(["codex-config", "disable-daemon"])
+        .env("CODEX_HOME", "relative/codex")
+        .env("HOME", &temp.path)
+        .output()
+        .unwrap();
+    assert_eq!(output_rel.status.code(), Some(0));
+    let stdout = String::from_utf8(output_rel.stdout).unwrap();
+    let val: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(val["status"], "already_disabled");
+
+    // Relative HOME with relative CODEX_HOME means codex_not_installed
+    let output_both_rel = std::process::Command::new(binary)
+        .args(["codex-config", "disable-daemon"])
+        .env("CODEX_HOME", "relative/codex")
+        .env("HOME", "relative/home")
+        .output()
+        .unwrap();
+    assert_eq!(output_both_rel.status.code(), Some(0));
+    let stdout = String::from_utf8(output_both_rel.stdout).unwrap();
+    let val: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(val["status"], "codex_not_installed");
+}

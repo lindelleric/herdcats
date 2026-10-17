@@ -11,7 +11,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
     io::{self, BufRead, BufReader, Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::mpsc,
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -63,11 +63,20 @@ pub fn page(entries: &[Entry], before: usize) -> Value {
 impl Service {
     pub fn new(socket: PathBuf, root: PathBuf) -> Self {
         let resolver = Resolver::new(&root).ok();
-        let codex_root = std::env::var_os("CODEX_HOME")
-            .map(|p| PathBuf::from(p).join("sessions"))
-            .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".codex/sessions")));
+        let codex_root = Self::codex_root_default();
         let codex_resolver = codex_root.and_then(|r| CodexResolver::new(&r).ok());
         Self::with_resolvers(socket, resolver, codex_resolver)
+    }
+
+    pub fn codex_root_default() -> Option<PathBuf> {
+        crate::codex_config::resolve_codex_dir().map(|p| p.join("sessions"))
+    }
+
+    pub fn codex_root_default_from(
+        codex_home: Option<impl AsRef<Path>>,
+        home: Option<impl AsRef<Path>>,
+    ) -> Option<PathBuf> {
+        crate::codex_config::resolve_codex_dir_from(codex_home, home).map(|p| p.join("sessions"))
     }
     pub fn with_resolvers(
         socket: PathBuf,

@@ -29,14 +29,23 @@ impl CodexConfigResult {
 }
 
 pub fn resolve_codex_dir() -> Option<PathBuf> {
-    if let Some(val) = std::env::var_os("CODEX_HOME") {
-        if !val.is_empty() {
-            return Some(PathBuf::from(val));
+    resolve_codex_dir_from(std::env::var_os("CODEX_HOME"), std::env::var_os("HOME"))
+}
+
+pub fn resolve_codex_dir_from(
+    codex_home: Option<impl AsRef<Path>>,
+    home: Option<impl AsRef<Path>>,
+) -> Option<PathBuf> {
+    if let Some(val) = codex_home {
+        let path = val.as_ref();
+        if !path.as_os_str().is_empty() && path.is_absolute() {
+            return Some(path.to_path_buf());
         }
     }
-    if let Some(val) = std::env::var_os("HOME") {
-        if !val.is_empty() {
-            return Some(PathBuf::from(val).join(".codex"));
+    if let Some(val) = home {
+        let path = val.as_ref();
+        if !path.as_os_str().is_empty() && path.is_absolute() {
+            return Some(path.join(".codex"));
         }
     }
     None

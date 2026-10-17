@@ -74,6 +74,9 @@ pub fn v7_candidate_day_dirs(ts_ms: u64) -> Vec<(i32, u32, u32)> {
 
 impl CodexResolver {
     pub fn new(root: &Path) -> Result<Self> {
+        if !root.is_absolute() {
+            return Err("transcript_root_unavailable");
+        }
         let root = root
             .canonicalize()
             .map_err(|_| "transcript_root_unavailable")?;

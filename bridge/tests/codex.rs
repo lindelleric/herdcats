@@ -1310,3 +1310,11 @@ fn resolver_fails_closed_when_file_exceeds_max_source() {
         "source_too_large"
     );
 }
+
+#[test]
+fn resolver_rejects_relative_root() {
+    assert_eq!(
+        CodexResolver::new(std::path::Path::new("relative/sessions")).err(),
+        Some("transcript_root_unavailable")
+    );
+}

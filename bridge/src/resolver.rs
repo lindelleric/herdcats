@@ -29,6 +29,9 @@ pub(crate) fn session_id(value: &str) -> bool {
 }
 impl Resolver {
     pub fn new(root: &Path) -> Result<Self> {
+        if !root.is_absolute() {
+            return Err("transcript_root_unavailable");
+        }
         let root = root
             .canonicalize()
             .map_err(|_| "transcript_root_unavailable")?;
