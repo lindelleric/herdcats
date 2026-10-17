@@ -3,7 +3,7 @@ use std::{path::PathBuf, time::Duration};
 fn run() -> std::result::Result<(), &'static str> {
     let mut args = std::env::args().skip(1);
     let command = args.next();
-    if command.as_deref() == Some("--version-json") {
+    if command.as_deref() == Some("--version-json") || command.as_deref() == Some("--version") {
         if args.next().is_some() {
             return Err("unknown_argument");
         }
@@ -14,24 +14,34 @@ fn run() -> std::result::Result<(), &'static str> {
                 "version": env!("CARGO_PKG_VERSION"),
                 "protocol": 1,
                 "herdr_protocol": 22,
-                "agents": ["claude"]
+                "agents": ["claude", "codex"]
             })
         );
         return Ok(());
     }
+    if command.as_deref() == Some("codex-config") {
+        if args.next().as_deref() != Some("disable-daemon") || args.next().is_some() {
+            return Err("usage: herdcats-bridge codex-config disable-daemon");
+        }
+        let res = herdcats_bridge::codex_config::disable_daemon();
+        println!("{}", res.to_json());
+        return Ok(());
+    }
     if command.as_deref() != Some("serve") || args.next().as_deref() != Some("--stdio") {
         return Err(
-            "usage: herdcats-bridge serve --stdio [--socket PATH] [--claude-root PATH] [--poll-ms 50..5000]",
+            "usage: herdcats-bridge serve --stdio [--socket PATH] [--claude-root PATH] [--codex-root PATH] [--poll-ms 50..5000]",
         );
     }
     let mut socket = std::env::var_os("HERDR_SOCKET_PATH").map(PathBuf::from);
     let mut root = std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".claude/projects"));
+    let mut codex_root: Option<PathBuf> = None;
     let mut poll = 300;
     while let Some(flag) = args.next() {
         let value = args.next().ok_or("missing_argument")?;
         match flag.as_str() {
             "--socket" => socket = Some(value.into()),
             "--claude-root" => root = Some(value.into()),
+            "--codex-root" => codex_root = Some(value.into()),
             "--poll-ms" => {
                 poll = value
                     .parse::<u64>()
@@ -42,14 +52,14 @@ fn run() -> std::result::Result<(), &'static str> {
             _ => return Err("unknown_argument"),
         }
     }
-    serve(
-        Service::new(
-            socket.ok_or("socket_required")?,
-            root.ok_or("claude_root_required")?,
-        ),
-        Duration::from_millis(poll),
-    )
-    .map_err(|_| "stream_closed")
+    let mut service = Service::new(
+        socket.ok_or("socket_required")?,
+        root.ok_or("claude_root_required")?,
+    );
+    if let Some(cr) = codex_root {
+        service = service.with_codex_root(cr);
+    }
+    serve(service, Duration::from_millis(poll)).map_err(|_| "stream_closed")
 }
 fn main() {
     if let Err(code) = run() {

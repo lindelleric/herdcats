@@ -1,6 +1,8 @@
 use crate::{
     Result,
-    claude::Entry,
+    adapter::Adapter,
+    claude::{ClaudeAdapter, Entry},
+    codex::{CodexAdapter, CodexResolver},
     follower::{Follower, MAX_RECORD},
     herdr::Client,
     resolver::Resolver,
@@ -9,7 +11,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
     io::{self, BufRead, BufReader, Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::mpsc,
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -38,6 +40,8 @@ struct Watch {
 pub struct Service {
     pub client: Client,
     pub resolver: Option<Resolver>,
+    pub codex_resolver: Option<CodexResolver>,
+    adapters: Vec<Box<dyn Adapter>>,
     epoch: String,
     sequence: u64,
     generation: u64,
@@ -45,7 +49,7 @@ pub struct Service {
     include_content: bool,
     watch: Option<Watch>,
 }
-fn page(entries: &[Entry], before: usize) -> Value {
+pub fn page(entries: &[Entry], before: usize) -> Value {
     let mut start = before.saturating_sub(100);
     // Leave room for envelope and identity; JSON escaping can expand source text.
     while start < before
@@ -58,6 +62,27 @@ fn page(entries: &[Entry], before: usize) -> Value {
 }
 impl Service {
     pub fn new(socket: PathBuf, root: PathBuf) -> Self {
+        let resolver = Resolver::new(&root).ok();
+        let codex_root = Self::codex_root_default();
+        let codex_resolver = codex_root.and_then(|r| CodexResolver::new(&r).ok());
+        Self::with_resolvers(socket, resolver, codex_resolver)
+    }
+
+    pub fn codex_root_default() -> Option<PathBuf> {
+        crate::codex_config::resolve_codex_dir().map(|p| p.join("sessions"))
+    }
+
+    pub fn codex_root_default_from(
+        codex_home: Option<impl AsRef<Path>>,
+        home: Option<impl AsRef<Path>>,
+    ) -> Option<PathBuf> {
+        crate::codex_config::resolve_codex_dir_from(codex_home, home).map(|p| p.join("sessions"))
+    }
+    pub fn with_resolvers(
+        socket: PathBuf,
+        resolver: Option<Resolver>,
+        codex_resolver: Option<CodexResolver>,
+    ) -> Self {
         let epoch = format!(
             "{}-{}",
             SystemTime::now()
@@ -66,9 +91,15 @@ impl Service {
                 .as_nanos(),
             std::process::id()
         );
+        let adapters: Vec<Box<dyn Adapter>> = vec![
+            Box::new(ClaudeAdapter::new(resolver.clone())),
+            Box::new(CodexAdapter::new(codex_resolver.clone())),
+        ];
         Self {
             client: Client { socket },
-            resolver: Resolver::new(&root).ok(),
+            resolver,
+            codex_resolver,
+            adapters,
             epoch,
             sequence: 0,
             generation: 0,
@@ -76,6 +107,20 @@ impl Service {
             include_content: false,
             watch: None,
         }
+    }
+    pub fn with_codex_root(mut self, root: PathBuf) -> Self {
+        self.codex_resolver = CodexResolver::new(&root).ok();
+        self.adapters = vec![
+            Box::new(ClaudeAdapter::new(self.resolver.clone())),
+            Box::new(CodexAdapter::new(self.codex_resolver.clone())),
+        ];
+        self
+    }
+    fn adapter_for(&self, agent: &str) -> Option<&dyn Adapter> {
+        self.adapters
+            .iter()
+            .find(|a| a.supports(agent))
+            .map(|a| a.as_ref())
     }
     fn write(out: &mut impl Write, frame: &Value) -> io::Result<()> {
         let bytes = serde_json::to_vec(frame)?;
@@ -107,21 +152,9 @@ impl Service {
             .iter()
             .find(|p| p.pane_id == watch.pane_id)
             .ok_or("pane_unavailable")?;
-        if pane.agent.as_deref() != Some("claude") {
-            return Err("unsupported_agent");
-        }
-        let reference = pane
-            .agent_session
-            .as_ref()
-            .ok_or("session_reference_unavailable")?;
-        if reference.agent != "claude" || reference.source != "herdr:claude" {
-            return Err("unsupported_session_source");
-        }
-        let resolver = self
-            .resolver
-            .as_ref()
-            .ok_or("transcript_root_unavailable")?;
-        let (session, path) = resolver.resolve(&reference.kind, &reference.value)?;
+        let agent = pane.agent.as_deref().ok_or("unsupported_agent")?;
+        let adapter = self.adapter_for(agent).ok_or("unsupported_agent")?;
+        let (session, file) = adapter.resolve_and_open(pane)?;
         if pane.terminal_id.is_empty()
             || pane.terminal_id.len() > 256
             || pane.agent_status.len() > 256
@@ -131,20 +164,16 @@ impl Service {
         let identity = Identity {
             pane_id: pane.pane_id.clone(),
             terminal_id: pane.terminal_id.clone(),
-            agent: "claude".into(),
+            agent: adapter.name().into(),
             native_session_id: session.clone(),
         };
         if watch.identity.as_ref() != Some(&identity) {
-            watch.follower = if self.include_content {
-                Follower::with_content()
-            } else {
-                Follower::default()
-            };
+            watch.follower = adapter.new_follower(self.include_content);
             // A transient read of a new occupant cannot authorize serving the
             // previous occupant's cached transcript.
             watch.identity = None;
         }
-        refresh(&mut watch.follower, resolver.open(&path)?, &session)?;
+        refresh(&mut watch.follower, file, &session)?;
         let reset = watch.identity.as_ref() != Some(&identity)
             || watch.unavailable.is_some()
             || watch.follower.generation != watch.generation;
@@ -318,9 +347,11 @@ impl Service {
                 return Self::error(out, id, code);
             }
             self.initialized = true;
+            let claude_available = self.adapter_for("claude").is_some_and(|a| a.is_available());
+            let codex_available = self.adapter_for("codex").is_some_and(|a| a.is_available());
             return Self::write(
                 out,
-                &json!({"id":id,"result":{"protocol":1,"bridge_version":env!("CARGO_PKG_VERSION"),"epoch":self.epoch,"capabilities":{"claude_timeline":self.resolver.is_some(),"record_content":true,"codex_timeline":false,"git":false,"prompts":false,"approvals":false,"questions":false,"routed_hosts":false}}}),
+                &json!({"id":id,"result":{"protocol":1,"bridge_version":env!("CARGO_PKG_VERSION"),"epoch":self.epoch,"capabilities":{"claude_timeline":claude_available,"record_content":true,"codex_timeline":codex_available,"codex_daemon_config":true,"git":false,"prompts":false,"approvals":false,"questions":false,"routed_hosts":false}}}),
             );
         }
         if !self.initialized {

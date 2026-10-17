@@ -1361,7 +1361,7 @@ struct PaneSessionView: View {
             Group {
                 if showsTimeline {
                     AgentTimelineView(
-                        paneId: pane.paneId, connection: appModel.connection, timeline: timeline,
+                        paneId: pane.paneId, agent: pane.agent, connection: appModel.connection, timeline: timeline,
                         topOverlayInset: topOutputInset, bottomOverlayInset: bottomDockHeight,
                         onOutputInteraction: { onOutputInteraction?() }, setupTarget: connectionScope,
                         onUseTerminal: {

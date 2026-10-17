@@ -20,7 +20,17 @@ fn version_probe_needs_no_socket_or_home() {
     assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(value["protocol"], 1);
     assert_eq!(value["herdr_protocol"], 22);
-    assert_eq!(value["agents"], serde_json::json!(["claude"]));
+    assert_eq!(value["agents"], serde_json::json!(["claude", "codex"]));
+
+    let output_v = Command::new(env!("CARGO_BIN_EXE_herdcats-bridge"))
+        .arg("--version")
+        .env_remove("HOME")
+        .env_remove("HERDR_SOCKET_PATH")
+        .output()
+        .unwrap();
+    assert!(output_v.status.success());
+    let value_v: Value = serde_json::from_slice(&output_v.stdout).unwrap();
+    assert_eq!(value_v["agents"], serde_json::json!(["claude", "codex"]));
 }
 
 #[test]

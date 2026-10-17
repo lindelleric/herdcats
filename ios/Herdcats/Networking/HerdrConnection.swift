@@ -197,6 +197,26 @@ actor HerdrConnection {
     /// Exclusive remote composer mutations (send, escape).
     let paneInput = PaneInputCoordinator()
     var agentBridges: [UUID:AgentBridgeClient] = [:]
+    private(set) var agentBridgeCapabilities: AgentBridgeCapabilities?
+    private(set) var agentBridgeCapabilitiesGeneration: ConnectionGeneration?
+
+    func recordAgentBridgeCapabilities(_ capabilities: AgentBridgeCapabilities?, generation: ConnectionGeneration) {
+        guard slot.matches(generation) else { return }
+        self.agentBridgeCapabilities = capabilities
+        self.agentBridgeCapabilitiesGeneration = generation
+    }
+
+    func clearAgentBridgeCapabilities() {
+        self.agentBridgeCapabilities = nil
+        self.agentBridgeCapabilitiesGeneration = nil
+    }
+
+    func bridgeCapabilities(for generation: ConnectionGeneration?) -> AgentBridgeCapabilities? {
+        guard let generation, slot.matches(generation), agentBridgeCapabilitiesGeneration == generation else {
+            return nil
+        }
+        return agentBridgeCapabilities
+    }
     var helperSetupOperation: UUID?
     var liveShells: [String: PaneLiveShells] = [:]
     var preparingLiveShells: [String: UUID] = [:]

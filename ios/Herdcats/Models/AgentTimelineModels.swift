@@ -35,9 +35,87 @@ struct AgentTimelineIdentity: Codable, Equatable, Sendable {
     let agent: String
     let nativeSessionId: String
 }
-struct AgentBridgeCapabilities: Codable, Sendable { let claudeTimeline: Bool; var recordContent: Bool? = nil }
+struct AgentBridgeCapabilities: Codable, Equatable, Sendable {
+    let claudeTimeline: Bool
+    var codexTimeline: Bool? = false
+    var codexDaemonConfig: Bool? = false
+    var recordContent: Bool? = nil
+
+    init(
+        claudeTimeline: Bool,
+        codexTimeline: Bool? = false,
+        codexDaemonConfig: Bool? = false,
+        recordContent: Bool? = nil
+    ) {
+        self.claudeTimeline = claudeTimeline
+        self.codexTimeline = codexTimeline
+        self.codexDaemonConfig = codexDaemonConfig
+        self.recordContent = recordContent
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.claudeTimeline = try container.decode(Bool.self, forKey: .claudeTimeline)
+        self.codexTimeline = try container.decodeIfPresent(Bool.self, forKey: .codexTimeline) ?? false
+        self.codexDaemonConfig = try container.decodeIfPresent(Bool.self, forKey: .codexDaemonConfig) ?? false
+        self.recordContent = try container.decodeIfPresent(Bool.self, forKey: .recordContent)
+    }
+}
+
+struct CodexDaemonConfigResult: Decodable, Equatable, Sendable {
+    let status: String?
+    let backup: String?
+    let error: String?
+
+    static func parse(_ raw: String) throws -> CodexDaemonConfigResult {
+        let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .components(separatedBy: .newlines)
+            .last(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) ?? ""
+        guard let data = line.data(using: .utf8) else {
+            throw HerdrError.unexpectedResponse("Invalid response encoding")
+        }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(CodexDaemonConfigResult.self, from: data)
+    }
+
+    static func message(for result: CodexDaemonConfigResult) -> String {
+        if let err = result.error {
+            switch err {
+            case "config_invalid":
+                return "Could not update Codex config: config.toml contains invalid TOML."
+            case "features_not_table":
+                return "Could not update Codex config: features in config.toml is not a table."
+            case "daemon_setting_unsupported":
+                return "Could not update Codex config: daemon_auto_start in config.toml has an unsupported shape. Edit it by hand."
+            case "config_symlink":
+                return "Could not update Codex config: config.toml is a symbolic link."
+            case "write_failed":
+                return "Could not update Codex config: failed to write file."
+            case "verification_failed":
+                return "Could not update Codex config: verification failed, restored from backup."
+            case "helper_missing":
+                return "Could not update Codex config: herdcats-bridge was not found."
+            default:
+                return "Could not update Codex config: \(err)."
+            }
+        }
+        switch result.status {
+        case "changed", "already_disabled":
+            return Self.restartGuidance
+        case "codex_not_installed":
+            return "Codex directory was not found on this host."
+        default:
+            return "Completed with status: \(result.status ?? "unknown")."
+        }
+    }
+
+    static let restartGuidance = "Quit Codex in every pane, run `codex app-server daemon stop` on this computer (this ends all Codex sessions that use the shared daemon), then start Codex again in this pane. Or start Codex with `codex --no-daemon` now."
+}
 struct AgentBridgePayload: Codable, Sendable {
     var `protocol`: Int?
+    var bridgeVersion: String?
+    var version: String?
     var epoch: String?
     var capabilities: AgentBridgeCapabilities?
     var identity: AgentTimelineIdentity?
@@ -120,7 +198,7 @@ enum TimelineComposePolicy {
     static func canSend(identity: AgentTimelineIdentity?, paneId: String, status: String?, connected: Bool)
         -> Bool
     {
-        connected && identity?.paneId == paneId && identity?.agent == "claude"
+        connected && identity?.paneId == paneId && TimelineAgentAvailability.supports(agent: identity?.agent)
             && ["idle", "done", "working"].contains(status ?? "")
     }
 }
@@ -134,7 +212,7 @@ enum HostHelperProbe: Equatable, Sendable {
     case missing
     case present(version: String?, managed: Bool, compatible: Bool)
 
-    init(output: String) throws {
+    init(output: String, agent: String? = nil) throws {
         let lines = output.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\n", omittingEmptySubsequences: false)
         guard let marker = lines.first else { throw HostHelperSetupError.invalidResponse }
         if marker == "HC_HELPER_MISSING", lines.count == 1 { self = .missing; return }
@@ -152,9 +230,10 @@ enum HostHelperProbe: Equatable, Sendable {
         let bytes = Data(lines.dropFirst().joined(separator: "\n").utf8)
         let report = try? decoder.decode(Report.self, from: bytes)
         let version = report.flatMap { Self.versionNumbers($0.version) == nil ? nil : $0.version }
+        let targetAgent = agent ?? "claude"
         let compatible = report.map {
             $0.name == "herdcats-bridge" && $0.protocol == 1 && $0.herdrProtocol == 22
-                && $0.agents.contains("claude") && Self.isAtLeastPinned($0.version)
+                && $0.agents.contains(targetAgent) && Self.isAtLeastPinned($0.version)
         } ?? false
         self = .present(version: version, managed: marker == "HC_HELPER_MANAGED", compatible: compatible)
     }
@@ -174,6 +253,7 @@ enum HostHelperSetupDecision: Equatable, Sendable {
     case ready, missing
     case replacementRequired(HostHelperProbe)
     case install(replace: Bool)
+    case unsupportedByPinnedInstaller(String)
 }
 enum HostHelperSetupStage: Equatable, Sendable {
     case idle, checking, installing, verifying, uncertain, installed
@@ -202,7 +282,7 @@ enum HostHelperSetupError: Error, LocalizedError, Equatable {
 /// Mirrors adapters implemented by the current bridge; agent detection alone
 /// does not imply that native session history is available.
 enum TimelineAgentAvailability {
-    static func supports(agent: String?) -> Bool { agent == "claude" }
+    static func supports(agent: String?) -> Bool { agent == "claude" || agent == "codex" }
 }
 
 /// Only references into the bridge's bounded, verified source snapshot.
@@ -237,9 +317,10 @@ struct TimelineConversationItem: Identifiable {
     var id: String { entries[0].id }
     var isActivity: Bool { entries[0].kind == "tool" }
 
-    static func group(_ entries: [AgentTimelineEntry]) -> [Self] {
+    /// Fallback `record` entries stay hidden unless the caller opts in (Codex timelines).
+    static func group(_ entries: [AgentTimelineEntry], showsRecords: Bool = false) -> [Self] {
         var items: [Self] = []
-        for entry in entries where entry.kind != "record" {
+        for entry in entries where showsRecords || entry.kind != "record" {
             if entry.kind == "tool", items.last?.isActivity == true {
                 items[items.count - 1].entries.append(entry)
             } else {

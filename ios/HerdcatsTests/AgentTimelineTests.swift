@@ -140,7 +140,8 @@ struct AgentBridgeFramingTests {
 struct TimelineAgentAvailabilityTests {
     @Test func onlyImplementedAdaptersExposeTimeline() {
         #expect(TimelineAgentAvailability.supports(agent: "claude"))
-        for agent in [nil, "", "codex", "chatgpt", "cursor", "agy", "unknown"] as [String?] {
+        #expect(TimelineAgentAvailability.supports(agent: "codex"))
+        for agent in [nil, "", "chatgpt", "cursor", "agy", "unknown"] as [String?] {
             #expect(!TimelineAgentAvailability.supports(agent: agent))
         }
     }
@@ -202,6 +203,11 @@ struct TimelineActivityTests {
         #expect(items[0].entries.map(\.id) == ["a", "b"])
         #expect(items[0].isActivity)
         #expect(!items[1].isActivity)
+    }
+    @Test func codexTimelinesKeepFallbackRecords() {
+        let entries = [entry("a"), entry("rec", kind: "record"), entry("b", kind: "message")]
+        #expect(TimelineConversationItem.group(entries, showsRecords: true).map(\.id) == ["a", "rec", "b"])
+        #expect(TimelineConversationItem.group(entries).map(\.id) == ["a", "b"])
     }
     @Test func countsCommandsSeparatelyAndReflectsRunningStatus() {
         #expect(TimelineActivitySummary.title([entry("a"), entry("b", name: "Read"), entry("c", name: "Edit")])

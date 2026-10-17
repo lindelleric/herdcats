@@ -22,7 +22,7 @@ class InstallTests(unittest.TestCase):
     def install(self, binary=BINARY, *extra):
         return subprocess.run([sys.executable, str(INSTALLER), '--binary', str(binary),
                                '--bin-dir', str(self.destination), *extra],
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, stdin=subprocess.DEVNULL)
 
     def test_installed_binary_is_executable_and_reports_version(self):
         result = self.install()
@@ -98,9 +98,11 @@ class InstallTests(unittest.TestCase):
 
     def test_no_implicit_install_destination(self):
         result = subprocess.run([sys.executable, str(INSTALLER), '--binary', str(BINARY)],
-                                env={**os.environ, 'HOME': str(self.root)}, capture_output=True)
+                                env={**os.environ, 'HOME': str(self.root)}, capture_output=True,
+                                stdin=subprocess.DEVNULL)
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.root / '.local').exists())
+
 
 if __name__ == '__main__':
     unittest.main()

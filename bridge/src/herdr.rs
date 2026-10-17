@@ -22,6 +22,10 @@ pub struct Pane {
     pub agent: Option<String>,
     pub agent_status: String,
     pub agent_session: Option<SessionRef>,
+    #[serde(default)]
+    pub foreground_cwd: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 #[derive(Deserialize)]
 pub struct Snapshot {
