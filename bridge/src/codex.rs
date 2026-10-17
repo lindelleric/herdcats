@@ -2,15 +2,14 @@ use crate::{
     Result,
     adapter::Adapter,
     claude::{Entry, Transcript, bounded},
-    follower::AgentType,
-    follower::Follower,
+    follower::{AgentType, Follower, MAX_RECORD, MAX_SOURCE},
     herdr::Pane,
     resolver::{open_beneath, session_id},
 };
 use serde_json::Value;
 use std::{
     fs,
-    io::{BufRead, BufReader, Seek, SeekFrom},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
 };
 
@@ -295,13 +294,24 @@ impl CodexResolver {
         // Confined open beneath the pinned root anchor: O_NOFOLLOW on every level
         let mut file = open_beneath(&self.anchor, relative_path, false)?;
 
-        // Inspect record 0
-        let mut reader = BufReader::new(&mut file);
+        let meta = file.metadata().map_err(|_| "transcript_unavailable")?;
+        if meta.len() > MAX_SOURCE {
+            return Err("source_too_large");
+        }
+
+        // Inspect record 0, capped at MAX_RECORD
+        let mut reader = BufReader::new((&mut file).take(MAX_RECORD as u64));
         let mut line = Vec::new();
         reader
             .read_until(b'\n', &mut line)
             .map_err(|_| "transcript_unavailable")?;
-        if line.is_empty() || line.last() != Some(&b'\n') {
+        if line.is_empty() {
+            return Err("invalid_transcript");
+        }
+        if line.last() != Some(&b'\n') {
+            if line.len() >= MAX_RECORD {
+                return Err("source_too_large");
+            }
             return Err("invalid_transcript");
         }
         let first_record: Value =

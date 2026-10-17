@@ -1,6 +1,6 @@
 use crate::{Result, claude::Transcript};
 use std::{fs, io::Read, os::unix::fs::MetadataExt, path::Path};
-const MAX_SOURCE: u64 = 64 * 1024 * 1024;
+pub const MAX_SOURCE: u64 = 64 * 1024 * 1024;
 pub const MAX_RECORD: usize = 1024 * 1024;
 #[derive(Clone, Debug, PartialEq)]
 struct Stamp {

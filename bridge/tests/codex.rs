@@ -2,7 +2,7 @@ use herdcats_bridge::{
     adapter::Adapter,
     claude::Transcript,
     codex::{CodexAdapter, CodexResolver},
-    follower::{AgentType, Follower, MAX_RECORD},
+    follower::{AgentType, Follower, MAX_RECORD, MAX_SOURCE},
     herdr::{Pane, SessionRef},
 };
 use serde_json::json;
@@ -1256,5 +1256,57 @@ fn follower_fails_closed_on_oversized_codex_entry_keys() {
     assert_eq!(
         follower.refresh(&file_path, THREAD_ID).unwrap_err(),
         "invalid_transcript"
+    );
+}
+
+#[test]
+fn resolver_fails_closed_when_first_line_exceeds_max_record_without_newline() {
+    let temp = Temp::new();
+    let rollout_dir = temp.0.join("2026/10/13");
+    fs::create_dir_all(&rollout_dir).unwrap();
+    let rollout_file = rollout_dir.join(format!("rollout-2026-10-13T00-00-00-{THREAD_ID}.jsonl"));
+
+    // Write a first line larger than MAX_RECORD (1 MiB) with no newline
+    let large_unterminated = vec![b'a'; MAX_RECORD + 4096];
+    fs::write(&rollout_file, large_unterminated).unwrap();
+
+    let resolver = CodexResolver::new(&temp.0).unwrap();
+    let pane = make_pane(
+        Some(THREAD_ID),
+        "herdr:codex",
+        "codex",
+        "codex",
+        "id",
+        "/fixture/work",
+    );
+    assert_eq!(
+        resolver.resolve(THREAD_ID, &pane).unwrap_err(),
+        "source_too_large"
+    );
+}
+
+#[test]
+fn resolver_fails_closed_when_file_exceeds_max_source() {
+    let temp = Temp::new();
+    let rollout_dir = temp.0.join("2026/10/13");
+    fs::create_dir_all(&rollout_dir).unwrap();
+    let rollout_file = rollout_dir.join(format!("rollout-2026-10-13T00-00-00-{THREAD_ID}.jsonl"));
+
+    // Create sparse file larger than MAX_SOURCE (64 MiB)
+    let file = fs::File::create(&rollout_file).unwrap();
+    file.set_len(MAX_SOURCE + 1024).unwrap();
+
+    let resolver = CodexResolver::new(&temp.0).unwrap();
+    let pane = make_pane(
+        Some(THREAD_ID),
+        "herdr:codex",
+        "codex",
+        "codex",
+        "id",
+        "/fixture/work",
+    );
+    assert_eq!(
+        resolver.resolve(THREAD_ID, &pane).unwrap_err(),
+        "source_too_large"
     );
 }
