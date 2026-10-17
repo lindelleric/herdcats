@@ -326,3 +326,201 @@ struct CodexTimelineTaskKeyTests {
     }
 }
 
+@Suite("Codex daemon configuration gating and messaging")
+struct CodexDaemonConfigTests {
+    @Test func buttonGatingCapability() {
+        let capsEnabled = AgentBridgeCapabilities(
+            claudeTimeline: true, codexTimeline: true, codexDaemonConfig: true
+        )
+        let capsDisabled = AgentBridgeCapabilities(
+            claudeTimeline: true, codexTimeline: true, codexDaemonConfig: false
+        )
+        let capsNil = AgentBridgeCapabilities(
+            claudeTimeline: true, codexTimeline: true, codexDaemonConfig: nil
+        )
+
+        // Enabled capability + direct host (route == nil) + codex + no-session code -> true
+        #expect(
+            AgentTimelineView.canConfigureCodexDaemon(
+                agent: "codex",
+                code: "session_reference_unavailable",
+                route: nil,
+                capabilities: capsEnabled
+            )
+        )
+        #expect(
+            AgentTimelineView.canConfigureCodexDaemon(
+                agent: "codex",
+                code: "ambiguous_session",
+                route: nil,
+                capabilities: capsEnabled
+            )
+        )
+        #expect(
+            AgentTimelineView.canConfigureCodexDaemon(
+                agent: "codex",
+                code: "invalid_session_reference",
+                route: nil,
+                capabilities: capsEnabled
+            )
+        )
+
+        // Disabled capability -> false
+        #expect(
+            !AgentTimelineView.canConfigureCodexDaemon(
+                agent: "codex",
+                code: "session_reference_unavailable",
+                route: nil,
+                capabilities: capsDisabled
+            )
+        )
+
+        // Nil capability (old helper without codex_daemon_config) -> false
+        #expect(
+            !AgentTimelineView.canConfigureCodexDaemon(
+                agent: "codex",
+                code: "session_reference_unavailable",
+                route: nil,
+                capabilities: capsNil
+            )
+        )
+        #expect(
+            !AgentTimelineView.canConfigureCodexDaemon(
+                agent: "codex",
+                code: "session_reference_unavailable",
+                route: nil,
+                capabilities: nil
+            )
+        )
+    }
+
+    @Test func buttonGatingRoutedHost() {
+        let capsEnabled = AgentBridgeCapabilities(
+            claudeTimeline: true, codexTimeline: true, codexDaemonConfig: true
+        )
+        let gateway = HerdrConnection()
+        let machine = HerdrMachine(id: "child", label: "Child", target: "u@child", session: "default", enabled: true)
+        let route = HerdrMachineRoute(gateway: gateway, machine: machine, generation: ConnectionGeneration(rawValue: 1))
+
+        // Routed host (route != nil) -> false even with capability enabled
+        #expect(
+            !AgentTimelineView.canConfigureCodexDaemon(
+                agent: "codex",
+                code: "session_reference_unavailable",
+                route: route,
+                capabilities: capsEnabled
+            )
+        )
+    }
+
+    @Test func buttonGatingAgentAndCode() {
+        let capsEnabled = AgentBridgeCapabilities(
+            claudeTimeline: true, codexTimeline: true, codexDaemonConfig: true
+        )
+
+        // Claude agent -> false
+        #expect(
+            !AgentTimelineView.canConfigureCodexDaemon(
+                agent: "claude",
+                code: "session_reference_unavailable",
+                route: nil,
+                capabilities: capsEnabled
+            )
+        )
+
+        // Unrelated unavailable code -> false
+        #expect(
+            !AgentTimelineView.canConfigureCodexDaemon(
+                agent: "codex",
+                code: "session_cwd_mismatch",
+                route: nil,
+                capabilities: capsEnabled
+            )
+        )
+        #expect(
+            !AgentTimelineView.canConfigureCodexDaemon(
+                agent: "codex",
+                code: "transcript_root_unavailable",
+                route: nil,
+                capabilities: capsEnabled
+            )
+        )
+    }
+
+    @Test func statusAndErrorMessageMapping() {
+        // Changed with backup
+        let resChangedBackup = CodexDaemonConfigResult(
+            status: "changed", backup: "config.toml.bak.herdcats-20261017T083528Z", error: nil
+        )
+        let msgChangedBackup = CodexDaemonConfigResult.message(for: resChangedBackup)
+        #expect(msgChangedBackup.contains("Turned off Codex shared daemon"))
+        #expect(msgChangedBackup.contains("config.toml.bak.herdcats-20261017T083528Z"))
+        #expect(msgChangedBackup.contains("Restart Codex in this pane to apply"))
+
+        // Changed without backup
+        let resChangedNoBackup = CodexDaemonConfigResult(
+            status: "changed", backup: nil, error: nil
+        )
+        let msgChangedNoBackup = CodexDaemonConfigResult.message(for: resChangedNoBackup)
+        #expect(msgChangedNoBackup.contains("Turned off Codex shared daemon"))
+        #expect(msgChangedNoBackup.contains("Restart Codex in this pane to apply"))
+
+        // Already disabled
+        let resAlready = CodexDaemonConfigResult(
+            status: "already_disabled", backup: nil, error: nil
+        )
+        let msgAlready = CodexDaemonConfigResult.message(for: resAlready)
+        #expect(msgAlready.contains("already turned off"))
+        #expect(msgAlready.contains("Restart Codex in this pane to apply"))
+
+        // Codex not installed
+        let resNotInstalled = CodexDaemonConfigResult(
+            status: "codex_not_installed", backup: nil, error: nil
+        )
+        let msgNotInstalled = CodexDaemonConfigResult.message(for: resNotInstalled)
+        #expect(msgNotInstalled.contains("Codex directory was not found"))
+
+        // Errors
+        let resInvalid = CodexDaemonConfigResult(status: nil, backup: nil, error: "config_invalid")
+        #expect(CodexDaemonConfigResult.message(for: resInvalid).contains("invalid TOML"))
+
+        let resNotTable = CodexDaemonConfigResult(status: nil, backup: nil, error: "features_not_table")
+        #expect(CodexDaemonConfigResult.message(for: resNotTable).contains("not a table"))
+
+        let resSymlink = CodexDaemonConfigResult(status: nil, backup: nil, error: "config_symlink")
+        #expect(CodexDaemonConfigResult.message(for: resSymlink).contains("symbolic link"))
+
+        let resWriteFailed = CodexDaemonConfigResult(status: nil, backup: nil, error: "write_failed")
+        #expect(CodexDaemonConfigResult.message(for: resWriteFailed).contains("failed to write"))
+
+        let resVerification = CodexDaemonConfigResult(status: nil, backup: nil, error: "verification_failed")
+        #expect(CodexDaemonConfigResult.message(for: resVerification).contains("verification failed"))
+
+        let resUnknown = CodexDaemonConfigResult(status: nil, backup: nil, error: "custom_err")
+        #expect(CodexDaemonConfigResult.message(for: resUnknown).contains("custom_err"))
+    }
+
+    @Test func manualFallbackText() {
+        let fallback = AgentTimelineView.codexManualFallbackText()
+        #expect(fallback.contains("daemon_auto_start = false"))
+        #expect(fallback.contains("[features]"))
+        #expect(fallback.contains("~/.codex/config.toml"))
+        #expect(fallback.contains("codex --no-daemon"))
+
+        #expect(AgentTimelineView.codexManualConfigLine == "daemon_auto_start = false")
+    }
+
+    @Test func resultParsingFromSingleLineJSON() throws {
+        let rawChanged = "{\"status\":\"changed\",\"backup\":\"config.toml.bak.herdcats-123\"}\n"
+        let resChanged = try CodexDaemonConfigResult.parse(rawChanged)
+        #expect(resChanged.status == "changed")
+        #expect(resChanged.backup == "config.toml.bak.herdcats-123")
+        #expect(resChanged.error == nil)
+
+        let rawError = "{\"error\":\"config_symlink\"}\n"
+        let resError = try CodexDaemonConfigResult.parse(rawError)
+        #expect(resError.error == "config_symlink")
+        #expect(resError.status == nil)
+    }
+}
+

@@ -39,6 +39,7 @@ actor AgentBridgeClient {
     private var openTimeout: Task<Void, Never>?
     private var closedError: AgentBridgeError?
     private var waiters: [CheckedContinuation<Void, Error>] = []
+    private(set) var capabilities: AgentBridgeCapabilities?
 
     init(id: UUID = UUID(), onEvent: @escaping @Sendable (AgentBridgeFrame) async throws -> Void) {
         self.id = id
@@ -83,6 +84,7 @@ actor AgentBridgeClient {
             guard handshake.protocol == 1, handshake.epoch?.isEmpty == false else {
                 throw AgentBridgeError.protocolMismatch
             }
+            self.capabilities = handshake.capabilities
             if agent == "codex" {
                 guard handshake.capabilities?.codexTimeline == true else {
                     throw AgentBridgeError.unavailable(Self.unavailableCodeForCodex(handshake: handshake))
@@ -547,5 +549,50 @@ extension HerdrConnection {
         try HostHelperSetupPlan.verifyInstallation(result, agent: agent)
         try requireGeneration(owned)
         return .ready
+    }
+
+    func disableCodexDaemon(
+        target: ConnectionIdentity, owned: ConnectionGeneration
+    ) async throws -> CodexDaemonConfigResult {
+        guard route == nil else { throw AgentBridgeError.routedHostUnsupported }
+        try requireGeneration(owned)
+        guard identity == target else { throw HerdrError.notConnected }
+        let client = try slot.ownedClient(owned)
+        guard helperSetupOperation == nil else { throw HostHelperSetupError.busy }
+        let operation = UUID()
+        helperSetupOperation = operation
+        defer { if helperSetupOperation == operation { helperSetupOperation = nil } }
+        try Task.checkCancellation()
+        try requireGeneration(owned)
+        guard identity == target else { throw HerdrError.notConnected }
+        let output = try await HostHelperCommand().run(
+            client: client, script: Self.codexDisableDaemonCommand, timeout: 15
+        )
+        try Task.checkCancellation()
+        try requireGeneration(owned)
+        guard identity == target else { throw HerdrError.notConnected }
+        return try CodexDaemonConfigResult.parse(output)
+    }
+
+    static var codexDisableDaemonCommand: String {
+        let script = """
+            B=
+            if [ -x "$HOME/.local/bin/herdcats-bridge" ]; then
+              B="$HOME/.local/bin/herdcats-bridge"
+            else
+              B=$(command -v herdcats-bridge 2>/dev/null)
+            fi
+            if [ -z "$B" ]; then
+              for P in "$HOME/.local/bin/herdcats-bridge" "$HOME/.cargo/bin/herdcats-bridge" /opt/homebrew/bin/herdcats-bridge /usr/local/bin/herdcats-bridge; do
+                if [ -x "$P" ]; then B="$P"; break; fi
+              done
+            fi
+            if [ -z "$B" ]; then
+              printf '%s\\n' '{"error":"helper_missing"}'
+              exit 0
+            fi
+            exec "$B" codex-config disable-daemon
+            """
+        return "exec /bin/sh -c \(shellSafeArgument(script))"
     }
 }

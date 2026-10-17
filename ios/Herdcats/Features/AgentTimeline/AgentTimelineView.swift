@@ -41,6 +41,12 @@ struct AgentTimelineView: View {
     @State private var entryFrames: [String: CGRect] = [:]
     @State private var viewportHeight: CGFloat = 0
     @State private var historyScrollAnchor: TimelineHistoryScrollAnchor?
+    @State private var bridgeCapabilities: AgentBridgeCapabilities?
+    @State private var showsCodexDaemonConfirm = false
+    @State private var isDisablingCodexDaemon = false
+    @State private var codexDaemonFeedback: String?
+    @State private var codexDaemonErrorOccurred = false
+    @State private var copiedCodexConfig = false
 
     private var conversationItems: [TimelineConversationItem] {
         TimelineConversationItem.group(timeline.entries)
@@ -265,6 +271,20 @@ struct AgentTimelineView: View {
             .presentationDragIndicator(.visible)
             .presentationCornerRadius(28)
         }
+        .sheet(isPresented: $showsCodexDaemonConfirm) {
+            CodexDaemonConfirmSheet(
+                onConfirm: {
+                    showsCodexDaemonConfirm = false
+                    disableCodexDaemon()
+                },
+                onCancel: {
+                    showsCodexDaemonConfirm = false
+                }
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+            .presentationCornerRadius(28)
+        }
     }
     private var contentScope: String {
         "\(activeOwner?.uuidString ?? "none"):\(timeline.generation ?? 0):\(timeline.identity?.nativeSessionId ?? "")"
@@ -443,6 +463,12 @@ struct AgentTimelineView: View {
             let isHelperOld = ["helper_update_required", "unsupported_agent"].contains(code)
             let isNoSession = ["session_reference_unavailable", "ambiguous_session", "invalid_session_reference"].contains(code)
             let isCwdMismatch = code == "session_cwd_mismatch"
+            let canTurnOffCodexDaemon = Self.canConfigureCodexDaemon(
+                agent: agent,
+                code: code,
+                route: connection.route,
+                capabilities: bridgeCapabilities
+            )
 
             ContentUnavailableView {
                 Label(
@@ -453,12 +479,41 @@ struct AgentTimelineView: View {
                     systemImage: "text.bubble"
                 )
             } description: {
-                Text(explanation(code))
+                if isCodex && isNoSession, let feedback = codexDaemonFeedback {
+                    Text(feedback)
+                } else {
+                    Text(explanation(code))
+                }
             } actions: {
                 if ["helper_missing", "helper_update_required", "unsupported_agent", "protocol_mismatch", "record_too_large"].contains(code) && canPinnedInstallerSupportAgent {
                     Button(isCodex && isHelperOld ? "Update helper" : "Set up Timeline") { beginSetup() }
                         .buttonStyle(.herdrPrimary)
                         .accessibilityIdentifier("timeline-helper-setup")
+                }
+                if isCodex && isNoSession {
+                    if canTurnOffCodexDaemon && !codexDaemonErrorOccurred {
+                        Button("Turn off Codex's shared daemon") {
+                            showsCodexDaemonConfirm = true
+                        }
+                        .buttonStyle(.herdrPrimary)
+                        .accessibilityIdentifier("timeline-codex-disable-daemon")
+                        .disabled(isDisablingCodexDaemon)
+                    } else {
+                        VStack(spacing: 8) {
+                            Text(Self.codexManualFallbackText())
+                                .font(.jost(.subheadline))
+                                .foregroundStyle(Theme.textMuted)
+                                .multilineTextAlignment(.center)
+                            Button {
+                                UIPasteboard.general.string = Self.codexManualConfigLine
+                                copiedCodexConfig = true
+                            } label: {
+                                Label(copiedCodexConfig ? "Setting copied" : "Copy setting", systemImage: copiedCodexConfig ? "checkmark" : "doc.on.doc")
+                            }
+                            .buttonStyle(.herdrSecondary)
+                            .accessibilityIdentifier("timeline-codex-copy-setting")
+                        }
+                    }
                 }
                 Button("Check again") { retry += 1 }.buttonStyle(.herdrSecondary)
                     .accessibilityIdentifier("timeline-helper-retry")
@@ -468,6 +523,25 @@ struct AgentTimelineView: View {
     }
     func explanation(_ code: String) -> String {
         Self.explanation(code, agent: agent)
+    }
+
+    static func canConfigureCodexDaemon(
+        agent: String?,
+        code: String,
+        route: HerdrMachineRoute?,
+        capabilities: AgentBridgeCapabilities?
+    ) -> Bool {
+        guard agent == "codex" else { return false }
+        let isNoSession = ["session_reference_unavailable", "ambiguous_session", "invalid_session_reference"].contains(code)
+        guard isNoSession else { return false }
+        guard route == nil else { return false }
+        return capabilities?.codexDaemonConfig == true
+    }
+
+    static let codexManualConfigLine = "daemon_auto_start = false"
+
+    static func codexManualFallbackText() -> String {
+        "Add `daemon_auto_start = false` under `[features]` in `~/.codex/config.toml`, or start Codex with `codex --no-daemon`."
     }
 
     static func explanation(_ code: String, agent: String?, supportedAgents: Set<String> = Set(HostHelperSetupPlan.agents)) -> String {
@@ -498,7 +572,7 @@ struct AgentTimelineView: View {
         case "routed_host_unsupported": return "Native history is not available through saved machines yet. Messages can still be sent below."
         case "session_reference_unavailable", "ambiguous_session", "invalid_session_reference":
             if isCodex {
-                return "Codex's shared daemon hides which terminal a session belongs to. Fix with `codex --no-daemon` or the installer option."
+                return "Codex's shared daemon hides which terminal a session belongs to. Fix with `codex --no-daemon` or turn off the shared daemon."
             }
             return "This pane has no verified session history. Compose and Terminal remain available."
         case "session_cwd_mismatch":
@@ -527,6 +601,9 @@ struct AgentTimelineView: View {
         timeline.begin(owner: owner, paneId: paneId)
         pageError = nil
         isPaging = false
+        bridgeCapabilities = nil
+        codexDaemonFeedback = nil
+        codexDaemonErrorOccurred = false
         guard scenePhase == .active, connectionState.isReady else {
             timeline.end(owner: owner, error: .closed)
             return
@@ -551,7 +628,10 @@ struct AgentTimelineView: View {
             }
             opened = client
             try Task.checkCancellation()
-            if activeOwner == owner { activeClient = client }
+            if activeOwner == owner {
+                activeClient = client
+                bridgeCapabilities = await client.capabilities
+            }
             try await client.waitUntilClosed()
         } catch {
             timeline.end(owner: owner, error: (error as? AgentBridgeError) ?? .closed)
@@ -561,6 +641,26 @@ struct AgentTimelineView: View {
             activeClient = nil
             activeOwner = nil
             isPaging = false
+        }
+    }
+
+    private func disableCodexDaemon() {
+        guard !isDisablingCodexDaemon else { return }
+        guard let generation = connectionState.generation else { return }
+        isDisablingCodexDaemon = true
+        Task {
+            do {
+                let result = try await connection.disableCodexDaemon(
+                    target: setupTarget,
+                    owned: generation
+                )
+                codexDaemonFeedback = CodexDaemonConfigResult.message(for: result)
+                codexDaemonErrorOccurred = (result.error != nil)
+            } catch {
+                codexDaemonFeedback = "Could not turn off Codex daemon: \(error.localizedDescription)"
+                codexDaemonErrorOccurred = true
+            }
+            isDisablingCodexDaemon = false
         }
     }
     @MainActor private func commit(
@@ -1178,5 +1278,78 @@ enum TimelineImagePayload: Sendable {
         let identifier = CGImageSourceGetType(image).map { $0 as String } ?? UTType.data.identifier
         let suffix = UTType(identifier)?.preferredFilenameExtension ?? "image"
         return .image(preview: preview as Data, original: original, suffix: suffix)
+    }
+}
+
+struct CodexDaemonConfirmSheet: View {
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    Text("Turn off Codex's shared daemon so Herdcats can identify this pane's session.")
+                        .font(.jost(.body))
+                        .foregroundStyle(Theme.text)
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("File to modify")
+                            .font(.jost(.headline))
+                        Text("~/.codex/config.toml (or $CODEX_HOME/config.toml)")
+                            .font(.system(.footnote, design: .monospaced))
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Theme.fieldBackground, in: RoundedRectangle(cornerRadius: 10))
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Setting")
+                            .font(.jost(.headline))
+                        Text("[features]\ndaemon_auto_start = false")
+                            .font(.system(.footnote, design: .monospaced))
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Theme.fieldBackground, in: RoundedRectangle(cornerRadius: 10))
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Cost")
+                            .font(.jost(.headline))
+                        Text("Codex background sessions stop working on this computer.")
+                            .font(.jost(.subheadline))
+                            .foregroundStyle(Theme.textMuted)
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Backup & Undo")
+                            .font(.jost(.headline))
+                        Text("A timestamped backup of your config file is made before changes. To undo, delete the line from config.toml or restore the backup.")
+                            .font(.jost(.subheadline))
+                            .foregroundStyle(Theme.textMuted)
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Restart required")
+                            .font(.jost(.headline))
+                        Text("This change takes effect for Codex sessions started after the running Codex daemon exits. After turning off the daemon, restart Codex in this pane.")
+                            .font(.jost(.subheadline))
+                            .foregroundStyle(Theme.textMuted)
+                    }
+                }
+                .padding(20)
+            }
+            .navigationTitle("Turn off Codex daemon")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { onCancel() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Turn off") { onConfirm() }
+                        .fontWeight(.semibold)
+                }
+            }
+        }
     }
 }

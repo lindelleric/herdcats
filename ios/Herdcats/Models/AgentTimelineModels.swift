@@ -38,11 +38,18 @@ struct AgentTimelineIdentity: Codable, Equatable, Sendable {
 struct AgentBridgeCapabilities: Codable, Equatable, Sendable {
     let claudeTimeline: Bool
     var codexTimeline: Bool? = false
+    var codexDaemonConfig: Bool? = false
     var recordContent: Bool? = nil
 
-    init(claudeTimeline: Bool, codexTimeline: Bool? = false, recordContent: Bool? = nil) {
+    init(
+        claudeTimeline: Bool,
+        codexTimeline: Bool? = false,
+        codexDaemonConfig: Bool? = false,
+        recordContent: Bool? = nil
+    ) {
         self.claudeTimeline = claudeTimeline
         self.codexTimeline = codexTimeline
+        self.codexDaemonConfig = codexDaemonConfig
         self.recordContent = recordContent
     }
 
@@ -50,7 +57,60 @@ struct AgentBridgeCapabilities: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.claudeTimeline = try container.decode(Bool.self, forKey: .claudeTimeline)
         self.codexTimeline = try container.decodeIfPresent(Bool.self, forKey: .codexTimeline) ?? false
+        self.codexDaemonConfig = try container.decodeIfPresent(Bool.self, forKey: .codexDaemonConfig) ?? false
         self.recordContent = try container.decodeIfPresent(Bool.self, forKey: .recordContent)
+    }
+}
+
+struct CodexDaemonConfigResult: Decodable, Equatable, Sendable {
+    let status: String?
+    let backup: String?
+    let error: String?
+
+    static func parse(_ raw: String) throws -> CodexDaemonConfigResult {
+        let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .components(separatedBy: .newlines)
+            .last(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) ?? ""
+        guard let data = line.data(using: .utf8) else {
+            throw HerdrError.unexpectedResponse("Invalid response encoding")
+        }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(CodexDaemonConfigResult.self, from: data)
+    }
+
+    static func message(for result: CodexDaemonConfigResult) -> String {
+        if let err = result.error {
+            switch err {
+            case "config_invalid":
+                return "Could not update Codex config: config.toml contains invalid TOML."
+            case "features_not_table":
+                return "Could not update Codex config: features in config.toml is not a table."
+            case "config_symlink":
+                return "Could not update Codex config: config.toml is a symbolic link."
+            case "write_failed":
+                return "Could not update Codex config: failed to write file."
+            case "verification_failed":
+                return "Could not update Codex config: verification failed, restored from backup."
+            case "helper_missing":
+                return "Could not update Codex config: herdcats-bridge was not found."
+            default:
+                return "Could not update Codex config: \(err)."
+            }
+        }
+        switch result.status {
+        case "changed":
+            if let backup = result.backup {
+                return "Turned off Codex shared daemon. Backup created: \(backup). Restart Codex in this pane to apply."
+            }
+            return "Turned off Codex shared daemon. Restart Codex in this pane to apply."
+        case "already_disabled":
+            return "Codex shared daemon is already turned off in config.toml. Restart Codex in this pane to apply."
+        case "codex_not_installed":
+            return "Codex directory was not found on this host."
+        default:
+            return "Completed with status: \(result.status ?? "unknown")."
+        }
     }
 }
 struct AgentBridgePayload: Codable, Sendable {
