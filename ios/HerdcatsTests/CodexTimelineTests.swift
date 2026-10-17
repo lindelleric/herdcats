@@ -448,30 +448,30 @@ struct CodexDaemonConfigTests {
     }
 
     @Test func statusAndErrorMessageMapping() {
+        let expectedGuidance = "Quit Codex in every pane, run `codex app-server daemon stop` on this computer (this ends all Codex sessions that use the shared daemon), then start Codex again in this pane. Or start Codex with `codex --no-daemon` now."
+        #expect(CodexDaemonConfigResult.restartGuidance == expectedGuidance)
+        #expect(AgentTimelineView.codexDaemonStopCommand == "codex app-server daemon stop")
+
         // Changed with backup
         let resChangedBackup = CodexDaemonConfigResult(
             status: "changed", backup: "config.toml.bak.herdcats-20261017T083528Z", error: nil
         )
         let msgChangedBackup = CodexDaemonConfigResult.message(for: resChangedBackup)
-        #expect(msgChangedBackup.contains("Turned off Codex shared daemon"))
-        #expect(msgChangedBackup.contains("config.toml.bak.herdcats-20261017T083528Z"))
-        #expect(msgChangedBackup.contains("Restart Codex in this pane to apply"))
+        #expect(msgChangedBackup == expectedGuidance)
 
         // Changed without backup
         let resChangedNoBackup = CodexDaemonConfigResult(
             status: "changed", backup: nil, error: nil
         )
         let msgChangedNoBackup = CodexDaemonConfigResult.message(for: resChangedNoBackup)
-        #expect(msgChangedNoBackup.contains("Turned off Codex shared daemon"))
-        #expect(msgChangedNoBackup.contains("Restart Codex in this pane to apply"))
+        #expect(msgChangedNoBackup == expectedGuidance)
 
         // Already disabled
         let resAlready = CodexDaemonConfigResult(
             status: "already_disabled", backup: nil, error: nil
         )
         let msgAlready = CodexDaemonConfigResult.message(for: resAlready)
-        #expect(msgAlready.contains("already turned off"))
-        #expect(msgAlready.contains("Restart Codex in this pane to apply"))
+        #expect(msgAlready == expectedGuidance)
 
         // Codex not installed
         let resNotInstalled = CodexDaemonConfigResult(

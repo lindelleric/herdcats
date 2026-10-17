@@ -99,19 +99,16 @@ struct CodexDaemonConfigResult: Decodable, Equatable, Sendable {
             }
         }
         switch result.status {
-        case "changed":
-            if let backup = result.backup {
-                return "Turned off Codex shared daemon. Backup created: \(backup). Restart Codex in this pane to apply."
-            }
-            return "Turned off Codex shared daemon. Restart Codex in this pane to apply."
-        case "already_disabled":
-            return "Codex shared daemon is already turned off in config.toml. Restart Codex in this pane to apply."
+        case "changed", "already_disabled":
+            return Self.restartGuidance
         case "codex_not_installed":
             return "Codex directory was not found on this host."
         default:
             return "Completed with status: \(result.status ?? "unknown")."
         }
     }
+
+    static let restartGuidance = "Quit Codex in every pane, run `codex app-server daemon stop` on this computer (this ends all Codex sessions that use the shared daemon), then start Codex again in this pane. Or start Codex with `codex --no-daemon` now."
 }
 struct AgentBridgePayload: Codable, Sendable {
     var `protocol`: Int?

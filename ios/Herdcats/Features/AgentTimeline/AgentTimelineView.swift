@@ -47,6 +47,7 @@ struct AgentTimelineView: View {
     @State private var codexDaemonFeedback: String?
     @State private var codexDaemonErrorOccurred = false
     @State private var copiedCodexConfig = false
+    @State private var copiedCodexStop = false
 
     private var conversationItems: [TimelineConversationItem] {
         TimelineConversationItem.group(timeline.entries)
@@ -491,7 +492,7 @@ struct AgentTimelineView: View {
                         .accessibilityIdentifier("timeline-helper-setup")
                 }
                 if isCodex && isNoSession {
-                    if canTurnOffCodexDaemon && !codexDaemonErrorOccurred {
+                    if canTurnOffCodexDaemon && !codexDaemonErrorOccurred && codexDaemonFeedback == nil {
                         Button("Turn off Codex's shared daemon") {
                             showsCodexDaemonConfirm = true
                         }
@@ -500,18 +501,29 @@ struct AgentTimelineView: View {
                         .disabled(isDisablingCodexDaemon)
                     } else {
                         VStack(spacing: 8) {
-                            Text(Self.codexManualFallbackText())
-                                .font(.jost(.subheadline))
-                                .foregroundStyle(Theme.textMuted)
-                                .multilineTextAlignment(.center)
-                            Button {
-                                UIPasteboard.general.string = Self.codexManualConfigLine
-                                copiedCodexConfig = true
-                            } label: {
-                                Label(copiedCodexConfig ? "Setting copied" : "Copy setting", systemImage: copiedCodexConfig ? "checkmark" : "doc.on.doc")
+                            if !codexDaemonErrorOccurred && codexDaemonFeedback != nil {
+                                Button {
+                                    UIPasteboard.general.string = Self.codexDaemonStopCommand
+                                    copiedCodexStop = true
+                                } label: {
+                                    Label(copiedCodexStop ? "Command copied" : "Copy stop command", systemImage: copiedCodexStop ? "checkmark" : "doc.on.doc")
+                                }
+                                .buttonStyle(.herdrPrimary)
+                                .accessibilityIdentifier("timeline-codex-copy-stop")
+                            } else {
+                                Text(Self.codexManualFallbackText())
+                                    .font(.jost(.subheadline))
+                                    .foregroundStyle(Theme.textMuted)
+                                    .multilineTextAlignment(.center)
+                                Button {
+                                    UIPasteboard.general.string = Self.codexManualConfigLine
+                                    copiedCodexConfig = true
+                                } label: {
+                                    Label(copiedCodexConfig ? "Setting copied" : "Copy setting", systemImage: copiedCodexConfig ? "checkmark" : "doc.on.doc")
+                                }
+                                .buttonStyle(.herdrSecondary)
+                                .accessibilityIdentifier("timeline-codex-copy-setting")
                             }
-                            .buttonStyle(.herdrSecondary)
-                            .accessibilityIdentifier("timeline-codex-copy-setting")
                         }
                     }
                 }
@@ -539,6 +551,7 @@ struct AgentTimelineView: View {
     }
 
     static let codexManualConfigLine = "daemon_auto_start = false"
+    static let codexDaemonStopCommand = "codex app-server daemon stop"
 
     static func codexManualFallbackText() -> String {
         "Add `daemon_auto_start = false` under `[features]` in `~/.codex/config.toml`, or start Codex with `codex --no-daemon`."
@@ -1335,7 +1348,7 @@ struct CodexDaemonConfirmSheet: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Restart required")
                             .font(.jost(.headline))
-                        Text("This change takes effect for Codex sessions started after the running Codex daemon exits. After turning off the daemon, restart Codex in this pane.")
+                        Text(CodexDaemonConfigResult.restartGuidance)
                             .font(.jost(.subheadline))
                             .foregroundStyle(Theme.textMuted)
                     }
