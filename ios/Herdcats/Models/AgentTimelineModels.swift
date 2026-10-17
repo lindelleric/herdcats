@@ -315,9 +315,10 @@ struct TimelineConversationItem: Identifiable {
     var id: String { entries[0].id }
     var isActivity: Bool { entries[0].kind == "tool" }
 
-    static func group(_ entries: [AgentTimelineEntry]) -> [Self] {
+    /// Fallback `record` entries stay hidden unless the caller opts in (Codex timelines).
+    static func group(_ entries: [AgentTimelineEntry], showsRecords: Bool = false) -> [Self] {
         var items: [Self] = []
-        for entry in entries where entry.kind != "record" {
+        for entry in entries where showsRecords || entry.kind != "record" {
             if entry.kind == "tool", items.last?.isActivity == true {
                 items[items.count - 1].entries.append(entry)
             } else {

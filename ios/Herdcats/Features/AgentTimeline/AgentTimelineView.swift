@@ -50,7 +50,7 @@ struct AgentTimelineView: View {
     @State private var copiedCodexStop = false
 
     private var conversationItems: [TimelineConversationItem] {
-        TimelineConversationItem.group(timeline.entries)
+        TimelineConversationItem.group(timeline.entries, showsRecords: agent == "codex")
     }
 
     private var connectionState: AgentTimelineConnectionState {
@@ -1013,6 +1013,14 @@ private struct AgentTimelineEntryView: View {
         VStack(alignment: .leading, spacing: 10) {
             if entry.kind == "image" {
                 imageContent
+            } else if entry.kind == "record" {
+                Label("Unsupported content: \(entry.text)", systemImage: "questionmark.square.dashed")
+                    .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
+                if let details = entry.details {
+                    Text(details).font(.jost(.caption)).foregroundStyle(Theme.textMuted)
+                        .textSelection(.enabled).lineLimit(8)
+                        .accessibilityIdentifier("timeline-record-\(entry.id)")
+                }
             } else {
                 Text(markdown).font(.jost(.body)).textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
