@@ -601,7 +601,7 @@ struct AgentTimelineView: View {
         timeline.begin(owner: owner, paneId: paneId)
         pageError = nil
         isPaging = false
-        bridgeCapabilities = nil
+        bridgeCapabilities = await connection.bridgeCapabilities(for: connectionState.generation)
         codexDaemonFeedback = nil
         codexDaemonErrorOccurred = false
         guard scenePhase == .active, connectionState.isReady else {
@@ -630,10 +630,13 @@ struct AgentTimelineView: View {
             try Task.checkCancellation()
             if activeOwner == owner {
                 activeClient = client
-                bridgeCapabilities = await client.capabilities
+                bridgeCapabilities = await connection.bridgeCapabilities(for: ownedConnection.generation)
             }
             try await client.waitUntilClosed()
         } catch {
+            if activeOwner == owner {
+                bridgeCapabilities = await connection.bridgeCapabilities(for: ownedConnection.generation)
+            }
             timeline.end(owner: owner, error: (error as? AgentBridgeError) ?? .closed)
         }
         if let opened { await connection.endAgentTimeline(opened) }

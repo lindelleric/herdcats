@@ -522,5 +522,81 @@ struct CodexDaemonConfigTests {
         #expect(resError.error == "config_symlink")
         #expect(resError.status == nil)
     }
+
+    @Test func handshakeCapabilitiesPersistWhenWatchFailsWithSessionReferenceUnavailable() async throws {
+        let wire = CodexTestWire()
+        let connection = HerdrConnection()
+        let generation = await connection.generation
+
+        let client = AgentBridgeClient(
+            write: { await wire.write($0) },
+            close: { await wire.close() },
+            onEvent: { _ in }
+        )
+
+        let task = Task {
+            try await client.performHandshakeAndWatch(
+                paneId: "p-codex",
+                agent: "codex",
+                onHandshake: { capabilities in
+                    await connection.recordAgentBridgeCapabilities(capabilities, generation: generation)
+                }
+            )
+        }
+
+        for _ in 0..<500 {
+            if await !wire.commands.isEmpty { break }
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        let initId = try await wire.requestId()
+        let handshakeJSON = """
+        {"id":"\(initId)","result":{"protocol":1,"epoch":"e1","bridge_version":"0.2.0","capabilities":{"claude_timeline":true,"codex_timeline":true,"record_content":true,"codex_daemon_config":true}}}
+        """
+        await client.receive(Data((handshakeJSON + "\n").utf8))
+
+        for _ in 0..<500 {
+            if await wire.commands.count >= 2 { break }
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        let watchId = try await wire.requestId()
+        let watchErrorJSON = """
+        {"id":"\(watchId)","error":{"code":"session_reference_unavailable"}}
+        """
+        await client.receive(Data((watchErrorJSON + "\n").utf8))
+
+        var caughtCode: String?
+        do {
+            _ = try await task.value
+        } catch let AgentBridgeError.unavailable(code) {
+            caughtCode = code
+        }
+        #expect(caughtCode == "session_reference_unavailable")
+
+        let recordedCaps = await connection.bridgeCapabilities(for: generation)
+        #expect(recordedCaps?.codexDaemonConfig == true)
+
+        let canTurnOff = AgentTimelineView.canConfigureCodexDaemon(
+            agent: "codex",
+            code: caughtCode ?? "",
+            route: nil,
+            capabilities: recordedCaps
+        )
+        #expect(canTurnOff == true)
+
+        await connection.closeAllAgentBridges()
+        let clearedCaps = await connection.bridgeCapabilities(for: generation)
+        #expect(clearedCaps == nil)
+    }
+}
+
+private actor CodexTestWire {
+    var commands: [Data] = []
+    var closes = 0
+    func write(_ bytes: Data) { commands.append(bytes) }
+    func close() { closes += 1 }
+    func requestId() throws -> String {
+        let obj = try JSONSerialization.jsonObject(with: commands.last!) as! [String: Any]
+        return obj["id"] as! String
+    }
 }
 

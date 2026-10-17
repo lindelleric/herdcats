@@ -54,7 +54,40 @@ actor AgentBridgeClient {
         self.closeTransport = close
         self.onEvent = onEvent
     }
-    func open(client: SSHClient, command: String, paneId: String, agent: String? = nil) async throws {
+    func performHandshakeAndWatch(
+        paneId: String,
+        agent: String? = nil,
+        onHandshake: (@Sendable (AgentBridgeCapabilities?) async -> Void)? = nil
+    ) async throws {
+        let handshake = try await request(.initialize, params: AgentBridgeParams(protocol: 1, recordContent: true))
+        guard handshake.protocol == 1, handshake.epoch?.isEmpty == false else {
+            throw AgentBridgeError.protocolMismatch
+        }
+        self.capabilities = handshake.capabilities
+        await onHandshake?(handshake.capabilities)
+        if agent == "codex" {
+            guard handshake.capabilities?.codexTimeline == true else {
+                throw AgentBridgeError.unavailable(Self.unavailableCodeForCodex(handshake: handshake))
+            }
+        } else {
+            guard handshake.capabilities?.claudeTimeline == true else {
+                throw AgentBridgeError.unavailable("transcript_root_unavailable")
+            }
+        }
+        guard handshake.capabilities?.recordContent == true else {
+            throw AgentBridgeError.unavailable("helper_update_required")
+        }
+        _ = try await request(.watch, params: AgentBridgeParams(paneId: paneId))
+        try Task.checkCancellation()
+    }
+
+    func open(
+        client: SSHClient,
+        command: String,
+        paneId: String,
+        agent: String? = nil,
+        onHandshake: (@Sendable (AgentBridgeCapabilities?) async -> Void)? = nil
+    ) async throws {
         try await withTaskCancellationHandler {
             try Task.checkCancellation()
             guard closedError == nil else { throw AgentBridgeError.closed }
@@ -80,25 +113,7 @@ actor AgentBridgeClient {
                     } catch { await self.stop((error as? AgentBridgeError) ?? .closed) }
                 }
             }
-            let handshake = try await request(.initialize, params: AgentBridgeParams(protocol: 1, recordContent: true))
-            guard handshake.protocol == 1, handshake.epoch?.isEmpty == false else {
-                throw AgentBridgeError.protocolMismatch
-            }
-            self.capabilities = handshake.capabilities
-            if agent == "codex" {
-                guard handshake.capabilities?.codexTimeline == true else {
-                    throw AgentBridgeError.unavailable(Self.unavailableCodeForCodex(handshake: handshake))
-                }
-            } else {
-                guard handshake.capabilities?.claudeTimeline == true else {
-                    throw AgentBridgeError.unavailable("transcript_root_unavailable")
-                }
-            }
-            guard handshake.capabilities?.recordContent == true else {
-                throw AgentBridgeError.unavailable("helper_update_required")
-            }
-            _ = try await request(.watch, params: AgentBridgeParams(paneId: paneId))
-            try Task.checkCancellation()
+            try await performHandshakeAndWatch(paneId: paneId, agent: agent, onHandshake: onHandshake)
         } onCancel: {
             Task { await self.close() }
         }
@@ -292,7 +307,15 @@ extension HerdrConnection {
             })
         agentBridges[bridge.id] = bridge
         do {
-            try await bridge.open(client: client, command: Self.agentBridgeCommand, paneId: paneId, agent: agent)
+            try await bridge.open(
+                client: client,
+                command: Self.agentBridgeCommand,
+                paneId: paneId,
+                agent: agent,
+                onHandshake: { [weak self] capabilities in
+                    await self?.recordAgentBridgeCapabilities(capabilities, generation: owned)
+                }
+            )
             try requireGeneration(owned)
             try Task.checkCancellation()
             guard agentBridges[bridge.id] != nil else { throw AgentBridgeError.closed }
@@ -310,6 +333,7 @@ extension HerdrConnection {
     func closeAllAgentBridges() {
         let bridges = Array(agentBridges.values)
         agentBridges.removeAll()
+        clearAgentBridgeCapabilities()
         Task { for bridge in bridges { await bridge.close() } }
     }
     static var agentBridgeCommand: String {
