@@ -1,7 +1,7 @@
 use crate::{
     Result,
     adapter::Adapter,
-    claude::{Entry, Transcript, bounded},
+    claude::{Entry, Transcript, bounded, entry_id},
     follower::{AgentType, Follower, MAX_RECORD, MAX_SOURCE},
     herdr::Pane,
     resolver::{open_beneath, session_id},
@@ -716,6 +716,7 @@ pub(crate) fn classify_codex_record(record: &Value) -> Result<CodexRecordAction<
                         Some(id) => id,
                         None => optional_entry_key_part(&payload["root_turn_id"])?.unwrap_or(""),
                     };
+                    entry_id("turn_aborted", turn_id)?;
                     Ok(CodexRecordAction::TurnAborted { turn_id })
                 }
                 "thread_settings_applied"
@@ -754,12 +755,14 @@ pub(crate) fn classify_codex_record(record: &Value) -> Result<CodexRecordAction<
                         return Ok(CodexRecordAction::Unknown { label: "message" });
                     }
                     let id = required_entry_key_part(&payload["id"])?;
+                    entry_id("message", id)?;
                     let text = codex_text_content(&payload["content"]);
                     Ok(CodexRecordAction::Message { id, role, text })
                 }
                 "function_call" => {
                     let id = required_entry_key_part(&payload["id"])?;
                     let call_id = optional_entry_key_part(&payload["call_id"])?.unwrap_or(id);
+                    entry_id("tool", call_id)?;
                     let name = required_entry_key_part(&payload["name"])?;
                     let args = if let Some(s) = payload["arguments"].as_str() {
                         s.to_owned()
@@ -777,6 +780,7 @@ pub(crate) fn classify_codex_record(record: &Value) -> Result<CodexRecordAction<
                 "custom_tool_call" => {
                     let id = required_entry_key_part(&payload["id"])?;
                     let call_id = optional_entry_key_part(&payload["call_id"])?.unwrap_or(id);
+                    entry_id("tool", call_id)?;
                     let name = required_entry_key_part(&payload["name"])?;
                     let input = if let Some(s) = payload["input"].as_str() {
                         s.to_owned()
@@ -793,6 +797,7 @@ pub(crate) fn classify_codex_record(record: &Value) -> Result<CodexRecordAction<
                 }
                 "function_call_output" | "custom_tool_call_output" => {
                     let call_id = required_entry_key_part(&payload["call_id"])?;
+                    entry_id("tool", call_id)?;
                     let output = if let Some(s) = payload["output"].as_str() {
                         s.to_owned()
                     } else if payload["output"].is_object() || payload["output"].is_array() {
@@ -805,6 +810,7 @@ pub(crate) fn classify_codex_record(record: &Value) -> Result<CodexRecordAction<
                 "error" => {
                     let message = payload["message"].as_str().unwrap_or("Error");
                     let id = optional_entry_key_part(&payload["id"])?.unwrap_or("error");
+                    entry_id("message", id)?;
                     Ok(CodexRecordAction::Error { id, message })
                 }
                 _ => Ok(CodexRecordAction::Unknown {
@@ -841,7 +847,7 @@ impl Transcript {
                 if !text.is_empty() {
                     let (text, truncated) = bounded(&text);
                     self.upsert(Entry {
-                        id: format!("message:{id}"),
+                        id: entry_id("message", id)?,
                         kind: "message".into(),
                         text,
                         role: Some(role.into()),
@@ -862,7 +868,7 @@ impl Transcript {
             } => {
                 let (name, name_truncated) = bounded(name);
                 let (details, truncated) = bounded(&args);
-                let key = format!("tool:{call_id}");
+                let key = entry_id("tool", call_id)?;
                 let old = self.entries.iter().find(|e| e.id == key);
                 let status = old
                     .and_then(|e| e.status.clone())
@@ -889,7 +895,7 @@ impl Transcript {
             } => {
                 let (name, name_truncated) = bounded(name);
                 let (details, truncated) = bounded(&input);
-                let key = format!("tool:{call_id}");
+                let key = entry_id("tool", call_id)?;
                 let old = self.entries.iter().find(|e| e.id == key);
                 let status = old
                     .and_then(|e| e.status.clone())
@@ -911,7 +917,7 @@ impl Transcript {
             }
             CodexRecordAction::ToolOutput { call_id, output } => {
                 let (text, truncated) = bounded(&output);
-                let key = format!("tool:{call_id}");
+                let key = entry_id("tool", call_id)?;
                 if let Some(old) = self.entries.iter_mut().find(|e| e.id == key) {
                     old.text = text;
                     old.status = Some("completed".into());
@@ -935,7 +941,7 @@ impl Transcript {
             CodexRecordAction::Error { id, message } => {
                 let (text, truncated) = bounded(message);
                 self.upsert(Entry {
-                    id: format!("message:{id}"),
+                    id: entry_id("message", id)?,
                     kind: "message".into(),
                     text,
                     role: Some("assistant".into()),
@@ -953,11 +959,7 @@ impl Transcript {
                         entry.status = Some("failed".into());
                     }
                 }
-                let id = if turn_id.is_empty() {
-                    "turn_aborted".to_string()
-                } else {
-                    format!("turn_aborted:{turn_id}")
-                };
+                let id = entry_id("turn_aborted", turn_id)?;
                 self.upsert(Entry {
                     id,
                     kind: "message".into(),
@@ -1002,7 +1004,7 @@ impl Transcript {
         let raw_str = std::str::from_utf8(part).unwrap_or("");
         let (details, details_truncated) = bounded(raw_str);
         self.upsert(Entry {
-            id: format!("content:{offset}:0"),
+            id: entry_id("content", &format!("{offset}:0"))?,
             kind: "record".into(),
             text: label_text,
             role: None,
@@ -1027,13 +1029,15 @@ impl Transcript {
         match action {
             CodexRecordAction::SessionMeta { .. } | CodexRecordAction::Skip => Ok(()),
             CodexRecordAction::Message { id, .. } => {
-                if !self.attach_record(&format!("message:{id}"), &reference) {
+                let key = entry_id("message", id)?;
+                if !self.attach_record(&key, &reference) {
                     self.push_codex_record_fallback("message", part, offset, reference)?;
                 }
                 Ok(())
             }
             CodexRecordAction::Error { id, .. } => {
-                if !self.attach_record(&format!("message:{id}"), &reference) {
+                let key = entry_id("message", id)?;
+                if !self.attach_record(&key, &reference) {
                     self.push_codex_record_fallback("error", part, offset, reference)?;
                 }
                 Ok(())
@@ -1041,15 +1045,12 @@ impl Transcript {
             CodexRecordAction::FunctionCall { call_id, .. }
             | CodexRecordAction::CustomToolCall { call_id, .. }
             | CodexRecordAction::ToolOutput { call_id, .. } => {
-                self.attach_record(&format!("tool:{call_id}"), &reference);
+                let key = entry_id("tool", call_id)?;
+                self.attach_record(&key, &reference);
                 Ok(())
             }
             CodexRecordAction::TurnAborted { turn_id } => {
-                let id = if turn_id.is_empty() {
-                    "turn_aborted".to_string()
-                } else {
-                    format!("turn_aborted:{turn_id}")
-                };
+                let id = entry_id("turn_aborted", turn_id)?;
                 self.attach_record(&id, &reference);
                 Ok(())
             }

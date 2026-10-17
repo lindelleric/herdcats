@@ -1,6 +1,6 @@
 use herdcats_bridge::{
     adapter::Adapter,
-    claude::Transcript,
+    claude::{MAX_ENTRY_ID, Transcript},
     codex::{CodexAdapter, CodexResolver},
     follower::{AgentType, Follower, MAX_RECORD, MAX_SOURCE},
     herdr::{Pane, SessionRef},
@@ -1376,7 +1376,7 @@ fn oversized_call_id_turn_id_and_error_id_rejected_and_page_cursor_works() {
     // All entry keys remain safely bounded
     for entry in &transcript.entries {
         assert!(
-            entry.id.len() <= 256 + 16,
+            entry.id.len() <= MAX_ENTRY_ID,
             "Entry id too long: {}",
             entry.id
         );
@@ -1473,5 +1473,255 @@ fn resolver_rejects_relative_root() {
     assert_eq!(
         CodexResolver::new(std::path::Path::new("relative/sessions")).err(),
         Some("transcript_root_unavailable")
+    );
+}
+
+#[test]
+fn turn_id_bounds_to_client_entry_id_limit() {
+    // 1. A 251-byte turn_id produces an entry ID of exactly 264 bytes (13 + 251 = 264), which passes
+    let id_251 = "t".repeat(251);
+    let mut transcript = Transcript::default();
+    let record_251 = json!({
+        "type": "event_msg",
+        "payload": {
+            "type": "turn_aborted",
+            "turn_id": id_251
+        }
+    });
+    assert!(transcript.apply_codex(&record_251, THREAD_ID).is_ok());
+    assert_eq!(transcript.entries.len(), 1);
+    let entry = &transcript.entries[0];
+    assert_eq!(entry.id.len(), 264);
+    assert_eq!(entry.id.len(), MAX_ENTRY_ID);
+    assert_eq!(entry.id, format!("turn_aborted:{id_251}"));
+
+    // 2. A turn_id of 252..=256 bytes fails closed with invalid_transcript
+    for len in 252..=256 {
+        let bad_id = "t".repeat(len);
+        let mut transcript = Transcript::default();
+        let record = json!({
+            "type": "event_msg",
+            "payload": {
+                "type": "turn_aborted",
+                "turn_id": bad_id
+            }
+        });
+        assert_eq!(
+            transcript.apply_codex(&record, THREAD_ID),
+            Err("invalid_transcript"),
+            "Expected turn_id of len {len} (total ID len {}) to fail closed",
+            13 + len
+        );
+    }
+
+    // 3. Same check for root_turn_id fallback (when turn_id is absent)
+    let mut transcript = Transcript::default();
+    let root_record_251 = json!({
+        "type": "event_msg",
+        "payload": {
+            "type": "turn_aborted",
+            "root_turn_id": id_251
+        }
+    });
+    assert!(transcript.apply_codex(&root_record_251, THREAD_ID).is_ok());
+    assert_eq!(transcript.entries.len(), 1);
+    assert_eq!(transcript.entries[0].id.len(), 264);
+
+    for len in 252..=256 {
+        let bad_id = "r".repeat(len);
+        let mut transcript = Transcript::default();
+        let record = json!({
+            "type": "event_msg",
+            "payload": {
+                "type": "turn_aborted",
+                "root_turn_id": bad_id
+            }
+        });
+        assert_eq!(
+            transcript.apply_codex(&record, THREAD_ID),
+            Err("invalid_transcript"),
+            "Expected root_turn_id of len {len} (total ID len {}) to fail closed",
+            13 + len
+        );
+    }
+
+    // 4. Follower integration: 251-byte turn_id in rollout file passes, 252-byte fails closed
+    let temp = Temp::new();
+    let pass_file = temp.0.join("pass_rollout.jsonl");
+    let pass_records = format!(
+        "{}\n{}\n",
+        json!({"type": "session_meta", "payload": {"id": THREAD_ID, "cwd": "/test/cwd"}}),
+        json!({"type": "event_msg", "payload": {"type": "turn_aborted", "turn_id": "a".repeat(251)}})
+    );
+    fs::write(&pass_file, pass_records).unwrap();
+    let mut follower = Follower::with_content_for_agent(AgentType::Codex);
+    assert!(follower.refresh(&pass_file, THREAD_ID).unwrap());
+    assert_eq!(follower.transcript.entries.len(), 1);
+    assert_eq!(follower.transcript.entries[0].id.len(), 264);
+
+    let fail_file = temp.0.join("fail_rollout.jsonl");
+    let fail_records = format!(
+        "{}\n{}\n",
+        json!({"type": "session_meta", "payload": {"id": THREAD_ID, "cwd": "/test/cwd"}}),
+        json!({"type": "event_msg", "payload": {"type": "turn_aborted", "turn_id": "a".repeat(252)}})
+    );
+    fs::write(&fail_file, fail_records).unwrap();
+    let mut follower_fail = Follower::with_content_for_agent(AgentType::Codex);
+    assert_eq!(
+        follower_fail.refresh(&fail_file, THREAD_ID).unwrap_err(),
+        "invalid_transcript"
+    );
+}
+
+#[test]
+fn all_codex_entry_ids_from_fixtures_and_synthetic_rollouts_within_limit() {
+    let mut total_entries_checked = 0;
+
+    let temp = Temp::new();
+
+    // 1. Phase-1 fixtures
+    let fixtures = [
+        ("rollout", ROLLOUT_FIXTURE, THREAD_ID),
+        ("pending", PENDING_FIXTURE, THREAD_ID),
+        ("qa", QA_FIXTURE, "5f864d7a-0e47-526a-84c3-d03c78582686"),
+    ];
+
+    for (name, fixture_content, thread_id) in fixtures {
+        let file_path = temp.0.join(format!("{name}.jsonl"));
+        fs::write(&file_path, fixture_content).unwrap();
+
+        // Check both with_content and standard follower
+        for with_content in [false, true] {
+            let mut follower = if with_content {
+                Follower::with_content_for_agent(AgentType::Codex)
+            } else {
+                Follower::for_agent(AgentType::Codex)
+            };
+
+            assert!(
+                follower.refresh(&file_path, thread_id).unwrap(),
+                "Follower failed on fixture {name} (with_content: {with_content})"
+            );
+
+            assert!(
+                !follower.transcript.entries.is_empty(),
+                "Fixture {name} produced 0 entries"
+            );
+
+            for entry in &follower.transcript.entries {
+                total_entries_checked += 1;
+                assert!(
+                    !entry.id.is_empty(),
+                    "Entry id must not be empty in fixture {name}"
+                );
+                assert!(
+                    entry.id.len() <= MAX_ENTRY_ID,
+                    "Entry id '{}' exceeds MAX_ENTRY_ID ({} > {}) in fixture {name}",
+                    entry.id,
+                    entry.id.len(),
+                    MAX_ENTRY_ID
+                );
+                assert!(
+                    entry.id.len() <= 264,
+                    "Entry id '{}' exceeds 264 wire bytes in fixture {name}",
+                    entry.id
+                );
+            }
+        }
+    }
+
+    // 2. Synthetic rollouts: routine record skips, agent message, unknown record, turn aborted, tool calls
+    let synthetic_records = vec![
+        json!({"type": "session_meta", "payload": {"id": THREAD_ID, "cwd": "/test/cwd"}}),
+        json!({"type": "response_item", "payload": {"type": "reasoning", "summary": [], "encrypted_content": "enc-123"}}),
+        json!({"type": "response_item", "payload": {"type": "compaction", "encrypted_content": "comp-456"}}),
+        json!({"type": "compacted", "payload": {"index": 1}}),
+        json!({"type": "event_msg", "payload": {"type": "thread_settings_applied"}}),
+        json!({"type": "inter_agent_communication_metadata", "payload": {"trigger_turn": true}}),
+        json!({"type": "turn_context", "payload": {"model": "o3"}}),
+        json!({"type": "environment_context", "payload": {"cwd": "/test/cwd"}}),
+        json!({"type": "event_msg", "payload": {"type": "task_started"}}),
+        json!({"type": "event_msg", "payload": {"type": "token_count"}}),
+        json!({"type": "event_msg", "payload": {"type": "token_usage"}}),
+        json!({"type": "event_msg", "payload": {"type": "item_completed"}}),
+        json!({"type": "event_msg", "payload": {"type": "task_complete"}}),
+        json!({"type": "event_msg", "payload": {"type": "turn_aborted", "turn_id": "turn-test-1"}}),
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "agent_message",
+                "author": "planner",
+                "recipient": "worker",
+                "content": [{"type": "text", "text": "synthetic message"}]
+            }
+        }),
+        json!({
+            "type": "genuinely_unknown_record",
+            "payload": {"arbitrary_field": 42}
+        }),
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "id": "fc-synthetic-1",
+                "call_id": "call-synthetic-1",
+                "name": "synthetic_tool",
+                "arguments": "{\"key\": \"value\"}"
+            }
+        }),
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "call-synthetic-1",
+                "output": "synthetic tool output"
+            }
+        }),
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "id": "ctc-synthetic-2",
+                "name": "custom_tool",
+                "input": "{\"arg\": 1}"
+            }
+        }),
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "error",
+                "id": "err-synthetic-3",
+                "message": "synthetic failure"
+            }
+        }),
+    ];
+
+    let synth_file = temp.0.join("synthetic.jsonl");
+    let mut synth_content = String::new();
+    for r in &synthetic_records {
+        synth_content.push_str(&r.to_string());
+        synth_content.push('\n');
+    }
+    fs::write(&synth_file, synth_content).unwrap();
+
+    for with_content in [false, true] {
+        let mut follower = if with_content {
+            Follower::with_content_for_agent(AgentType::Codex)
+        } else {
+            Follower::for_agent(AgentType::Codex)
+        };
+        assert!(follower.refresh(&synth_file, THREAD_ID).unwrap());
+        assert!(!follower.transcript.entries.is_empty());
+        for entry in &follower.transcript.entries {
+            total_entries_checked += 1;
+            assert!(!entry.id.is_empty());
+            assert!(entry.id.len() <= MAX_ENTRY_ID);
+            assert!(entry.id.len() <= 264);
+        }
+    }
+
+    assert!(
+        total_entries_checked >= 40,
+        "Expected at least 40 entries checked across fixtures and synthetic rollouts, got {total_entries_checked}"
     );
 }
