@@ -587,6 +587,38 @@ struct CodexDaemonConfigTests {
         let clearedCaps = await connection.bridgeCapabilities(for: generation)
         #expect(clearedCaps == nil)
     }
+
+    @Test func sharedHelperLookupCommand() {
+        let bridgeScript = HerdrConnection.agentBridgeScript
+        let disableDaemonScript = HerdrConnection.codexDisableDaemonScript
+
+        // Both commands share the exact binary search paths
+        for path in [
+            "$HOME/.local/bin/herdcats-bridge",
+            "$HOME/.cargo/bin/herdcats-bridge",
+            "/opt/homebrew/bin/herdcats-bridge",
+            "/usr/local/bin/herdcats-bridge"
+        ] {
+            #expect(bridgeScript.contains(path))
+            #expect(disableDaemonScript.contains(path))
+        }
+
+        #expect(bridgeScript.contains("command -v herdcats-bridge"))
+        #expect(disableDaemonScript.contains("command -v herdcats-bridge"))
+
+        // Bridge command serves stdio over herdr socket and drains stdin on missing
+        #expect(bridgeScript.contains("exec \"$B\" serve --stdio --socket \"$S\""))
+        #expect(bridgeScript.contains("IFS= read -r HB_REQUEST || exit 127"))
+        #expect(bridgeScript.contains("{\"error\":{\"code\":\"helper_missing\"}}"))
+
+        // Disable daemon command executes codex-config disable-daemon with JSON fallback
+        #expect(disableDaemonScript.contains("exec \"$B\" codex-config disable-daemon"))
+        #expect(disableDaemonScript.contains("{\"error\":\"helper_missing\"}"))
+
+        // Both commands are wrapped safely for /bin/sh
+        #expect(HerdrConnection.agentBridgeCommand.starts(with: "exec /bin/sh -c "))
+        #expect(HerdrConnection.codexDisableDaemonCommand.starts(with: "exec /bin/sh -c "))
+    }
 }
 
 private actor CodexTestWire {

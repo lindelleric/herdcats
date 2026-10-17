@@ -336,8 +336,14 @@ extension HerdrConnection {
         clearAgentBridgeCapabilities()
         Task { for bridge in bridges { await bridge.close() } }
     }
-    static var agentBridgeCommand: String {
-        let script = """
+    static func helperScript(
+        exec: String,
+        missingPayload: String,
+        readStdinOnMissing: Bool,
+        missingExitCode: Int
+    ) -> String {
+        let drain = readStdinOnMissing ? "  IFS= read -r HB_REQUEST || exit \(missingExitCode)\n" : ""
+        return """
             B=
             if [ -x "$HOME/.local/bin/herdcats-bridge" ]; then
               B="$HOME/.local/bin/herdcats-bridge"
@@ -350,14 +356,43 @@ extension HerdrConnection {
               done
             fi
             if [ -z "$B" ]; then
-              IFS= read -r HB_REQUEST || exit 127
-              printf '%s\\n' '{"error":{"code":"helper_missing"}}'
-              exit 127
+            \(drain)  printf '%s\\n' '\(missingPayload)'
+              exit \(missingExitCode)
             fi
+            \(exec)
+            """
+    }
+
+    static func helperCommand(
+        exec: String,
+        missingPayload: String,
+        readStdinOnMissing: Bool,
+        missingExitCode: Int
+    ) -> String {
+        let script = helperScript(
+            exec: exec,
+            missingPayload: missingPayload,
+            readStdinOnMissing: readStdinOnMissing,
+            missingExitCode: missingExitCode
+        )
+        return "exec /bin/sh -c \(shellSafeArgument(script))"
+    }
+
+    static var agentBridgeScript: String {
+        let exec = """
             S=${HERDR_SOCKET_PATH:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr/herdr.sock}
             exec "$B" serve --stdio --socket "$S"
             """
-        return "exec /bin/sh -c \(shellSafeArgument(script))"
+        return helperScript(
+            exec: exec,
+            missingPayload: "{\"error\":{\"code\":\"helper_missing\"}}",
+            readStdinOnMissing: true,
+            missingExitCode: 127
+        )
+    }
+
+    static var agentBridgeCommand: String {
+        "exec /bin/sh -c \(shellSafeArgument(agentBridgeScript))"
     }
 }
 
@@ -598,25 +633,16 @@ extension HerdrConnection {
         return try CodexDaemonConfigResult.parse(output)
     }
 
+    static var codexDisableDaemonScript: String {
+        helperScript(
+            exec: "exec \"$B\" codex-config disable-daemon",
+            missingPayload: "{\"error\":\"helper_missing\"}",
+            readStdinOnMissing: false,
+            missingExitCode: 0
+        )
+    }
+
     static var codexDisableDaemonCommand: String {
-        let script = """
-            B=
-            if [ -x "$HOME/.local/bin/herdcats-bridge" ]; then
-              B="$HOME/.local/bin/herdcats-bridge"
-            else
-              B=$(command -v herdcats-bridge 2>/dev/null)
-            fi
-            if [ -z "$B" ]; then
-              for P in "$HOME/.local/bin/herdcats-bridge" "$HOME/.cargo/bin/herdcats-bridge" /opt/homebrew/bin/herdcats-bridge /usr/local/bin/herdcats-bridge; do
-                if [ -x "$P" ]; then B="$P"; break; fi
-              done
-            fi
-            if [ -z "$B" ]; then
-              printf '%s\\n' '{"error":"helper_missing"}'
-              exit 0
-            fi
-            exec "$B" codex-config disable-daemon
-            """
-        return "exec /bin/sh -c \(shellSafeArgument(script))"
+        "exec /bin/sh -c \(shellSafeArgument(codexDisableDaemonScript))"
     }
 }
