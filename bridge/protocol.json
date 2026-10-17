@@ -14,12 +14,16 @@
   "capabilities": {
     "claude_timeline": "true when transcript root is available; per-pane source validation still required",
     "codex_timeline": "true when the Codex root exists; prompts/approvals/questions/routed_hosts stay false",
+    "codex_daemon_config": true,
     "git": false,
     "prompts": false,
     "approvals": false,
     "questions": false,
     "routed_hosts": false,
     "record_content": "true; rich entries and bounded content retrieval are enabled only when initialize params.record_content is true"
+  },
+  "subcommands": {
+    "herdcats-bridge codex-config disable-daemon": "Sets features.daemon_auto_start = false in Codex config.toml; exits 0 and prints status/error JSON"
   },
   "requests": [
     {

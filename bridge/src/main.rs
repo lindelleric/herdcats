@@ -19,6 +19,14 @@ fn run() -> std::result::Result<(), &'static str> {
         );
         return Ok(());
     }
+    if command.as_deref() == Some("codex-config") {
+        if args.next().as_deref() != Some("disable-daemon") || args.next().is_some() {
+            return Err("usage: herdcats-bridge codex-config disable-daemon");
+        }
+        let res = herdcats_bridge::codex_config::disable_daemon();
+        println!("{}", res.to_json());
+        return Ok(());
+    }
     if command.as_deref() != Some("serve") || args.next().as_deref() != Some("--stdio") {
         return Err(
             "usage: herdcats-bridge serve --stdio [--socket PATH] [--claude-root PATH] [--codex-root PATH] [--poll-ms 50..5000]",

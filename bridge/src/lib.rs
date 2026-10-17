@@ -8,4 +8,5 @@ pub type Result<T> = std::result::Result<T, &'static str>;
 pub mod herdr;
 pub mod service;
 
+pub mod codex_config;
 pub mod content;
