@@ -23,6 +23,7 @@ struct AgentTimelineView: View {
     @State private var activeClient: AgentBridgeClient?
     @State private var activeOwner: UUID?
     @State private var showsSetup = false
+    @State private var setupReason: HostHelperSetupReason = .missing
     @State private var setupShouldUseTerminal = true
     @State private var isCheckingSetup = false
     @State private var setupFeedback: String?
@@ -42,6 +43,7 @@ struct AgentTimelineView: View {
     @State private var viewportHeight: CGFloat = 0
     @State private var historyScrollAnchor: TimelineHistoryScrollAnchor?
     @State private var bridgeCapabilities: AgentBridgeCapabilities?
+    @State private var bridgeVersion: String?
     @State private var showsCodexDaemonConfirm = false
     @State private var isDisablingCodexDaemon = false
     @State private var codexDaemonFeedback: String?
@@ -72,6 +74,16 @@ struct AgentTimelineView: View {
     }
     static func canPinnedInstallerSupport(agent: String?, supportedAgents: Set<String> = Set(HostHelperSetupPlan.agents)) -> Bool {
         agent.map { supportedAgents.contains($0) } ?? true
+    }
+    static func installLabel(
+        stage: HostHelperSetupStage,
+        reason: HostHelperSetupReason = .missing,
+        pinnedVersion: String = HostHelperSetupPlan.version
+    ) -> String {
+        HostHelperSetupPlan.installLabel(stage: stage, reason: reason, pinnedVersion: pinnedVersion)
+    }
+    static func replacementFeedback(probe: HostHelperProbe) -> String? {
+        HostHelperSetupPlan.replacementFeedback(probe: probe)
     }
     var body: some View {
         ScrollViewReader { proxy in
@@ -230,10 +242,22 @@ struct AgentTimelineView: View {
                 if isCheckingSetup {
                     isCheckingSetup = false
                     setupFeedback = code == "helper_missing"
-                        ? "The helper was not found yet. Run the command on your SSH host, then check again."
+                        ? "Herdcats Bridge was not found yet. Run the command on your SSH host, then check again."
                         : explanation(code)
                 }
-                if ["helper_missing", "helper_update_required"].contains(code) && !showsSetup && canPinnedInstallerSupportAgent { beginSetup() }
+                let isNeedsUpgrade = Self.isNeedsUpgrade(code: code, agent: agent, bridgeVersion: bridgeVersion)
+                let isMissing = code == "helper_missing"
+                if (isMissing || isNeedsUpgrade) && !showsSetup && canPinnedInstallerSupportAgent {
+                    #if DEBUG && targetEnvironment(simulator)
+                    if ScreenshotFixtures.enabled && ProcessInfo.processInfo.arguments.contains("-hc.timeline-suppress-drawer") {
+                        // Suppress drawer auto-presentation for pane screenshots
+                    } else {
+                        beginSetup(reason: isNeedsUpgrade ? .updateRequired : .missing)
+                    }
+                    #else
+                    beginSetup(reason: isNeedsUpgrade ? .updateRequired : .missing)
+                    #endif
+                }
             case .disconnected:
                 if isCheckingSetup {
                     isCheckingSetup = false
@@ -257,6 +281,9 @@ struct AgentTimelineView: View {
             if setupShouldUseTerminal { onUseTerminal() }
         }) {
             AgentBridgeSetupView(
+                reason: setupReason,
+                agent: agent,
+                installedVersion: bridgeVersion,
                 isChecking: isCheckingSetup, feedback: setupFeedback,
                 stage: helperStage, target: setupTarget,
                 canInstall: connectionState.isReady && appModel.supportsHostServices && appModel.connectionIdentity == setupTarget && canPinnedInstallerSupportAgent,
@@ -319,10 +346,17 @@ struct AgentTimelineView: View {
         }
     }
 
-    private func beginSetup() {
+    private func beginSetup(reason: HostHelperSetupReason? = nil) {
+        let isNeedsUpgrade: Bool
+        if case .unavailable(let code) = timeline.phase {
+            isNeedsUpgrade = Self.isNeedsUpgrade(code: code, agent: agent, bridgeVersion: bridgeVersion)
+        } else {
+            isNeedsUpgrade = false
+        }
+        let resolvedReason = reason ?? (isNeedsUpgrade ? .updateRequired : .missing)
+        setupReason = resolvedReason
         setupShouldUseTerminal = true
-        setupFeedback = timeline.phase == .unavailable("helper_update_required")
-            ? (agent == "codex" ? "Update the host helper to see Codex conversations." : "Update the host helper to display session images.") : nil
+        setupFeedback = nil
         showsSetup = true
     }
     @MainActor private func startHelperInstallation() {
@@ -348,7 +382,17 @@ struct AgentTimelineView: View {
                         index + 1 < args.count ? args[index + 1] : nil
                     } ?? "failure"
                     if scenario == "replacement" && !replacing {
-                        result = .replacementRequired(.present(version: "0.1.0", managed: true, compatible: false))
+                        if setupReason == .updateRequired {
+                            helperStage = .installing
+                            helperMayHaveInstalled = true
+                            try await Task.sleep(for: .milliseconds(150))
+                            fixtureHelperInstalled = true
+                            result = .ready
+                        } else {
+                            result = .replacementRequired(.present(version: "0.1.0", managed: true, compatible: false))
+                        }
+                    } else if scenario == "external_replacement" && !replacing {
+                        result = .replacementRequired(.present(version: "0.1.0", managed: false, compatible: false))
                     } else if scenario == "uncertain" && !checkOnly {
                         helperStage = .installing
                         helperMayHaveInstalled = true
@@ -367,12 +411,14 @@ struct AgentTimelineView: View {
                     guard let owned = ownedConnection.generation else { throw AgentBridgeError.closed }
                     result = try await connection.setUpHostHelper(
                         replace: replacing, checkOnly: checkOnly, target: setupTarget, owned: owned, agent: agent,
+                        reason: setupReason,
                         onStage: { stage in await commitHelperStage(stage, token: token, connection: ownedConnection) })
                 }
                 #else
                 guard let owned = ownedConnection.generation else { throw AgentBridgeError.closed }
                 result = try await connection.setUpHostHelper(
                     replace: replacing, checkOnly: checkOnly, target: setupTarget, owned: owned, agent: agent,
+                    reason: setupReason,
                     onStage: { stage in await commitHelperStage(stage, token: token, connection: ownedConnection) })
                 #endif
                 try Task.checkCancellation()
@@ -385,17 +431,14 @@ struct AgentTimelineView: View {
                     retry += 1
                 case .missing:
                     helperStage = .idle
-                    setupFeedback = "No helper was found. Tap Install Timeline helper to try installation, or use manual setup."
+                    setupReason = .missing
+                    setupFeedback = "No Herdcats Bridge was found. Tap Install Herdcats Bridge to try installation, or use manual setup."
                 case .replacementRequired(let probe):
                     helperStage = .replacementRequired(probe)
-                    if case .present(let version, let managed, _) = probe {
-                        setupFeedback = managed
-                            ? "Existing helper version \(version ?? "unknown") will be replaced at the location shown. Tap Replace to authorize this update."
-                            : "An existing helper was found elsewhere. Install a managed copy at the location shown; the other copy will remain unchanged."
-                    }
+                    setupFeedback = HostHelperSetupPlan.replacementFeedback(probe: probe)
                 case .unsupportedByPinnedInstaller(let agent):
                     helperStage = .idle
-                    setupFeedback = "This version of Herdcats can't install a \(agent.capitalized)-capable helper yet."
+                    setupFeedback = "This version of Herdcats can't install a version of Herdcats Bridge that supports \(agent.capitalized) yet."
                 case .install: throw HostHelperSetupError.invalidResponse
                 }
             } catch {
@@ -461,7 +504,11 @@ struct AgentTimelineView: View {
                 description: Text("Send a message below to start this session."))
         case .unavailable(let code):
             let isCodex = agent == "codex"
-            let isHelperOld = ["helper_update_required", "unsupported_agent"].contains(code)
+            let isSupportedAgent = canPinnedInstallerSupportAgent
+            let isNeedsUpgrade = Self.isNeedsUpgrade(code: code, agent: agent, bridgeVersion: bridgeVersion)
+            let isMissing = code == "helper_missing"
+            let showsInstallOrUpgrade = Self.showsInstallOrUpgrade(code: code, agent: agent, bridgeVersion: bridgeVersion)
+            let showsProtocolMismatch = code == "protocol_mismatch" && isSupportedAgent
             let isNoSession = ["session_reference_unavailable", "ambiguous_session", "invalid_session_reference"].contains(code)
             let isCwdMismatch = code == "session_cwd_mismatch"
             let canTurnOffCodexDaemon = Self.canConfigureCodexDaemon(
@@ -473,10 +520,10 @@ struct AgentTimelineView: View {
 
             ContentUnavailableView {
                 Label(
-                    isCodex && isHelperOld ? "Update the Herdcats helper to see Codex conversations" :
+                    isNeedsUpgrade ? "Upgrade Herdcats Bridge" :
                     isCodex && isNoSession ? "Codex session not identified" :
                     isCodex && isCwdMismatch ? "This pane’s Codex session could not be confirmed" :
-                    (code == "helper_missing" ? "Set up Timeline" : "Timeline unavailable"),
+                    (isMissing ? "Set up Timeline" : "Timeline unavailable"),
                     systemImage: "text.bubble"
                 )
             } description: {
@@ -486,10 +533,12 @@ struct AgentTimelineView: View {
                     Text(explanation(code))
                 }
             } actions: {
-                if ["helper_missing", "helper_update_required", "unsupported_agent", "protocol_mismatch", "record_too_large"].contains(code) && canPinnedInstallerSupportAgent {
-                    Button(isCodex && isHelperOld ? "Update helper" : "Set up Timeline") { beginSetup() }
-                        .buttonStyle(.herdrPrimary)
-                        .accessibilityIdentifier("timeline-helper-setup")
+                if showsInstallOrUpgrade || showsProtocolMismatch {
+                    Button(isNeedsUpgrade ? "Upgrade Herdcats Bridge" : (isMissing ? "Install Herdcats Bridge" : "Set up Timeline")) {
+                        beginSetup(reason: isNeedsUpgrade ? .updateRequired : .missing)
+                    }
+                    .buttonStyle(.herdrPrimary)
+                    .accessibilityIdentifier("timeline-helper-setup")
                 }
                 if isCodex && isNoSession {
                     if canTurnOffCodexDaemon && !codexDaemonErrorOccurred && codexDaemonFeedback == nil {
@@ -527,14 +576,54 @@ struct AgentTimelineView: View {
                         }
                     }
                 }
-                Button("Check again") { retry += 1 }.buttonStyle(.herdrSecondary)
-                    .accessibilityIdentifier("timeline-helper-retry")
+                if !showsInstallOrUpgrade {
+                    Button("Check again") { retry += 1 }.buttonStyle(.herdrSecondary)
+                        .accessibilityIdentifier("timeline-helper-retry")
+                }
             }
         case .ready: EmptyView()
         }
     }
     func explanation(_ code: String) -> String {
-        Self.explanation(code, agent: agent)
+        Self.explanation(
+            code,
+            agent: agent,
+            installedVersion: bridgeVersion,
+            pinnedVersion: HostHelperSetupPlan.version,
+            supportedAgents: Set(HostHelperSetupPlan.agents)
+        )
+    }
+
+    static func isNeedsUpgrade(
+        code: String,
+        agent: String?,
+        bridgeVersion: String? = nil,
+        supportedAgents: Set<String> = Set(HostHelperSetupPlan.agents)
+    ) -> Bool {
+        let isSupported = canPinnedInstallerSupport(agent: agent, supportedAgents: supportedAgents)
+        guard isSupported else { return false }
+        let isCodex = agent == "codex"
+        return code == "helper_update_required" || (HostHelperProbe.isOlderThanPinned(bridgeVersion) && (code == "record_too_large" || (isCodex && code == "unsupported_agent")))
+    }
+
+    static func showsInstallOrUpgrade(
+        code: String,
+        agent: String?,
+        bridgeVersion: String? = nil,
+        supportedAgents: Set<String> = Set(HostHelperSetupPlan.agents)
+    ) -> Bool {
+        let isSupported = canPinnedInstallerSupport(agent: agent, supportedAgents: supportedAgents)
+        guard isSupported else { return false }
+        return code == "helper_missing" || isNeedsUpgrade(code: code, agent: agent, bridgeVersion: bridgeVersion, supportedAgents: supportedAgents)
+    }
+
+    static func showsPaneCheckAgain(
+        code: String,
+        agent: String?,
+        bridgeVersion: String? = nil,
+        supportedAgents: Set<String> = Set(HostHelperSetupPlan.agents)
+    ) -> Bool {
+        !showsInstallOrUpgrade(code: code, agent: agent, bridgeVersion: bridgeVersion, supportedAgents: supportedAgents)
     }
 
     static func canConfigureCodexDaemon(
@@ -557,29 +646,42 @@ struct AgentTimelineView: View {
         "Add `daemon_auto_start = false` under `[features]` in `~/.codex/config.toml`, or start Codex with `codex --no-daemon`."
     }
 
-    static func explanation(_ code: String, agent: String?, supportedAgents: Set<String> = Set(HostHelperSetupPlan.agents)) -> String {
+    static func explanation(
+        _ code: String,
+        agent: String?,
+        installedVersion: String? = nil,
+        pinnedVersion: String = HostHelperSetupPlan.version,
+        supportedAgents: Set<String> = Set(HostHelperSetupPlan.agents)
+    ) -> String {
         let isCodex = agent == "codex"
         let canSupportCodex = supportedAgents.contains("codex")
         switch code {
         case "helper_missing":
             if isCodex {
                 return canSupportCodex
-                    ? "Install the small host helper to see this session as native messages. Terminal is available now."
-                    : "This version of Herdcats can't install a Codex-capable helper yet."
+                    ? "Install Herdcats Bridge to see this session as native messages. Terminal is available now."
+                    : "This version of Herdcats can't install a version of Herdcats Bridge that supports Codex yet."
             }
-            return "Install the small host helper to see this session as native messages. Terminal is available now."
+            return "Install Herdcats Bridge to see this session as native messages. Terminal is available now."
         case "helper_update_required":
-            if isCodex {
-                return canSupportCodex
-                    ? "Update the Herdcats helper to see Codex conversations."
-                    : "This version of Herdcats can't install a Codex-capable helper yet."
+            if let agent, !supportedAgents.contains(agent) {
+                return "This version of Herdcats can't install a version of Herdcats Bridge that supports \(agent.capitalized) yet."
             }
-            return "Update the host helper to display session images."
+            let feature = isCodex ? "Codex conversations" : "session images"
+            if let installed = installedVersion, !installed.isEmpty {
+                return "Herdcats Bridge \(installed) on this computer can't show \(feature). Upgrade to \(pinnedVersion)."
+            } else {
+                return "The Herdcats Bridge on this computer can't show \(feature). Upgrade to \(pinnedVersion)."
+            }
         case "unsupported_agent":
             if isCodex {
-                return canSupportCodex
-                    ? "Update the Herdcats helper to see Codex conversations."
-                    : "This version of Herdcats can't install a Codex-capable helper yet."
+                if isNeedsUpgrade(code: code, agent: agent, bridgeVersion: installedVersion, supportedAgents: supportedAgents),
+                   let installedVersion {
+                    return "Herdcats Bridge \(installedVersion) on this computer can't show Codex conversations. Upgrade to \(pinnedVersion)."
+                }
+                if !canSupportCodex {
+                    return "This version of Herdcats can't install a version of Herdcats Bridge that supports Codex yet."
+                }
             }
             return "Timeline is not available for this agent yet. You can still send messages below or use Terminal."
         case "routed_host_unsupported": return "Native history is not available through saved machines yet. Messages can still be sent below."
@@ -596,15 +698,19 @@ struct AgentTimelineView: View {
         case "transcript_root_unavailable":
             return "Session history is unavailable on this host."
         case "source_changing": return "Session history is being updated. Try again in a moment."
-        case "record_too_large": return "This helper cannot read an oversized session record. Update the helper to reload history."
+        case "record_too_large":
+            if isNeedsUpgrade(code: code, agent: agent, bridgeVersion: installedVersion, supportedAgents: supportedAgents) {
+                return "Herdcats Bridge cannot read an oversized session record. Upgrade Herdcats Bridge to reload history."
+            }
+            return "Herdcats Bridge cannot read an oversized session record. You can still send messages below or use Terminal."
         case "source_too_large": return "This session exceeds the current history size limit. Compose and Terminal remain available."
         case "unsafe_transcript_path", "invalid_transcript", "session_mismatch":
             return "Session history could not be read safely. Compose and Terminal remain available."
-        case "herdr_unavailable": return "The helper cannot reach Herdr on this host. Check the host session, then try again."
+        case "herdr_unavailable": return "Herdcats Bridge cannot reach Herdr on this host. Check the host session, then try again."
         case "unsupported_herdr_protocol", "protocol_mismatch":
-            return "The host helper and Herdr version are not compatible."
+            return "Herdcats Bridge and the Herdr version are not compatible."
         default:
-            return "Check that the optional herdcats-bridge helper is available on your host, then try again."
+            return "Check that the optional Herdcats Bridge is available on your host, then try again."
         }
     }
     @MainActor private func run() async {
@@ -615,6 +721,7 @@ struct AgentTimelineView: View {
         pageError = nil
         isPaging = false
         bridgeCapabilities = await connection.bridgeCapabilities(for: connectionState.generation)
+        bridgeVersion = await connection.bridgeVersion(for: connectionState.generation)
         codexDaemonFeedback = nil
         codexDaemonErrorOccurred = false
         guard scenePhase == .active, connectionState.isReady else {
@@ -624,6 +731,9 @@ struct AgentTimelineView: View {
         #if DEBUG && targetEnvironment(simulator)
             if ScreenshotFixtures.enabled {
                 if ScreenshotFixtures.screen == "timeline-history-position" { following = false }
+                if ScreenshotFixtures.screen.contains("helper-old") || ScreenshotFixtures.screen.contains("needs-upgrade") {
+                    bridgeVersion = "0.1.4"
+                }
                 do {
                     try timeline.consume(AgentTimelineScreenshotFixture.frame(
                         paneId: paneId,
@@ -644,11 +754,13 @@ struct AgentTimelineView: View {
             if activeOwner == owner {
                 activeClient = client
                 bridgeCapabilities = await connection.bridgeCapabilities(for: ownedConnection.generation)
+                bridgeVersion = await connection.bridgeVersion(for: ownedConnection.generation)
             }
             try await client.waitUntilClosed()
         } catch {
             if activeOwner == owner {
                 bridgeCapabilities = await connection.bridgeCapabilities(for: ownedConnection.generation)
+                bridgeVersion = await connection.bridgeVersion(for: ownedConnection.generation)
             }
             timeline.end(owner: owner, error: (error as? AgentBridgeError) ?? .closed)
         }
@@ -681,10 +793,15 @@ struct AgentTimelineView: View {
     }
     @MainActor private func commit(
         _ frame: AgentBridgeFrame, owner: UUID, connectionState owned: AgentTimelineConnectionState
-    ) throws {
+    ) async throws {
+        // The handshake is recorded before watch events arrive. Load its version
+        // before publishing unavailable, so an older host can open the upgrade drawer.
+        let version = await connection.bridgeVersion(for: owned.generation)
         // Readiness/generation and the store mutation share one MainActor turn;
         // a callback suspended before the UI hop cannot commit after reconnect.
         try owned.requireCurrent(connectionState)
+        guard activeOwner == owner else { return }
+        bridgeVersion = version
         try timeline.consume(frame, owner: owner)
     }
     @MainActor private func mergeHistoryPreservingPosition(
@@ -1091,6 +1208,10 @@ private struct AgentTimelineEntryView: View {
 
 /// Explicit opt-in installation on the displayed SSH endpoint; manual setup stays available.
 private struct AgentBridgeSetupView: View {
+    var reason: HostHelperSetupReason = .missing
+    var agent: String? = nil
+    var installedVersion: String? = nil
+    var pinnedVersion: String = HostHelperSetupPlan.version
     let isChecking: Bool
     let feedback: String?
     let stage: HostHelperSetupStage
@@ -1101,75 +1222,119 @@ private struct AgentBridgeSetupView: View {
     let onUseTerminal: () -> Void
     @State private var copied = false
     private var command: String {
-        "curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v\(HostHelperSetupPlan.version)/install.sh | sh -s -- --version \(HostHelperSetupPlan.version)"
+        HostHelperSetupPlan.manualInstallCommand(reason: reason, pinnedVersion: pinnedVersion)
     }
     private var installLabel: String {
-        switch stage {
-        case .idle: "Install Timeline helper"
-        case .checking: "Checking host…"
-        case .installing: "Installing helper…"
-        case .verifying: "Verifying installation…"
-        case .uncertain: "Check installation"
-        case .installed: "Open Timeline"
-        case .replacementRequired(let probe):
-            if case .present(_, true, _) = probe { "Replace helper with \(HostHelperSetupPlan.version)" }
-            else { "Install managed helper" }
-        }
+        HostHelperSetupPlan.installLabel(stage: stage, reason: reason, pinnedVersion: pinnedVersion)
     }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    Image(systemName: "text.bubble.fill")
-                        .font(.system(size: 36)).foregroundStyle(Theme.text)
-                    Text("A clearer view of your agent")
-                        .font(.jost(.title, weight: .semibold))
-                        .accessibilityAddTraits(.isHeader)
-                    Text("Timeline turns your agent session into readable messages and tool activity, with colors that match your app.")
-                        .font(.jost(.body)).foregroundStyle(Theme.textMuted)
-                    VStack(alignment: .leading, spacing: 14) {
-                        benefit("Read comfortably in light or dark mode", icon: "circle.lefthalf.filled")
-                        benefit("Follow messages and review activity summaries", icon: "text.alignleft")
-                        benefit("Send prompts with Compose, voice, and photos", icon: "square.and.pencil")
-                    }
-                    .padding(18).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Theme.cardBackground, in: RoundedRectangle(cornerRadius: 18))
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("How the host helper works")
-                            .font(.jost(.headline)).accessibilityAddTraits(.isHeader)
-                        Text("A small helper on your SSH computer reads your existing agent session and sends its history to Herdcats over your SSH connection. Your agent keeps running in the same pane.")
-                            .font(.jost(.subheadline)).foregroundStyle(Theme.textMuted)
-                        Text("It runs only while Timeline is open. There’s no background service or agent hook to configure.")
-                            .font(.jost(.subheadline)).foregroundStyle(Theme.textMuted)
-                    }
-                    Text("Tapping Install downloads the pinned helper and verifies its checksum before running the installer. No sudo, background service, or agent hooks are required.")
-                        .font(.jost(.subheadline)).foregroundStyle(Theme.textMuted)
-                    DisclosureGroup("Manual setup") {
-                    VStack(alignment: .leading, spacing: 14) {
-                        Text("Set it up once on your SSH host")
-                            .font(.jost(.headline)).accessibilityAddTraits(.isHeader)
-                        Button {
-                            UIPasteboard.general.string = command
-                            copied = true
-                        } label: {
-                            Label(copied ? "Command copied" : "Copy install command", systemImage: copied ? "checkmark" : "doc.on.doc")
-                                .frame(maxWidth: .infinity)
+                    if reason == .updateRequired {
+                        Image(systemName: "arrow.up.circle")
+                            .font(.system(size: 36)).foregroundStyle(Theme.text)
+                        Text("A newer Herdcats Bridge is available")
+                            .font(.jost(.title, weight: .semibold))
+                            .accessibilityAddTraits(.isHeader)
+                        let feature = agent == "codex" ? "Codex conversations" : "session images"
+                        Text("Version \(pinnedVersion) adds \(feature). Your agent keeps running while you upgrade.")
+                            .font(.jost(.body)).foregroundStyle(Theme.textMuted)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("\(target.username)@\(target.host)")
+                                .font(.jost(.subheadline, weight: .semibold))
+                            Text("~/.local/bin/herdcats-bridge")
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(Theme.textMuted)
+                            Text("Port \(target.port)")
+                                .font(.jost(.caption))
+                                .foregroundStyle(Theme.textMuted)
+                            let versionRow = (installedVersion?.isEmpty == false)
+                                ? "\(installedVersion!) → \(pinnedVersion)"
+                                : "→ \(pinnedVersion)"
+                            Text(versionRow)
+                                .font(.jost(.caption))
+                                .foregroundStyle(Theme.textMuted)
                         }
-                        .buttonStyle(.herdrSecondary)
-                        .accessibilityIdentifier("timeline-helper-copy-command")
-                        Text("1. Copy the command below.\n2. Run it on the computer where Herdr and your agent are running.\n3. Come back here and tap Check again.")
+                        .padding(18).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Theme.cardBackground, in: RoundedRectangle(cornerRadius: 18))
+                        Text("Tapping Upgrade downloads \(pinnedVersion), verifies its checksum, and replaces the copy at the location shown. No sudo, background service, or agent hooks are required.")
                             .font(.jost(.subheadline)).foregroundStyle(Theme.textMuted)
-                        Text(command)
-                            .font(.system(.footnote, design: .monospaced)).textSelection(.enabled)
-                            .padding(16).frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Theme.fieldBackground, in: RoundedRectangle(cornerRadius: 16))
-                        Text("The installer checks the download and installs in your user account. Already installed? Add --replace to update it.")
-                            .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
-                        Link("View downloads and setup details", destination: URL(string: "https://github.com/zhiyao/herdcats/releases")!)
-                            .font(.jost(.subheadline))
+                    } else {
+                        Image(systemName: "text.bubble.fill")
+                            .font(.system(size: 36)).foregroundStyle(Theme.text)
+                        Text("A clearer view of your agent")
+                            .font(.jost(.title, weight: .semibold))
+                            .accessibilityAddTraits(.isHeader)
+                        Text("Timeline turns your agent session into readable messages and tool activity, with colors that match your app.")
+                            .font(.jost(.body)).foregroundStyle(Theme.textMuted)
+                        VStack(alignment: .leading, spacing: 14) {
+                            benefit("Read comfortably in light or dark mode", icon: "circle.lefthalf.filled")
+                            benefit("Follow messages and review activity summaries", icon: "text.alignleft")
+                            benefit("Send prompts with Compose, voice, and photos", icon: "square.and.pencil")
+                        }
+                        .padding(18).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Theme.cardBackground, in: RoundedRectangle(cornerRadius: 18))
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("How Herdcats Bridge works")
+                                .font(.jost(.headline)).accessibilityAddTraits(.isHeader)
+                            Text("Herdcats Bridge is a small program on your SSH computer that reads your existing agent session and sends its history to Herdcats over your SSH connection. Your agent keeps running in the same pane.")
+                                .font(.jost(.subheadline)).foregroundStyle(Theme.textMuted)
+                            Text("It runs only while Timeline is open. There’s no background service or agent hook to configure.")
+                                .font(.jost(.subheadline)).foregroundStyle(Theme.textMuted)
+                        }
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("\(target.username)@\(target.host)")
+                                .font(.jost(.subheadline, weight: .semibold))
+                            Text("~/.local/bin/herdcats-bridge")
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(Theme.textMuted)
+                            Text("Port \(target.port) · Herdcats Bridge \(pinnedVersion)")
+                                .font(.jost(.caption))
+                                .foregroundStyle(Theme.textMuted)
+                        }
+                        .padding(18).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Theme.cardBackground, in: RoundedRectangle(cornerRadius: 18))
+                        Text("Tapping Install downloads the pinned Herdcats Bridge release and verifies its checksum before running the installer. No sudo, background service, or agent hooks are required.")
+                            .font(.jost(.subheadline)).foregroundStyle(Theme.textMuted)
                     }
-                    .padding(.top, 12)
+
+                    DisclosureGroup("Manual setup") {
+                        VStack(alignment: .leading, spacing: 14) {
+                            Text("Set it up once on your SSH host")
+                                .font(.jost(.headline)).accessibilityAddTraits(.isHeader)
+                            Button {
+                                UIPasteboard.general.string = command
+                                copied = true
+                            } label: {
+                                Label(copied ? "Command copied" : "Copy install command", systemImage: copied ? "checkmark" : "doc.on.doc")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.herdrSecondary)
+                            .accessibilityIdentifier("timeline-helper-copy-command")
+                            Text("1. Copy the command below.\n2. Run it on the computer where Herdr and your agent are running.\n3. Come back here and tap Check again.")
+                                .font(.jost(.subheadline)).foregroundStyle(Theme.textMuted)
+                            Button(action: onCheckAgain) {
+                                HStack {
+                                    if isChecking { ProgressView() }
+                                    Text(isChecking ? "Checking…" : "Check again")
+                                }.frame(maxWidth: .infinity)
+                            }
+                            .disabled(isChecking || stage.isBusy).buttonStyle(.herdrSecondary)
+                            .accessibilityIdentifier("timeline-helper-check-again")
+                            Text(command)
+                                .font(.system(.footnote, design: .monospaced)).textSelection(.enabled)
+                                .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Theme.fieldBackground, in: RoundedRectangle(cornerRadius: 16))
+                            Text(reason == .updateRequired
+                                ? "The installer checks the download and replaces Herdcats Bridge in your user account. The command includes `--replace`."
+                                : "The installer checks the download and installs in your user account.")
+                                .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
+                            Link("View downloads and setup details", destination: URL(string: "https://github.com/zhiyao/herdcats/releases")!)
+                                .font(.jost(.subheadline))
+                        }
+                        .padding(.top, 12)
                     }
                 }
                 .padding(24)
@@ -1177,11 +1342,6 @@ private struct AgentBridgeSetupView: View {
             .accessibilityIdentifier("timeline-setup-scroll")
             .safeAreaInset(edge: .bottom) {
                 VStack(spacing: 12) {
-                    VStack(spacing: 3) {
-                        Text("\(target.username)@\(target.host)").font(.jost(.subheadline, weight: .semibold))
-                        Text("~/.local/bin/herdcats-bridge").font(.system(.caption, design: .monospaced))
-                        Text("Port \(target.port) · helper \(HostHelperSetupPlan.version)").font(.jost(.caption))
-                    }.foregroundStyle(Theme.textMuted)
                     if let feedback {
                         Text(feedback).font(.jost(.caption)).foregroundStyle(Theme.textMuted)
                             .accessibilityIdentifier("timeline-setup-feedback")
@@ -1195,14 +1355,16 @@ private struct AgentBridgeSetupView: View {
                     .disabled(stage.isBusy || isChecking || !canInstall)
                     .buttonStyle(.herdrPrimary)
                     .accessibilityIdentifier("timeline-helper-install")
-                    Button(action: onCheckAgain) {
-                        HStack {
-                            if isChecking { ProgressView() }
-                            Text(isChecking ? "Checking…" : "Check again")
-                        }.frame(maxWidth: .infinity)
+                    if !canInstall {
+                        Button(action: onCheckAgain) {
+                            HStack {
+                                if isChecking { ProgressView() }
+                                Text(isChecking ? "Checking…" : "Check again")
+                            }.frame(maxWidth: .infinity)
+                        }
+                        .disabled(isChecking || stage.isBusy).buttonStyle(.herdrSecondary)
+                        .accessibilityIdentifier("timeline-helper-check-again")
                     }
-                    .disabled(isChecking || stage.isBusy).buttonStyle(.herdrSecondary)
-                    .accessibilityIdentifier("timeline-helper-check-again")
                     Button("Use Terminal for now", action: onUseTerminal)
                         .buttonStyle(.herdrSecondary)
                         .accessibilityIdentifier("timeline-helper-use-terminal")
@@ -1210,7 +1372,7 @@ private struct AgentBridgeSetupView: View {
                 .padding(20).background(Theme.background)
             }
             .background(Theme.background).foregroundStyle(Theme.text)
-            .navigationTitle("Set up Timeline")
+            .navigationTitle(reason == .updateRequired ? "Upgrade Herdcats Bridge" : "Set up Timeline")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {

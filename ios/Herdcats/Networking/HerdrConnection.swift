@@ -199,16 +199,26 @@ actor HerdrConnection {
     var agentBridges: [UUID:AgentBridgeClient] = [:]
     private(set) var agentBridgeCapabilities: AgentBridgeCapabilities?
     private(set) var agentBridgeCapabilitiesGeneration: ConnectionGeneration?
+    private(set) var agentBridgeVersion: String?
+    private(set) var agentBridgeVersionGeneration: ConnectionGeneration?
 
-    func recordAgentBridgeCapabilities(_ capabilities: AgentBridgeCapabilities?, generation: ConnectionGeneration) {
+    func recordAgentBridgeHandshake(capabilities: AgentBridgeCapabilities?, version: String?, generation: ConnectionGeneration) {
         guard slot.matches(generation) else { return }
         self.agentBridgeCapabilities = capabilities
         self.agentBridgeCapabilitiesGeneration = generation
+        self.agentBridgeVersion = version
+        self.agentBridgeVersionGeneration = generation
+    }
+
+    func recordAgentBridgeCapabilities(_ capabilities: AgentBridgeCapabilities?, generation: ConnectionGeneration) {
+        recordAgentBridgeHandshake(capabilities: capabilities, version: nil, generation: generation)
     }
 
     func clearAgentBridgeCapabilities() {
         self.agentBridgeCapabilities = nil
         self.agentBridgeCapabilitiesGeneration = nil
+        self.agentBridgeVersion = nil
+        self.agentBridgeVersionGeneration = nil
     }
 
     func bridgeCapabilities(for generation: ConnectionGeneration?) -> AgentBridgeCapabilities? {
@@ -216,6 +226,13 @@ actor HerdrConnection {
             return nil
         }
         return agentBridgeCapabilities
+    }
+
+    func bridgeVersion(for generation: ConnectionGeneration?) -> String? {
+        guard let generation, slot.matches(generation), agentBridgeVersionGeneration == generation else {
+            return nil
+        }
+        return agentBridgeVersion
     }
     var helperSetupOperation: UUID?
     var liveShells: [String: PaneLiveShells] = [:]

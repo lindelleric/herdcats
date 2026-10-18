@@ -237,16 +237,23 @@ enum HostHelperProbe: Equatable, Sendable {
         } ?? false
         self = .present(version: version, managed: marker == "HC_HELPER_MANAGED", compatible: compatible)
     }
-    private static func versionNumbers(_ version: String) -> [Int]? {
+    static func versionNumbers(_ version: String) -> [Int]? {
         guard version.utf8.count <= 64 else { return nil }
         let parts = version.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 3, parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy({ $0.isASCII && $0.isNumber }) }) else { return nil }
         let numbers = parts.compactMap { Int($0) }
         return numbers.count == 3 ? numbers : nil
     }
-    private static func isAtLeastPinned(_ version: String) -> Bool {
+    static func isAtLeastPinned(_ version: String) -> Bool {
         guard let current = versionNumbers(version), let minimum = versionNumbers(HostHelperSetupPlan.version) else { return false }
         return current == minimum || minimum.lexicographicallyPrecedes(current)
+    }
+    static func isOlderThanPinned(_ version: String?) -> Bool {
+        guard let version,
+              let current = versionNumbers(version),
+              let pinned = versionNumbers(HostHelperSetupPlan.version)
+        else { return false }
+        return current.lexicographicallyPrecedes(pinned)
     }
 }
 enum HostHelperSetupDecision: Equatable, Sendable {
@@ -254,6 +261,18 @@ enum HostHelperSetupDecision: Equatable, Sendable {
     case replacementRequired(HostHelperProbe)
     case install(replace: Bool)
     case unsupportedByPinnedInstaller(String)
+}
+enum HostHelperSetupReason: String, Equatable, Sendable {
+    case missing = "helper_missing"
+    case updateRequired = "helper_update_required"
+
+    init(code: String?) {
+        if code == "helper_update_required" {
+            self = .updateRequired
+        } else {
+            self = .missing
+        }
+    }
 }
 enum HostHelperSetupStage: Equatable, Sendable {
     case idle, checking, installing, verifying, uncertain, installed
@@ -265,11 +284,11 @@ enum HostHelperSetupError: Error, LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .unsafeDestination: "The install location is a link or another nonregular file. Use manual setup to choose a safe location."
-        case .invalidResponse: "The helper could not be verified. Check the installation or use manual setup."
-        case .busy: "A helper setup is already running on this connection. Check again when it finishes."
+        case .invalidResponse: "Herdcats Bridge could not be verified. Check the installation or use manual setup."
+        case .busy: "A Herdcats Bridge setup is already running on this connection. Check again when it finishes."
         case .failed(let code):
             switch code {
-            case "curl_missing": "This host needs curl to download the helper. Use manual setup to install it."
+            case "curl_missing": "This host needs curl to download Herdcats Bridge. Use manual setup to install it."
             case "checksum_tool_missing": "This host needs shasum or sha256sum to verify the download."
             case "download_failed": "The host could not download the installer. Check its network access, or use manual setup."
             case "checksum_mismatch": "The installer did not match the app’s pinned checksum. Nothing was executed. Use manual setup or update Herdcats."

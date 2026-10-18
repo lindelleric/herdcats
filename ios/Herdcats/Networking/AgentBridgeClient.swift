@@ -57,14 +57,15 @@ actor AgentBridgeClient {
     func performHandshakeAndWatch(
         paneId: String,
         agent: String? = nil,
-        onHandshake: (@Sendable (AgentBridgeCapabilities?) async -> Void)? = nil
+        onHandshake: (@Sendable (AgentBridgeCapabilities?, String?) async -> Void)? = nil
     ) async throws {
         let handshake = try await request(.initialize, params: AgentBridgeParams(protocol: 1, recordContent: true))
         guard handshake.protocol == 1, handshake.epoch?.isEmpty == false else {
             throw AgentBridgeError.protocolMismatch
         }
         self.capabilities = handshake.capabilities
-        await onHandshake?(handshake.capabilities)
+        let version = handshake.bridgeVersion ?? handshake.version
+        await onHandshake?(handshake.capabilities, version)
         if agent == "codex" {
             guard handshake.capabilities?.codexTimeline == true else {
                 throw AgentBridgeError.unavailable(Self.unavailableCodeForCodex(handshake: handshake))
@@ -86,7 +87,7 @@ actor AgentBridgeClient {
         command: String,
         paneId: String,
         agent: String? = nil,
-        onHandshake: (@Sendable (AgentBridgeCapabilities?) async -> Void)? = nil
+        onHandshake: (@Sendable (AgentBridgeCapabilities?, String?) async -> Void)? = nil
     ) async throws {
         try await withTaskCancellationHandler {
             try Task.checkCancellation()
@@ -312,8 +313,8 @@ extension HerdrConnection {
                 command: Self.agentBridgeCommand,
                 paneId: paneId,
                 agent: agent,
-                onHandshake: { [weak self] capabilities in
-                    await self?.recordAgentBridgeCapabilities(capabilities, generation: owned)
+                onHandshake: { [weak self] capabilities, version in
+                    await self?.recordAgentBridgeHandshake(capabilities: capabilities, version: version, generation: owned)
                 }
             )
             try requireGeneration(owned)
@@ -420,10 +421,13 @@ extension AgentBridgeClient {
 
 /// Immutable release selected by this app build, not a host-supplied URL.
 enum HostHelperSetupPlan {
-    static let version = "0.1.4"
-    static let installerSHA256 = "979c4a0fa8a6620c1748e76ceaa4be0b90b8e7dba13538202ed8c540656092a3"
+    static let version = "0.2.0"
+    static let installerSHA256 = "e335a78a970bedeae94e1fdde0393cd3d23cde93ee0497a98af19cbcc8eca59d"
     /// Supported agents bundled in this pinned release. Must be updated when bumping version / installerSHA256.
-    static let agents: [String] = ["claude"]
+    static let agents: [String] = ["claude", "codex"]
+    static func manualInstallCommand(reason: HostHelperSetupReason, pinnedVersion: String = version) -> String {
+        "curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v\(pinnedVersion)/install.sh | sh -s -- --version \(pinnedVersion)" + (reason == .updateRequired ? " --replace" : "")
+    }
     static func installationScript(replace: Bool) -> String {
         return #"""
         set -eu
@@ -452,17 +456,75 @@ enum HostHelperSetupPlan {
 }
 
 extension HostHelperSetupPlan {
-    static func decision(probe: HostHelperProbe, replace: Bool, checkOnly: Bool, agent: String? = nil) -> HostHelperSetupDecision {
+    static func decision(
+        probe: HostHelperProbe,
+        replace: Bool,
+        checkOnly: Bool,
+        agent: String? = nil,
+        reason: HostHelperSetupReason = .missing
+    ) -> HostHelperSetupDecision {
         if case .present(_, _, true) = probe { return .ready }
         if let agent, !agents.contains(agent) {
             return .unsupportedByPinnedInstaller(agent)
         }
         switch probe {
-        case .missing: return checkOnly ? .missing : .install(replace: false)
-        case .present(_, let managed, let compatible):
+        case .missing:
+            return checkOnly ? .missing : .install(replace: false)
+        case .present(let version, let managed, let compatible):
             if compatible { return .ready }
-            if checkOnly || !replace { return .replacementRequired(probe) }
-            return .install(replace: managed)
+            if checkOnly { return .replacementRequired(probe) }
+            if reason == .updateRequired && managed && HostHelperProbe.isOlderThanPinned(version) {
+                return .install(replace: true)
+            }
+            if replace {
+                return .install(replace: managed)
+            }
+            return .replacementRequired(probe)
+        }
+    }
+
+    static func installLabel(
+        stage: HostHelperSetupStage,
+        reason: HostHelperSetupReason = .missing,
+        pinnedVersion: String = HostHelperSetupPlan.version
+    ) -> String {
+        switch stage {
+        case .idle:
+            switch reason {
+            case .updateRequired:
+                return "Upgrade to \(pinnedVersion)"
+            case .missing:
+                return "Install Herdcats Bridge"
+            }
+        case .checking:
+            return "Checking host…"
+        case .installing:
+            return reason == .updateRequired ? "Upgrading Herdcats Bridge…" : "Installing Herdcats Bridge…"
+        case .verifying:
+            return "Verifying installation…"
+        case .uncertain:
+            return "Check installation"
+        case .installed:
+            return "Open Timeline"
+        case .replacementRequired(let probe):
+            if case .present(_, true, _) = probe {
+                return "Replace Herdcats Bridge with \(pinnedVersion)"
+            } else {
+                return "Install managed Herdcats Bridge"
+            }
+        }
+    }
+
+    static func replacementFeedback(probe: HostHelperProbe) -> String? {
+        guard case .present(let version, let managed, _) = probe else { return nil }
+        if managed {
+            if let version, !version.isEmpty {
+                return "Found Herdcats Bridge \(version) on this host. Tap Replace to upgrade it at the location shown."
+            } else {
+                return "Existing Herdcats Bridge will be replaced at the location shown. Tap Replace to upgrade it."
+            }
+        } else {
+            return "An existing Herdcats Bridge was found elsewhere. Install a managed copy at the location shown; the other copy will remain unchanged."
         }
     }
 }
@@ -577,6 +639,7 @@ extension HerdrConnection {
     func setUpHostHelper(
         replace: Bool, checkOnly: Bool, target: ConnectionIdentity, owned: ConnectionGeneration,
         agent: String? = nil,
+        reason: HostHelperSetupReason = .missing,
         onStage: @escaping @Sendable (HostHelperSetupStage) async -> Void
     ) async throws -> HostHelperSetupDecision {
         guard route == nil else { throw AgentBridgeError.routedHostUnsupported }
@@ -595,7 +658,7 @@ extension HerdrConnection {
         try Task.checkCancellation()
         try requireGeneration(owned)
         let probe = try HostHelperProbe(output: output, agent: agent)
-        let decision = HostHelperSetupPlan.decision(probe: probe, replace: replace, checkOnly: checkOnly, agent: agent)
+        let decision = HostHelperSetupPlan.decision(probe: probe, replace: replace, checkOnly: checkOnly, agent: agent, reason: reason)
         guard case .install(let replaceManaged) = decision else { return decision }
         await onStage(.installing)
         try Task.checkCancellation()
