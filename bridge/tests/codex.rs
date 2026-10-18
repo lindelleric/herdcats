@@ -1154,7 +1154,7 @@ fn preserve_codex_record_image_only_message_creates_bounded_bubble() {
     });
 
     // 1. apply_codex inserts nothing because text is empty
-    transcript.apply_codex(&image_msg, THREAD_ID).unwrap();
+    transcript.apply_codex(&image_msg, THREAD_ID, 0).unwrap();
     assert_eq!(transcript.entries.len(), 0);
 
     // 2. preserve_codex_record creates a bounded record bubble because attach_record finds no entry
@@ -1270,7 +1270,7 @@ fn oversized_call_id_turn_id_and_error_id_rejected_and_page_cursor_works() {
         }
     });
     assert_eq!(
-        transcript.apply_codex(&bad_fc, THREAD_ID),
+        transcript.apply_codex(&bad_fc, THREAD_ID, 0),
         Err("invalid_transcript")
     );
 
@@ -1285,7 +1285,7 @@ fn oversized_call_id_turn_id_and_error_id_rejected_and_page_cursor_works() {
             "arguments": "{}"
         }
     });
-    transcript.apply_codex(&valid_fc, THREAD_ID).unwrap();
+    transcript.apply_codex(&valid_fc, THREAD_ID, 0).unwrap();
     assert_eq!(transcript.entries.len(), 1);
 
     // 2. custom_tool_call: oversized call_id fails closed with invalid_transcript
@@ -1300,7 +1300,7 @@ fn oversized_call_id_turn_id_and_error_id_rejected_and_page_cursor_works() {
         }
     });
     assert_eq!(
-        transcript.apply_codex(&bad_ctc, THREAD_ID),
+        transcript.apply_codex(&bad_ctc, THREAD_ID, 0),
         Err("invalid_transcript")
     );
 
@@ -1314,7 +1314,7 @@ fn oversized_call_id_turn_id_and_error_id_rejected_and_page_cursor_works() {
             "input": "{}"
         }
     });
-    transcript.apply_codex(&valid_ctc, THREAD_ID).unwrap();
+    transcript.apply_codex(&valid_ctc, THREAD_ID, 0).unwrap();
     assert_eq!(transcript.entries.len(), 2);
 
     // 3. event_msg turn_aborted: oversized turn_id fails closed with invalid_transcript
@@ -1326,7 +1326,7 @@ fn oversized_call_id_turn_id_and_error_id_rejected_and_page_cursor_works() {
         }
     });
     assert_eq!(
-        transcript.apply_codex(&bad_turn, THREAD_ID),
+        transcript.apply_codex(&bad_turn, THREAD_ID, 0),
         Err("invalid_transcript")
     );
 
@@ -1339,7 +1339,7 @@ fn oversized_call_id_turn_id_and_error_id_rejected_and_page_cursor_works() {
         }
     });
     assert_eq!(
-        transcript.apply_codex(&bad_root_turn, THREAD_ID),
+        transcript.apply_codex(&bad_root_turn, THREAD_ID, 0),
         Err("invalid_transcript")
     );
 
@@ -1351,7 +1351,7 @@ fn oversized_call_id_turn_id_and_error_id_rejected_and_page_cursor_works() {
             "turn_id": "turn-valid-3"
         }
     });
-    transcript.apply_codex(&valid_turn, THREAD_ID).unwrap();
+    transcript.apply_codex(&valid_turn, THREAD_ID, 0).unwrap();
     assert_eq!(transcript.entries.len(), 3);
 
     // 4. response_item error: oversized id fails closed with invalid_transcript
@@ -1364,11 +1364,11 @@ fn oversized_call_id_turn_id_and_error_id_rejected_and_page_cursor_works() {
         }
     });
     assert_eq!(
-        transcript.apply_codex(&bad_err, THREAD_ID),
+        transcript.apply_codex(&bad_err, THREAD_ID, 0),
         Err("invalid_transcript")
     );
 
-    // Valid error (absent id defaults to "error") is accepted
+    // Valid error without id uses offset fallback
     let valid_err = json!({
         "type": "response_item",
         "payload": {
@@ -1376,7 +1376,7 @@ fn oversized_call_id_turn_id_and_error_id_rejected_and_page_cursor_works() {
             "message": "Recoverable failure"
         }
     });
-    transcript.apply_codex(&valid_err, THREAD_ID).unwrap();
+    transcript.apply_codex(&valid_err, THREAD_ID, 0).unwrap();
     assert_eq!(transcript.entries.len(), 4);
 
     // 5. Assert page and cursor still work on the resulting transcript entries
@@ -1501,7 +1501,7 @@ fn turn_id_bounds_to_client_entry_id_limit() {
             "turn_id": id_251
         }
     });
-    assert!(transcript.apply_codex(&record_251, THREAD_ID).is_ok());
+    assert!(transcript.apply_codex(&record_251, THREAD_ID, 0).is_ok());
     assert_eq!(transcript.entries.len(), 1);
     let entry = &transcript.entries[0];
     assert_eq!(entry.id.len(), 264);
@@ -1520,7 +1520,7 @@ fn turn_id_bounds_to_client_entry_id_limit() {
             }
         });
         assert_eq!(
-            transcript.apply_codex(&record, THREAD_ID),
+            transcript.apply_codex(&record, THREAD_ID, 0),
             Err("invalid_transcript"),
             "Expected turn_id of len {len} (total ID len {}) to fail closed",
             13 + len
@@ -1536,7 +1536,11 @@ fn turn_id_bounds_to_client_entry_id_limit() {
             "root_turn_id": id_251
         }
     });
-    assert!(transcript.apply_codex(&root_record_251, THREAD_ID).is_ok());
+    assert!(
+        transcript
+            .apply_codex(&root_record_251, THREAD_ID, 0)
+            .is_ok()
+    );
     assert_eq!(transcript.entries.len(), 1);
     assert_eq!(transcript.entries[0].id.len(), 264);
 
@@ -1551,7 +1555,7 @@ fn turn_id_bounds_to_client_entry_id_limit() {
             }
         });
         assert_eq!(
-            transcript.apply_codex(&record, THREAD_ID),
+            transcript.apply_codex(&record, THREAD_ID, 0),
             Err("invalid_transcript"),
             "Expected root_turn_id of len {len} (total ID len {}) to fail closed",
             13 + len
@@ -1737,4 +1741,128 @@ fn all_codex_entry_ids_from_fixtures_and_synthetic_rollouts_within_limit() {
         total_entries_checked >= 40,
         "Expected at least 40 entries checked across fixtures and synthetic rollouts, got {total_entries_checked}"
     );
+}
+
+#[test]
+fn rollout_with_id_less_errors_and_identified_error() {
+    let temp = Temp::new();
+    let file_path = temp.0.join("errors_rollout.jsonl");
+
+    let records = vec![
+        json!({"type": "session_meta", "payload": {"id": THREAD_ID, "cwd": "/test/cwd"}}),
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "error",
+                "message": "First ID-less error"
+            }
+        }),
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "error",
+                "message": "Second ID-less error"
+            }
+        }),
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "error",
+                "id": "custom-err-id",
+                "message": "Identified error"
+            }
+        }),
+    ];
+
+    let mut content = String::new();
+    let mut offsets = Vec::new();
+    let mut lengths = Vec::new();
+    for r in &records {
+        let line = format!("{}\n", r);
+        offsets.push(content.len());
+        lengths.push(line.len());
+        content.push_str(&line);
+    }
+    fs::write(&file_path, &content).unwrap();
+
+    let mut follower = Follower::with_content_for_agent(AgentType::Codex);
+    assert!(follower.refresh(&file_path, THREAD_ID).unwrap());
+
+    let transcript = &follower.transcript;
+
+    // 1. Two ID-less errors yield two distinct failed error entries with both messages,
+    //    plus the identified error keeps its old ID.
+    assert_eq!(transcript.entries.len(), 3);
+
+    let err1 = &transcript.entries[0];
+    let err2 = &transcript.entries[1];
+    let err3 = &transcript.entries[2];
+
+    assert_eq!(err1.id, format!("error:{}", offsets[1]));
+    assert_eq!(err1.kind, "message");
+    assert_eq!(err1.role.as_deref(), Some("assistant"));
+    assert_eq!(err1.status.as_deref(), Some("failed"));
+    assert_eq!(err1.text, "First ID-less error");
+    assert_eq!(
+        err1.record_refs,
+        vec![format!("source:{}:{}", offsets[1], lengths[1])]
+    );
+
+    assert_eq!(err2.id, format!("error:{}", offsets[2]));
+    assert_eq!(err2.kind, "message");
+    assert_eq!(err2.role.as_deref(), Some("assistant"));
+    assert_eq!(err2.status.as_deref(), Some("failed"));
+    assert_eq!(err2.text, "Second ID-less error");
+    assert_eq!(
+        err2.record_refs,
+        vec![format!("source:{}:{}", offsets[2], lengths[2])]
+    );
+
+    assert_eq!(err3.id, "message:custom-err-id");
+    assert_eq!(err3.kind, "message");
+    assert_eq!(err3.role.as_deref(), Some("assistant"));
+    assert_eq!(err3.status.as_deref(), Some("failed"));
+    assert_eq!(err3.text, "Identified error");
+    assert_eq!(
+        err3.record_refs,
+        vec![format!("source:{}:{}", offsets[3], lengths[3])]
+    );
+
+    // No extra fallback record bubbles were created
+    let record_entries: Vec<_> = transcript
+        .entries
+        .iter()
+        .filter(|e| e.kind == "record")
+        .collect();
+    assert_eq!(record_entries.len(), 0);
+
+    // 2. Both survive history paging / snapshot
+    // Full snapshot page:
+    let page_snapshot =
+        herdcats_bridge::service::page(&transcript.entries, transcript.entries.len());
+    let snapshot_entries = page_snapshot["entries"].as_array().unwrap();
+    assert_eq!(snapshot_entries.len(), 3);
+    assert_eq!(snapshot_entries[0]["text"], "First ID-less error");
+    assert_eq!(snapshot_entries[1]["text"], "Second ID-less error");
+    assert_eq!(snapshot_entries[2]["text"], "Identified error");
+    assert_eq!(page_snapshot["before"], format!("error:{}", offsets[1]));
+
+    // Page before third entry:
+    let page_before_third = herdcats_bridge::service::page(&transcript.entries, 2);
+    let before_third_entries = page_before_third["entries"].as_array().unwrap();
+    assert_eq!(before_third_entries.len(), 2);
+    assert_eq!(before_third_entries[0]["text"], "First ID-less error");
+    assert_eq!(before_third_entries[1]["text"], "Second ID-less error");
+
+    // Page before second entry:
+    let page_before_second = herdcats_bridge::service::page(&transcript.entries, 1);
+    let before_second_entries = page_before_second["entries"].as_array().unwrap();
+    assert_eq!(before_second_entries.len(), 1);
+    assert_eq!(before_second_entries[0]["text"], "First ID-less error");
+
+    // All entry keys remain safely bounded <= MAX_ENTRY_ID
+    for entry in &transcript.entries {
+        assert!(entry.id.len() <= MAX_ENTRY_ID);
+        assert!(entry.id.len() <= 264);
+    }
 }

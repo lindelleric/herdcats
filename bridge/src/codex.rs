@@ -636,7 +636,7 @@ pub(crate) enum CodexRecordAction<'a> {
         output: String,
     },
     Error {
-        id: &'a str,
+        id: Option<&'a str>,
         message: &'a str,
     },
     TurnAborted {
@@ -788,8 +788,10 @@ pub(crate) fn classify_codex_record(record: &Value) -> Result<CodexRecordAction<
                 }
                 "error" => {
                     let message = payload["message"].as_str().unwrap_or("Error");
-                    let id = optional_entry_key_part(&payload["id"])?.unwrap_or("error");
-                    entry_id("message", id)?;
+                    let id = optional_entry_key_part(&payload["id"])?;
+                    if let Some(id) = id {
+                        entry_id("message", id)?;
+                    }
                     Ok(CodexRecordAction::Error { id, message })
                 }
                 _ => Ok(CodexRecordAction::Unknown {
@@ -811,8 +813,15 @@ pub(crate) fn classify_codex_record(record: &Value) -> Result<CodexRecordAction<
     }
 }
 
+fn error_entry_id(id: Option<&str>, offset: usize) -> Result<String> {
+    match id {
+        Some(id) => entry_id("message", id),
+        None => entry_id("error", &offset.to_string()),
+    }
+}
+
 impl Transcript {
-    pub fn apply_codex(&mut self, record: &Value, thread_id: &str) -> Result<()> {
+    pub fn apply_codex(&mut self, record: &Value, thread_id: &str, offset: usize) -> Result<()> {
         let action = classify_codex_record(record)?;
         match action {
             CodexRecordAction::SessionMeta { id } => {
@@ -920,7 +929,7 @@ impl Transcript {
             CodexRecordAction::Error { id, message } => {
                 let (text, truncated) = bounded(message);
                 self.upsert(Entry {
-                    id: entry_id("message", id)?,
+                    id: error_entry_id(id, offset)?,
                     kind: "message".into(),
                     text,
                     role: Some("assistant".into()),
@@ -959,9 +968,14 @@ impl Transcript {
         }
     }
 
-    pub fn apply_codex_oversized(&mut self, part: &[u8], thread_id: &str) -> Result<()> {
+    pub fn apply_codex_oversized(
+        &mut self,
+        part: &[u8],
+        thread_id: &str,
+        offset: usize,
+    ) -> Result<()> {
         let row: Value = serde_json::from_slice(part).map_err(|_| "invalid_transcript")?;
-        self.apply_codex(&row, thread_id)
+        self.apply_codex(&row, thread_id, offset)
     }
 
     fn push_codex_record_fallback(
@@ -1015,7 +1029,7 @@ impl Transcript {
                 Ok(())
             }
             CodexRecordAction::Error { id, .. } => {
-                let key = entry_id("message", id)?;
+                let key = error_entry_id(id, offset)?;
                 if !self.attach_record(&key, &reference) {
                     self.push_codex_record_fallback("error", part, offset, reference)?;
                 }

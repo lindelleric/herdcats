@@ -160,11 +160,11 @@ impl Follower {
                     }
                     AgentType::Codex => {
                         if part.len() > MAX_RECORD {
-                            transcript.apply_codex_oversized(part, session)
+                            transcript.apply_codex_oversized(part, session, offset)
                         } else {
                             let row =
                                 serde_json::from_slice(part).map_err(|_| "invalid_transcript")?;
-                            transcript.apply_codex(&row, session)
+                            transcript.apply_codex(&row, session, offset)
                         }
                     }
                 };
