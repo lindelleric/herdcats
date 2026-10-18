@@ -223,7 +223,7 @@ struct CodexTimelineGatingTests {
         // When Codex is supported by pinned installer (0.2.0 pinned release with HostHelperSetupPlan.agents == ["claude", "codex"])
         // Without an installedVersion recorded yet:
         #expect(view.explanation("helper_update_required") == "The Herdcats Bridge on this computer can't show Codex conversations. Upgrade to 0.2.0.")
-        #expect(view.explanation("unsupported_agent") == "The Herdcats Bridge on this computer can't show Codex conversations. Upgrade to 0.2.0.")
+        #expect(view.explanation("unsupported_agent") == "Timeline is not available for this agent yet. You can still send messages below or use Terminal.")
         #expect(view.explanation("helper_missing") == "Install Herdcats Bridge to see this session as native messages. Terminal is available now.")
 
         // Explicitly test both ways with injected supportedAgents:
@@ -238,7 +238,7 @@ struct CodexTimelineGatingTests {
         #expect(AgentTimelineView.explanation("helper_update_required", agent: "codex", installedVersion: "0.1.4", supportedAgents: supportedWithCodex) == "Herdcats Bridge 0.1.4 on this computer can't show Codex conversations. Upgrade to 0.2.0.")
         #expect(AgentTimelineView.explanation("helper_update_required", agent: "codex", installedVersion: nil, supportedAgents: supportedWithCodex) == "The Herdcats Bridge on this computer can't show Codex conversations. Upgrade to 0.2.0.")
         #expect(AgentTimelineView.explanation("unsupported_agent", agent: "codex", installedVersion: "0.1.4", supportedAgents: supportedWithCodex) == "Herdcats Bridge 0.1.4 on this computer can't show Codex conversations. Upgrade to 0.2.0.")
-        #expect(AgentTimelineView.explanation("unsupported_agent", agent: "codex", installedVersion: nil, supportedAgents: supportedWithCodex) == "The Herdcats Bridge on this computer can't show Codex conversations. Upgrade to 0.2.0.")
+        #expect(AgentTimelineView.explanation("unsupported_agent", agent: "codex", installedVersion: nil, supportedAgents: supportedWithCodex) == "Timeline is not available for this agent yet. You can still send messages below or use Terminal.")
         #expect(AgentTimelineView.explanation("helper_missing", agent: "codex", supportedAgents: supportedWithCodex) == "Install Herdcats Bridge to see this session as native messages. Terminal is available now.")
 
         // 3. Claude with and without installedVersion
@@ -261,13 +261,41 @@ struct CodexTimelineGatingTests {
         #expect(AgentTimelineView.canPinnedInstallerSupport(agent: nil, supportedAgents: ["claude"]))
     }
 
+    @Test func upgradeRequiresKnownOlderBridge() {
+        let cases: [(String?, Bool)] = [("0.1.4", true), ("0.2.0", false), (nil, false), ("invalid", false), ("0.2.1", false)]
+        for (version, needsUpgrade) in cases {
+            for code in ["unsupported_agent", "record_too_large"] {
+                #expect(AgentTimelineView.isNeedsUpgrade(code: code, agent: "codex", bridgeVersion: version) == needsUpgrade)
+                #expect(AgentTimelineView.showsInstallOrUpgrade(code: code, agent: "codex", bridgeVersion: version) == needsUpgrade)
+                #expect(AgentTimelineView.showsPaneCheckAgain(code: code, agent: "codex", bridgeVersion: version) == !needsUpgrade)
+                if !needsUpgrade {
+                    #expect(!AgentTimelineView.explanation(code, agent: "codex", installedVersion: version).contains("Upgrade"))
+                }
+            }
+            #expect(AgentTimelineView.isNeedsUpgrade(code: "helper_update_required", agent: "codex", bridgeVersion: version))
+            #expect(!AgentTimelineView.isNeedsUpgrade(code: "helper_missing", agent: "codex", bridgeVersion: version))
+            #expect(AgentTimelineView.showsInstallOrUpgrade(code: "helper_missing", agent: "codex", bridgeVersion: version))
+        }
+    }
+
+    @Test func manualInstallCommandReplacesOnlyForUpgrade() {
+        let install = "curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v0.2.0/install.sh | sh -s -- --version 0.2.0"
+        #expect(HostHelperSetupPlan.manualInstallCommand(reason: .missing) == install)
+        #expect(HostHelperSetupPlan.manualInstallCommand(reason: .updateRequired) == install + " --replace")
+    }
+
+    @Test func unknownBridgeDoesNotSuggestUpgrade() {
+        #expect(!AgentTimelineView.isNeedsUpgrade(code: "unsupported_agent", agent: "codex"))
+        #expect(!AgentTimelineView.isNeedsUpgrade(code: "record_too_large", agent: "codex"))
+    }
+
     @Test func unavailableGatingAndPaneActions() {
-        // record_too_large means an older Bridge: treated as needs-upgrade scenario
-        #expect(AgentTimelineView.isNeedsUpgrade(code: "record_too_large", agent: "codex"))
-        #expect(AgentTimelineView.isNeedsUpgrade(code: "record_too_large", agent: "claude"))
-        #expect(AgentTimelineView.showsInstallOrUpgrade(code: "record_too_large", agent: "codex"))
-        #expect(AgentTimelineView.showsInstallOrUpgrade(code: "record_too_large", agent: "claude"))
-        #expect(!AgentTimelineView.showsPaneCheckAgain(code: "record_too_large", agent: "codex"))
+        // Oversized records on a known older Bridge offer an upgrade.
+        #expect(AgentTimelineView.isNeedsUpgrade(code: "record_too_large", agent: "codex", bridgeVersion: "0.1.4"))
+        #expect(AgentTimelineView.isNeedsUpgrade(code: "record_too_large", agent: "claude", bridgeVersion: "0.1.4"))
+        #expect(AgentTimelineView.showsInstallOrUpgrade(code: "record_too_large", agent: "codex", bridgeVersion: "0.1.4"))
+        #expect(AgentTimelineView.showsInstallOrUpgrade(code: "record_too_large", agent: "claude", bridgeVersion: "0.1.4"))
+        #expect(!AgentTimelineView.showsPaneCheckAgain(code: "record_too_large", agent: "codex", bridgeVersion: "0.1.4"))
 
         // helper_missing and helper_update_required show setup button and suppress pane Check again
         #expect(AgentTimelineView.showsInstallOrUpgrade(code: "helper_missing", agent: "codex"))
@@ -289,9 +317,9 @@ struct CodexTimelineGatingTests {
 
         // unsupported agent refuses upgrade/install and keeps Check again
         let unsupportedAgents: Set<String> = ["claude"]
-        #expect(!AgentTimelineView.isNeedsUpgrade(code: "record_too_large", agent: "codex", supportedAgents: unsupportedAgents))
-        #expect(!AgentTimelineView.showsInstallOrUpgrade(code: "record_too_large", agent: "codex", supportedAgents: unsupportedAgents))
-        #expect(AgentTimelineView.showsPaneCheckAgain(code: "record_too_large", agent: "codex", supportedAgents: unsupportedAgents))
+        #expect(!AgentTimelineView.isNeedsUpgrade(code: "record_too_large", agent: "codex", bridgeVersion: "0.1.4", supportedAgents: unsupportedAgents))
+        #expect(!AgentTimelineView.showsInstallOrUpgrade(code: "record_too_large", agent: "codex", bridgeVersion: "0.1.4", supportedAgents: unsupportedAgents))
+        #expect(AgentTimelineView.showsPaneCheckAgain(code: "record_too_large", agent: "codex", bridgeVersion: "0.1.4", supportedAgents: unsupportedAgents))
     }
 
     @Test func helperSetupViewLabelAndFeedbackLogic() {

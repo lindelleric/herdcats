@@ -425,6 +425,9 @@ enum HostHelperSetupPlan {
     static let installerSHA256 = "e335a78a970bedeae94e1fdde0393cd3d23cde93ee0497a98af19cbcc8eca59d"
     /// Supported agents bundled in this pinned release. Must be updated when bumping version / installerSHA256.
     static let agents: [String] = ["claude", "codex"]
+    static func manualInstallCommand(reason: HostHelperSetupReason, pinnedVersion: String = version) -> String {
+        "curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v\(pinnedVersion)/install.sh | sh -s -- --version \(pinnedVersion)" + (reason == .updateRequired ? " --replace" : "")
+    }
     static func installationScript(replace: Bool) -> String {
         return #"""
         set -eu

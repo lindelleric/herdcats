@@ -245,7 +245,7 @@ struct AgentTimelineView: View {
                         ? "Herdcats Bridge was not found yet. Run the command on your SSH host, then check again."
                         : explanation(code)
                 }
-                let isNeedsUpgrade = canPinnedInstallerSupportAgent && (code == "helper_update_required" || (agent == "codex" && code == "unsupported_agent"))
+                let isNeedsUpgrade = Self.isNeedsUpgrade(code: code, agent: agent, bridgeVersion: bridgeVersion)
                 let isMissing = code == "helper_missing"
                 if (isMissing || isNeedsUpgrade) && !showsSetup && canPinnedInstallerSupportAgent {
                     #if DEBUG && targetEnvironment(simulator)
@@ -347,8 +347,12 @@ struct AgentTimelineView: View {
     }
 
     private func beginSetup(reason: HostHelperSetupReason? = nil) {
-        let isCodex = agent == "codex"
-        let isNeedsUpgrade = canPinnedInstallerSupportAgent && (timeline.phase == .unavailable("helper_update_required") || (isCodex && timeline.phase == .unavailable("unsupported_agent")))
+        let isNeedsUpgrade: Bool
+        if case .unavailable(let code) = timeline.phase {
+            isNeedsUpgrade = Self.isNeedsUpgrade(code: code, agent: agent, bridgeVersion: bridgeVersion)
+        } else {
+            isNeedsUpgrade = false
+        }
         let resolvedReason = reason ?? (isNeedsUpgrade ? .updateRequired : .missing)
         setupReason = resolvedReason
         setupShouldUseTerminal = true
@@ -501,9 +505,9 @@ struct AgentTimelineView: View {
         case .unavailable(let code):
             let isCodex = agent == "codex"
             let isSupportedAgent = canPinnedInstallerSupportAgent
-            let isNeedsUpgrade = Self.isNeedsUpgrade(code: code, agent: agent)
+            let isNeedsUpgrade = Self.isNeedsUpgrade(code: code, agent: agent, bridgeVersion: bridgeVersion)
             let isMissing = code == "helper_missing"
-            let showsInstallOrUpgrade = Self.showsInstallOrUpgrade(code: code, agent: agent)
+            let showsInstallOrUpgrade = Self.showsInstallOrUpgrade(code: code, agent: agent, bridgeVersion: bridgeVersion)
             let showsProtocolMismatch = code == "protocol_mismatch" && isSupportedAgent
             let isNoSession = ["session_reference_unavailable", "ambiguous_session", "invalid_session_reference"].contains(code)
             let isCwdMismatch = code == "session_cwd_mismatch"
@@ -593,30 +597,33 @@ struct AgentTimelineView: View {
     static func isNeedsUpgrade(
         code: String,
         agent: String?,
+        bridgeVersion: String? = nil,
         supportedAgents: Set<String> = Set(HostHelperSetupPlan.agents)
     ) -> Bool {
         let isSupported = canPinnedInstallerSupport(agent: agent, supportedAgents: supportedAgents)
         guard isSupported else { return false }
         let isCodex = agent == "codex"
-        return code == "helper_update_required" || code == "record_too_large" || (isCodex && code == "unsupported_agent")
+        return code == "helper_update_required" || (HostHelperProbe.isOlderThanPinned(bridgeVersion) && (code == "record_too_large" || (isCodex && code == "unsupported_agent")))
     }
 
     static func showsInstallOrUpgrade(
         code: String,
         agent: String?,
+        bridgeVersion: String? = nil,
         supportedAgents: Set<String> = Set(HostHelperSetupPlan.agents)
     ) -> Bool {
         let isSupported = canPinnedInstallerSupport(agent: agent, supportedAgents: supportedAgents)
         guard isSupported else { return false }
-        return code == "helper_missing" || isNeedsUpgrade(code: code, agent: agent, supportedAgents: supportedAgents)
+        return code == "helper_missing" || isNeedsUpgrade(code: code, agent: agent, bridgeVersion: bridgeVersion, supportedAgents: supportedAgents)
     }
 
     static func showsPaneCheckAgain(
         code: String,
         agent: String?,
+        bridgeVersion: String? = nil,
         supportedAgents: Set<String> = Set(HostHelperSetupPlan.agents)
     ) -> Bool {
-        !showsInstallOrUpgrade(code: code, agent: agent, supportedAgents: supportedAgents)
+        !showsInstallOrUpgrade(code: code, agent: agent, bridgeVersion: bridgeVersion, supportedAgents: supportedAgents)
     }
 
     static func canConfigureCodexDaemon(
@@ -668,14 +675,13 @@ struct AgentTimelineView: View {
             }
         case "unsupported_agent":
             if isCodex {
-                if canSupportCodex {
-                    if let installed = installedVersion, !installed.isEmpty {
-                        return "Herdcats Bridge \(installed) on this computer can't show Codex conversations. Upgrade to \(pinnedVersion)."
-                    } else {
-                        return "The Herdcats Bridge on this computer can't show Codex conversations. Upgrade to \(pinnedVersion)."
-                    }
+                if isNeedsUpgrade(code: code, agent: agent, bridgeVersion: installedVersion, supportedAgents: supportedAgents),
+                   let installedVersion {
+                    return "Herdcats Bridge \(installedVersion) on this computer can't show Codex conversations. Upgrade to \(pinnedVersion)."
                 }
-                return "This version of Herdcats can't install a version of Herdcats Bridge that supports Codex yet."
+                if !canSupportCodex {
+                    return "This version of Herdcats can't install a version of Herdcats Bridge that supports Codex yet."
+                }
             }
             return "Timeline is not available for this agent yet. You can still send messages below or use Terminal."
         case "routed_host_unsupported": return "Native history is not available through saved machines yet. Messages can still be sent below."
@@ -692,7 +698,11 @@ struct AgentTimelineView: View {
         case "transcript_root_unavailable":
             return "Session history is unavailable on this host."
         case "source_changing": return "Session history is being updated. Try again in a moment."
-        case "record_too_large": return "Herdcats Bridge cannot read an oversized session record. Upgrade Herdcats Bridge to reload history."
+        case "record_too_large":
+            if isNeedsUpgrade(code: code, agent: agent, bridgeVersion: installedVersion, supportedAgents: supportedAgents) {
+                return "Herdcats Bridge cannot read an oversized session record. Upgrade Herdcats Bridge to reload history."
+            }
+            return "Herdcats Bridge cannot read an oversized session record. You can still send messages below or use Terminal."
         case "source_too_large": return "This session exceeds the current history size limit. Compose and Terminal remain available."
         case "unsafe_transcript_path", "invalid_transcript", "session_mismatch":
             return "Session history could not be read safely. Compose and Terminal remain available."
@@ -783,10 +793,15 @@ struct AgentTimelineView: View {
     }
     @MainActor private func commit(
         _ frame: AgentBridgeFrame, owner: UUID, connectionState owned: AgentTimelineConnectionState
-    ) throws {
+    ) async throws {
+        // The handshake is recorded before watch events arrive. Load its version
+        // before publishing unavailable, so an older host can open the upgrade drawer.
+        let version = await connection.bridgeVersion(for: owned.generation)
         // Readiness/generation and the store mutation share one MainActor turn;
         // a callback suspended before the UI hop cannot commit after reconnect.
         try owned.requireCurrent(connectionState)
+        guard activeOwner == owner else { return }
+        bridgeVersion = version
         try timeline.consume(frame, owner: owner)
     }
     @MainActor private func mergeHistoryPreservingPosition(
@@ -1207,7 +1222,7 @@ private struct AgentBridgeSetupView: View {
     let onUseTerminal: () -> Void
     @State private var copied = false
     private var command: String {
-        "curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v\(pinnedVersion)/install.sh | sh -s -- --version \(pinnedVersion)"
+        HostHelperSetupPlan.manualInstallCommand(reason: reason, pinnedVersion: pinnedVersion)
     }
     private var installLabel: String {
         HostHelperSetupPlan.installLabel(stage: stage, reason: reason, pinnedVersion: pinnedVersion)
@@ -1312,7 +1327,9 @@ private struct AgentBridgeSetupView: View {
                                 .font(.system(.footnote, design: .monospaced)).textSelection(.enabled)
                                 .padding(16).frame(maxWidth: .infinity, alignment: .leading)
                                 .background(Theme.fieldBackground, in: RoundedRectangle(cornerRadius: 16))
-                            Text("The installer checks the download and installs in your user account. Already installed? Add `--replace` to upgrade it.")
+                            Text(reason == .updateRequired
+                                ? "The installer checks the download and replaces Herdcats Bridge in your user account. The command includes `--replace`."
+                                : "The installer checks the download and installs in your user account.")
                                 .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
                             Link("View downloads and setup details", destination: URL(string: "https://github.com/zhiyao/herdcats/releases")!)
                                 .font(.jost(.subheadline))
