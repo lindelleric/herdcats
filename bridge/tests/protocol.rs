@@ -104,6 +104,8 @@ impl Peer {
             .arg(&server.socket)
             .arg("--claude-root")
             .arg(server.root.join("projects"))
+            .arg("--codex-root")
+            .arg(server.root.join("codex"))
             .args(["--poll-ms", "50"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

@@ -53,7 +53,7 @@ import Observation
             phase = .unavailable(data.code ?? "timeline_unavailable")
         case "timeline.snapshot":
             guard let nextIdentity = data.identity, nextIdentity.paneId == paneId,
-                nextIdentity.agent == "claude", let next = data.generation, let rows = data.entries
+                TimelineAgentAvailability.supports(agent: nextIdentity.agent), let next = data.generation, let rows = data.entries
             else { throw AgentBridgeError.identityMismatch }
             try validate(rows)
             clear()

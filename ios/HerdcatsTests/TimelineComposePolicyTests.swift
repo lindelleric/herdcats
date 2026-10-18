@@ -26,6 +26,16 @@ struct TimelineComposePolicyTests {
         #expect(
             !TimelineComposePolicy.canSend(identity: identity, paneId: "p", status: "idle", connected: false))
     }
+    @Test func matchingUnblockedCodexIdentityCanCompose() {
+        let identity = AgentTimelineIdentity(
+            paneId: "p", terminalId: "t", agent: "codex", nativeSessionId: "s")
+        #expect(TimelineComposePolicy.canSend(identity: identity, paneId: "p", status: "idle", connected: true))
+        #expect(TimelineComposePolicy.canSend(identity: identity, paneId: "p", status: "working", connected: true))
+        #expect(TimelineComposePolicy.canSend(identity: identity, paneId: "p", status: "done", connected: true))
+        #expect(!TimelineComposePolicy.canSend(identity: identity, paneId: "p", status: "blocked", connected: true))
+        #expect(!TimelineComposePolicy.canSend(identity: identity, paneId: "other", status: "idle", connected: true))
+        #expect(!TimelineComposePolicy.canSend(identity: identity, paneId: "p", status: "idle", connected: false))
+    }
 }
 
 @Suite("Timeline prompt dispatch ownership")

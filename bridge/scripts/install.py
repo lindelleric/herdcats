@@ -105,6 +105,7 @@ def main():
     except (OSError, ValueError, subprocess.SubprocessError):
         print('bridge_install_failed: check the binary, protocol and destination; existing files require --replace', file=sys.stderr)
         return 1
+
     print(json.dumps(result))
     return 0
 

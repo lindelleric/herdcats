@@ -2,7 +2,7 @@
 # Pinned release installer. No sudo, compiler, daemon or agent configuration.
 main() {
 set -eu
-HB_VERSION=0.1.4
+HB_VERSION=0.2.0
 HB_BIN_DIR=${HOME:?HOME is required}/.local/bin
 HB_REPLACE=no
 HB_BASE=https://github.com/zhiyao/herdcats/releases/download
@@ -65,7 +65,10 @@ cp "$HB_TEMP/$HB_ASSET" "$HB_STAGE/herdcats-bridge"
 chmod 755 "$HB_STAGE/herdcats-bridge"
 # Probe the verified release on the destination volume: TMPDIR may be noexec.
 HB_PROBE=$("$HB_STAGE/herdcats-bridge" --version-json) || fail 'Binary cannot run on this host'
-HB_CONTRACT='{"agents":["claude"],"herdr_protocol":22,"name":"herdcats-bridge","protocol":1,"version":"'"$HB_VERSION"'"}'
+case "$HB_VERSION" in
+  0.1.*) HB_CONTRACT='{"agents":["claude"],"herdr_protocol":22,"name":"herdcats-bridge","protocol":1,"version":"'"$HB_VERSION"'"}' ;;
+  *) HB_CONTRACT='{"agents":["claude","codex"],"herdr_protocol":22,"name":"herdcats-bridge","protocol":1,"version":"'"$HB_VERSION"'"}' ;;
+esac
 [ "$HB_PROBE" = "$HB_CONTRACT" ] || fail 'Release version or protocol mismatch'
 if [ "$HB_REPLACE" = yes ]; then
   if [ -L "$HB_DEST" ] || { [ -e "$HB_DEST" ] && [ ! -f "$HB_DEST" ]; }; then fail 'Destination changed; refusing replacement'; fi

@@ -1,6 +1,6 @@
 [package]
 name = "herdcats-bridge"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 
@@ -8,3 +8,4 @@ rust-version = "1.85"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["raw_value"] }
 libc = "=0.2.189"
+toml_edit = { version = "=0.22.24", default-features = false, features = ["parse", "display"] }

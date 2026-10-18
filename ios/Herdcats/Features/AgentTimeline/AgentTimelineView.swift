@@ -7,6 +7,7 @@ import QuickLook
 /// Native session content; the owning pane supplies its composition dock.
 struct AgentTimelineView: View {
     let paneId: String
+    var agent: String? = nil
     let connection: HerdrConnection
     let timeline: AgentTimelineState
     let topOverlayInset: CGFloat
@@ -40,23 +41,37 @@ struct AgentTimelineView: View {
     @State private var entryFrames: [String: CGRect] = [:]
     @State private var viewportHeight: CGFloat = 0
     @State private var historyScrollAnchor: TimelineHistoryScrollAnchor?
+    @State private var bridgeCapabilities: AgentBridgeCapabilities?
+    @State private var showsCodexDaemonConfirm = false
+    @State private var isDisablingCodexDaemon = false
+    @State private var codexDaemonFeedback: String?
+    @State private var codexDaemonErrorOccurred = false
+    @State private var copiedCodexConfig = false
+    @State private var copiedCodexStop = false
 
     private var conversationItems: [TimelineConversationItem] {
-        TimelineConversationItem.group(timeline.entries)
+        TimelineConversationItem.group(timeline.entries, showsRecords: agent == "codex")
     }
 
     private var connectionState: AgentTimelineConnectionState {
         AgentTimelineConnectionState(
             phase: appModel.phase, generation: appModel.ownership.transportGeneration)
     }
-    private struct TaskKey: Equatable {
+    struct TaskKey: Equatable {
         let paneId: String
+        let agent: String?
         let connection: AgentTimelineConnectionState
         let isActive: Bool
         let retry: Int
     }
     private var taskKey: TaskKey {
-        TaskKey(paneId: paneId, connection: connectionState, isActive: scenePhase == .active, retry: retry)
+        TaskKey(paneId: paneId, agent: agent, connection: connectionState, isActive: scenePhase == .active, retry: retry)
+    }
+    private var canPinnedInstallerSupportAgent: Bool {
+        Self.canPinnedInstallerSupport(agent: agent)
+    }
+    static func canPinnedInstallerSupport(agent: String?, supportedAgents: Set<String> = Set(HostHelperSetupPlan.agents)) -> Bool {
+        agent.map { supportedAgents.contains($0) } ?? true
     }
     var body: some View {
         ScrollViewReader { proxy in
@@ -218,7 +233,7 @@ struct AgentTimelineView: View {
                         ? "The helper was not found yet. Run the command on your SSH host, then check again."
                         : explanation(code)
                 }
-                if ["helper_missing", "helper_update_required"].contains(code) && !showsSetup { beginSetup() }
+                if ["helper_missing", "helper_update_required"].contains(code) && !showsSetup && canPinnedInstallerSupportAgent { beginSetup() }
             case .disconnected:
                 if isCheckingSetup {
                     isCheckingSetup = false
@@ -244,7 +259,7 @@ struct AgentTimelineView: View {
             AgentBridgeSetupView(
                 isChecking: isCheckingSetup, feedback: setupFeedback,
                 stage: helperStage, target: setupTarget,
-                canInstall: connectionState.isReady && appModel.supportsHostServices && appModel.connectionIdentity == setupTarget,
+                canInstall: connectionState.isReady && appModel.supportsHostServices && appModel.connectionIdentity == setupTarget && canPinnedInstallerSupportAgent,
                 onInstall: startHelperInstallation,
                 onCheckAgain: {
                     setupFeedback = nil
@@ -254,6 +269,20 @@ struct AgentTimelineView: View {
                 onUseTerminal: { cancelHelperInstallation(); showsSetup = false }
             )
             .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+            .presentationCornerRadius(28)
+        }
+        .sheet(isPresented: $showsCodexDaemonConfirm) {
+            CodexDaemonConfirmSheet(
+                onConfirm: {
+                    showsCodexDaemonConfirm = false
+                    disableCodexDaemon()
+                },
+                onCancel: {
+                    showsCodexDaemonConfirm = false
+                }
+            )
+            .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
             .presentationCornerRadius(28)
         }
@@ -293,7 +322,7 @@ struct AgentTimelineView: View {
     private func beginSetup() {
         setupShouldUseTerminal = true
         setupFeedback = timeline.phase == .unavailable("helper_update_required")
-            ? "Update the host helper to display session images." : nil
+            ? (agent == "codex" ? "Update the host helper to see Codex conversations." : "Update the host helper to display session images.") : nil
         showsSetup = true
     }
     @MainActor private func startHelperInstallation() {
@@ -337,13 +366,13 @@ struct AgentTimelineView: View {
                 } else {
                     guard let owned = ownedConnection.generation else { throw AgentBridgeError.closed }
                     result = try await connection.setUpHostHelper(
-                        replace: replacing, checkOnly: checkOnly, target: setupTarget, owned: owned,
+                        replace: replacing, checkOnly: checkOnly, target: setupTarget, owned: owned, agent: agent,
                         onStage: { stage in await commitHelperStage(stage, token: token, connection: ownedConnection) })
                 }
                 #else
                 guard let owned = ownedConnection.generation else { throw AgentBridgeError.closed }
                 result = try await connection.setUpHostHelper(
-                    replace: replacing, checkOnly: checkOnly, target: setupTarget, owned: owned,
+                    replace: replacing, checkOnly: checkOnly, target: setupTarget, owned: owned, agent: agent,
                     onStage: { stage in await commitHelperStage(stage, token: token, connection: ownedConnection) })
                 #endif
                 try Task.checkCancellation()
@@ -364,6 +393,9 @@ struct AgentTimelineView: View {
                             ? "Existing helper version \(version ?? "unknown") will be replaced at the location shown. Tap Replace to authorize this update."
                             : "An existing helper was found elsewhere. Install a managed copy at the location shown; the other copy will remain unchanged."
                     }
+                case .unsupportedByPinnedInstaller(let agent):
+                    helperStage = .idle
+                    setupFeedback = "This version of Herdcats can't install a \(agent.capitalized)-capable helper yet."
                 case .install: throw HostHelperSetupError.invalidResponse
                 }
             } catch {
@@ -428,15 +460,72 @@ struct AgentTimelineView: View {
                 "No messages yet", systemImage: "text.bubble",
                 description: Text("Send a message below to start this session."))
         case .unavailable(let code):
+            let isCodex = agent == "codex"
+            let isHelperOld = ["helper_update_required", "unsupported_agent"].contains(code)
+            let isNoSession = ["session_reference_unavailable", "ambiguous_session", "invalid_session_reference"].contains(code)
+            let isCwdMismatch = code == "session_cwd_mismatch"
+            let canTurnOffCodexDaemon = Self.canConfigureCodexDaemon(
+                agent: agent,
+                code: code,
+                route: connection.route,
+                capabilities: bridgeCapabilities
+            )
+
             ContentUnavailableView {
-                Label(code == "helper_missing" ? "Set up Timeline" : "Timeline unavailable", systemImage: "text.bubble")
+                Label(
+                    isCodex && isHelperOld ? "Update the Herdcats helper to see Codex conversations" :
+                    isCodex && isNoSession ? "Codex session not identified" :
+                    isCodex && isCwdMismatch ? "This pane’s Codex session could not be confirmed" :
+                    (code == "helper_missing" ? "Set up Timeline" : "Timeline unavailable"),
+                    systemImage: "text.bubble"
+                )
             } description: {
-                Text(explanation(code))
+                if isCodex && isNoSession, let feedback = codexDaemonFeedback {
+                    Text(feedback)
+                } else {
+                    Text(explanation(code))
+                }
             } actions: {
-                if ["helper_missing", "helper_update_required", "protocol_mismatch", "record_too_large"].contains(code) {
-                    Button("Set up Timeline") { beginSetup() }
+                if ["helper_missing", "helper_update_required", "unsupported_agent", "protocol_mismatch", "record_too_large"].contains(code) && canPinnedInstallerSupportAgent {
+                    Button(isCodex && isHelperOld ? "Update helper" : "Set up Timeline") { beginSetup() }
                         .buttonStyle(.herdrPrimary)
                         .accessibilityIdentifier("timeline-helper-setup")
+                }
+                if isCodex && isNoSession {
+                    if canTurnOffCodexDaemon && !codexDaemonErrorOccurred && codexDaemonFeedback == nil {
+                        Button("Turn off Codex's shared daemon") {
+                            showsCodexDaemonConfirm = true
+                        }
+                        .buttonStyle(.herdrPrimary)
+                        .accessibilityIdentifier("timeline-codex-disable-daemon")
+                        .disabled(isDisablingCodexDaemon)
+                    } else {
+                        VStack(spacing: 8) {
+                            if !codexDaemonErrorOccurred && codexDaemonFeedback != nil {
+                                Button {
+                                    UIPasteboard.general.string = Self.codexDaemonStopCommand
+                                    copiedCodexStop = true
+                                } label: {
+                                    Label(copiedCodexStop ? "Command copied" : "Copy stop command", systemImage: copiedCodexStop ? "checkmark" : "doc.on.doc")
+                                }
+                                .buttonStyle(.herdrPrimary)
+                                .accessibilityIdentifier("timeline-codex-copy-stop")
+                            } else {
+                                Text(Self.codexManualFallbackText())
+                                    .font(.jost(.subheadline))
+                                    .foregroundStyle(Theme.textMuted)
+                                    .multilineTextAlignment(.center)
+                                Button {
+                                    UIPasteboard.general.string = Self.codexManualConfigLine
+                                    copiedCodexConfig = true
+                                } label: {
+                                    Label(copiedCodexConfig ? "Setting copied" : "Copy setting", systemImage: copiedCodexConfig ? "checkmark" : "doc.on.doc")
+                                }
+                                .buttonStyle(.herdrSecondary)
+                                .accessibilityIdentifier("timeline-codex-copy-setting")
+                            }
+                        }
+                    }
                 }
                 Button("Check again") { retry += 1 }.buttonStyle(.herdrSecondary)
                     .accessibilityIdentifier("timeline-helper-retry")
@@ -444,17 +533,66 @@ struct AgentTimelineView: View {
         case .ready: EmptyView()
         }
     }
-    private func explanation(_ code: String) -> String {
+    func explanation(_ code: String) -> String {
+        Self.explanation(code, agent: agent)
+    }
+
+    static func canConfigureCodexDaemon(
+        agent: String?,
+        code: String,
+        route: HerdrMachineRoute?,
+        capabilities: AgentBridgeCapabilities?
+    ) -> Bool {
+        guard agent == "codex" else { return false }
+        let isNoSession = ["session_reference_unavailable", "ambiguous_session", "invalid_session_reference"].contains(code)
+        guard isNoSession else { return false }
+        guard route == nil else { return false }
+        return capabilities?.codexDaemonConfig == true
+    }
+
+    static let codexManualConfigLine = "daemon_auto_start = false"
+    static let codexDaemonStopCommand = "codex app-server daemon stop"
+
+    static func codexManualFallbackText() -> String {
+        "Add `daemon_auto_start = false` under `[features]` in `~/.codex/config.toml`, or start Codex with `codex --no-daemon`."
+    }
+
+    static func explanation(_ code: String, agent: String?, supportedAgents: Set<String> = Set(HostHelperSetupPlan.agents)) -> String {
+        let isCodex = agent == "codex"
+        let canSupportCodex = supportedAgents.contains("codex")
         switch code {
         case "helper_missing":
+            if isCodex {
+                return canSupportCodex
+                    ? "Install the small host helper to see this session as native messages. Terminal is available now."
+                    : "This version of Herdcats can't install a Codex-capable helper yet."
+            }
             return "Install the small host helper to see this session as native messages. Terminal is available now."
         case "helper_update_required":
+            if isCodex {
+                return canSupportCodex
+                    ? "Update the Herdcats helper to see Codex conversations."
+                    : "This version of Herdcats can't install a Codex-capable helper yet."
+            }
             return "Update the host helper to display session images."
         case "unsupported_agent":
+            if isCodex {
+                return canSupportCodex
+                    ? "Update the Herdcats helper to see Codex conversations."
+                    : "This version of Herdcats can't install a Codex-capable helper yet."
+            }
             return "Timeline is not available for this agent yet. You can still send messages below or use Terminal."
         case "routed_host_unsupported": return "Native history is not available through saved machines yet. Messages can still be sent below."
         case "session_reference_unavailable", "ambiguous_session", "invalid_session_reference":
+            if isCodex {
+                return "Codex's shared daemon hides which terminal a session belongs to. Fix with `codex --no-daemon` or turn off the shared daemon."
+            }
             return "This pane has no verified session history. Compose and Terminal remain available."
+        case "session_cwd_mismatch":
+            if isCodex {
+                return "The session folder does not match the pane’s folder, so Herdcats will not guess."
+            }
+            return "This pane's session folder does not match the verified session. Compose and Terminal remain available."
         case "transcript_root_unavailable":
             return "Session history is unavailable on this host."
         case "source_changing": return "Session history is being updated. Try again in a moment."
@@ -476,6 +614,9 @@ struct AgentTimelineView: View {
         timeline.begin(owner: owner, paneId: paneId)
         pageError = nil
         isPaging = false
+        bridgeCapabilities = await connection.bridgeCapabilities(for: connectionState.generation)
+        codexDaemonFeedback = nil
+        codexDaemonErrorOccurred = false
         guard scenePhase == .active, connectionState.isReady else {
             timeline.end(owner: owner, error: .closed)
             return
@@ -495,14 +636,20 @@ struct AgentTimelineView: View {
         let ownedConnection = connectionState
         var opened: AgentBridgeClient?
         do {
-            let client = try await connection.openAgentTimeline(paneId: paneId) { frame in
+            let client = try await connection.openAgentTimeline(paneId: paneId, agent: agent) { frame in
                 try await commit(frame, owner: owner, connectionState: ownedConnection)
             }
             opened = client
             try Task.checkCancellation()
-            if activeOwner == owner { activeClient = client }
+            if activeOwner == owner {
+                activeClient = client
+                bridgeCapabilities = await connection.bridgeCapabilities(for: ownedConnection.generation)
+            }
             try await client.waitUntilClosed()
         } catch {
+            if activeOwner == owner {
+                bridgeCapabilities = await connection.bridgeCapabilities(for: ownedConnection.generation)
+            }
             timeline.end(owner: owner, error: (error as? AgentBridgeError) ?? .closed)
         }
         if let opened { await connection.endAgentTimeline(opened) }
@@ -510,6 +657,26 @@ struct AgentTimelineView: View {
             activeClient = nil
             activeOwner = nil
             isPaging = false
+        }
+    }
+
+    private func disableCodexDaemon() {
+        guard !isDisablingCodexDaemon else { return }
+        guard let generation = connectionState.generation else { return }
+        isDisablingCodexDaemon = true
+        Task {
+            do {
+                let result = try await connection.disableCodexDaemon(
+                    target: setupTarget,
+                    owned: generation
+                )
+                codexDaemonFeedback = CodexDaemonConfigResult.message(for: result)
+                codexDaemonErrorOccurred = (result.error != nil)
+            } catch {
+                codexDaemonFeedback = "Could not turn off Codex daemon: \(error.localizedDescription)"
+                codexDaemonErrorOccurred = true
+            }
+            isDisablingCodexDaemon = false
         }
     }
     @MainActor private func commit(
@@ -846,6 +1013,14 @@ private struct AgentTimelineEntryView: View {
         VStack(alignment: .leading, spacing: 10) {
             if entry.kind == "image" {
                 imageContent
+            } else if entry.kind == "record" {
+                Label("Unsupported content: \(entry.text)", systemImage: "questionmark.square.dashed")
+                    .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
+                if let details = entry.details {
+                    Text(details).font(.jost(.caption)).foregroundStyle(Theme.textMuted)
+                        .textSelection(.enabled).lineLimit(8)
+                        .accessibilityIdentifier("timeline-record-\(entry.id)")
+                }
             } else {
                 Text(markdown).font(.jost(.body)).textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1127,5 +1302,78 @@ enum TimelineImagePayload: Sendable {
         let identifier = CGImageSourceGetType(image).map { $0 as String } ?? UTType.data.identifier
         let suffix = UTType(identifier)?.preferredFilenameExtension ?? "image"
         return .image(preview: preview as Data, original: original, suffix: suffix)
+    }
+}
+
+struct CodexDaemonConfirmSheet: View {
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    Text("Turn off Codex's shared daemon so Herdcats can identify this pane's session.")
+                        .font(.jost(.body))
+                        .foregroundStyle(Theme.text)
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("File to modify")
+                            .font(.jost(.headline))
+                        Text("~/.codex/config.toml (or $CODEX_HOME/config.toml)")
+                            .font(.system(.footnote, design: .monospaced))
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Theme.fieldBackground, in: RoundedRectangle(cornerRadius: 10))
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Setting")
+                            .font(.jost(.headline))
+                        Text("[features]\ndaemon_auto_start = false")
+                            .font(.system(.footnote, design: .monospaced))
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Theme.fieldBackground, in: RoundedRectangle(cornerRadius: 10))
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Cost")
+                            .font(.jost(.headline))
+                        Text("Codex background sessions stop working on this computer.")
+                            .font(.jost(.subheadline))
+                            .foregroundStyle(Theme.textMuted)
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Backup & Undo")
+                            .font(.jost(.headline))
+                        Text("A timestamped backup of your config file is made before changes. To undo, delete the line from config.toml or restore the backup.")
+                            .font(.jost(.subheadline))
+                            .foregroundStyle(Theme.textMuted)
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Restart required")
+                            .font(.jost(.headline))
+                        Text(CodexDaemonConfigResult.restartGuidance)
+                            .font(.jost(.subheadline))
+                            .foregroundStyle(Theme.textMuted)
+                    }
+                }
+                .padding(20)
+            }
+            .navigationTitle("Turn off Codex daemon")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { onCancel() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Turn off") { onConfirm() }
+                        .fontWeight(.semibold)
+                }
+            }
+        }
     }
 }

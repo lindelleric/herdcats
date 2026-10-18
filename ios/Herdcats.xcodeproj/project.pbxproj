@@ -53,6 +53,7 @@
 		66A6D27875DD944D947DFC86 /* HerdcatsTests+ModelDecoding.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7D8691E59345CB8F559F5BB /* HerdcatsTests+ModelDecoding.swift */; };
 		6977F6ACCA42890B3E2FD7FD /* AgySignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB45C84164D30E2FA6AEB5C2 /* AgySignIn.swift */; };
 		6CA7109E04A999EB086B1346 /* PaneCommandHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE9436A90B8BC2CD35E1CDA0 /* PaneCommandHistory.swift */; };
+		6F35258487D002073F2EDE73 /* CodexTimelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 425BF5E146238F8C6215AFA1 /* CodexTimelineTests.swift */; };
 		70F0B1110708E8A8A840511C /* PaneImageEncoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F245C24A7A231ABFE3D3946 /* PaneImageEncoder.swift */; };
 		7195C57B2E149360F277984A /* QuotaModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BC70F0B4AB3ADF429A92F00 /* QuotaModels.swift */; };
 		71D6C3379E617A45C50CF8C6 /* HerdcatsTests+PaneInputCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6753FF3AF90C184EEA13570 /* HerdcatsTests+PaneInputCoordinator.swift */; };
@@ -150,6 +151,7 @@
 		39B10C9183B00C53D29BAEF1 /* HerdcatsTests+QuotaUnavailable.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HerdcatsTests+QuotaUnavailable.swift"; sourceTree = "<group>"; };
 		3A1137CF91FF8580175F53E3 /* HerdrConnection+Remote.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HerdrConnection+Remote.swift"; sourceTree = "<group>"; };
 		4167D7DC162957205584E7E2 /* PaneInputCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneInputCoordinator.swift; sourceTree = "<group>"; };
+		425BF5E146238F8C6215AFA1 /* CodexTimelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexTimelineTests.swift; sourceTree = "<group>"; };
 		43D1609F00AF85022EF107AA /* PaneDictation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneDictation.swift; sourceTree = "<group>"; };
 		4A3BFF904815E2BD66B154D9 /* AgentTimelineState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentTimelineState.swift; sourceTree = "<group>"; };
 		4B2050D63FBE492E4583C383 /* ConnectionTimeout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionTimeout.swift; sourceTree = "<group>"; };
@@ -401,6 +403,7 @@
 				D7E08942D9153ADBB0BA2D65 /* AgentTimelineConnectionTests.swift */,
 				FA18C20C79CD1BC62B36405C /* AgentTimelineTests.swift */,
 				B880E90055367DB1DD0810BD /* AgySignInTests.swift */,
+				425BF5E146238F8C6215AFA1 /* CodexTimelineTests.swift */,
 				A9F59CB2840187527B1A6D5D /* HerdcatsTests.swift */,
 				AD0542ABC20C507904C8BCD5 /* HerdcatsTests+ConnectionOwnership.swift */,
 				CBCEFE9A7B22D06413A9E138 /* HerdcatsTests+CredentialMigration.swift */,
@@ -668,6 +671,7 @@
 				201B6E732A356623057BE685 /* AgentTimelineConnectionTests.swift in Sources */,
 				ADFC18A5AA7610891CA0ABC7 /* AgentTimelineTests.swift in Sources */,
 				84B6D5646FFDB3E086EA785A /* AgySignInTests.swift in Sources */,
+				6F35258487D002073F2EDE73 /* CodexTimelineTests.swift in Sources */,
 				228CA92864B4D7666F38530B /* HerdcatsTests+ConnectionOwnership.swift in Sources */,
 				85480D39459046813F07E9E7 /* HerdcatsTests+CredentialMigration.swift in Sources */,
 				2B3A742B2DDD9B5702E52638 /* HerdcatsTests+DictationAndHistory.swift in Sources */,

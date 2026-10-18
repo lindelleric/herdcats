@@ -11,8 +11,22 @@ SOURCE = Path(__file__).resolve().parents[2] / 'ios/Herdcats/Networking/AgentBri
 
 class MobileLauncherTests(unittest.TestCase):
     def script(self):
-        body = re.search(r'let script = """(.*?)"""', SOURCE.read_text(), re.S)[1]
-        return textwrap.dedent(body).replace('\\\\', '\\')
+        text = SOURCE.read_text()
+        match = re.search(r'let script = """(.*?)"""', text, re.S)
+        if match:
+            return textwrap.dedent(match[1]).replace('\\\\', '\\')
+        template_match = re.search(r'static func helperScript.*?return """(.*?)"""', text, re.S)
+        if template_match:
+            template = textwrap.dedent(template_match[1])
+            drain = "  IFS= read -r HB_REQUEST || exit 127\n"
+            missing_payload = '{"error":{"code":"helper_missing"}}'
+            exec_body = "S=${HERDR_SOCKET_PATH:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr/herdr.sock}\nexec \"$B\" serve --stdio --socket \"$S\""
+            script = template.replace(r'\(drain)', drain)
+            script = script.replace(r'\(missingPayload)', missing_payload)
+            script = script.replace(r'\(missingExitCode)', '127')
+            script = script.replace(r'\(exec)', exec_body)
+            return script.replace('\\\\', '\\')
+        raise RuntimeError("Could not find launcher script in AgentBridgeClient.swift")
 
     def test_managed_installation_wins_over_old_path_binary(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,10 +1,85 @@
-use crate::Result;
+use crate::{Result, adapter::Adapter, follower::Follower, herdr::Pane, resolver::Resolver};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{borrow::Cow, collections::HashSet};
+use std::{borrow::Cow, collections::HashSet, fs::File};
+
+pub struct ClaudeAdapter {
+    pub resolver: Option<Resolver>,
+}
+
+impl ClaudeAdapter {
+    pub fn new(resolver: Option<Resolver>) -> Self {
+        Self { resolver }
+    }
+}
+
+impl Adapter for ClaudeAdapter {
+    fn name(&self) -> &'static str {
+        "claude"
+    }
+
+    fn supports(&self, agent: &str) -> bool {
+        agent == "claude"
+    }
+
+    fn is_available(&self) -> bool {
+        self.resolver.is_some()
+    }
+
+    fn resolve_and_open(&self, pane: &Pane) -> Result<(String, File)> {
+        if pane.agent.as_deref() != Some("claude") {
+            return Err("unsupported_agent");
+        }
+        let reference = pane
+            .agent_session
+            .as_ref()
+            .ok_or("session_reference_unavailable")?;
+        if reference.agent != "claude" || reference.source != "herdr:claude" {
+            return Err("unsupported_session_source");
+        }
+        let resolver = self
+            .resolver
+            .as_ref()
+            .ok_or("transcript_root_unavailable")?;
+        let (session, path) = resolver.resolve(&reference.kind, &reference.value)?;
+        let file = resolver.open(&path)?;
+        Ok((session, file))
+    }
+
+    fn new_follower(&self, include_content: bool) -> Follower {
+        if include_content {
+            Follower::with_content()
+        } else {
+            Follower::default()
+        }
+    }
+}
 
 pub const MAX_ENTRIES: usize = 1000;
 const TEXT_LIMIT: usize = 8192;
+
+/// Maximum Entry ID length in bytes allowed on the wire.
+/// Matches the iOS client's limit in `AgentTimelineState.validate`:
+/// `!$0.id.isEmpty && $0.id.utf8.count <= 264`
+pub const MAX_ENTRY_ID: usize = 264;
+
+/// Builds and validates a wire Entry ID.
+///
+/// Returns `Err("invalid_transcript")` if the resulting ID is empty or exceeds
+/// `MAX_ENTRY_ID` (264 bytes), matching the client validation limit.
+pub(crate) fn entry_id(prefix: &str, part: &str) -> Result<String> {
+    let full = if prefix.is_empty() {
+        part.to_string()
+    } else if part.is_empty() {
+        prefix.to_string()
+    } else {
+        format!("{prefix}:{part}")
+    };
+    if full.is_empty() || full.len() > MAX_ENTRY_ID {
+        return Err("invalid_transcript");
+    }
+    Ok(full)
+}
 
 pub(crate) fn is_routine_metadata(kind: &str) -> bool {
     matches!(
@@ -42,7 +117,7 @@ pub struct Transcript {
     pub dropped_entries: usize,
     seen: HashSet<String>,
 }
-fn bounded(text: &str) -> (String, bool) {
+pub(crate) fn bounded(text: &str) -> (String, bool) {
     let mut end = text.len().min(TEXT_LIMIT);
     while !text.is_char_boundary(end) {
         end -= 1;
@@ -75,6 +150,9 @@ fn notification_field<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
 
 impl Transcript {
     pub(crate) fn upsert(&mut self, mut entry: Entry) -> Result<()> {
+        if entry.id.is_empty() || entry.id.len() > MAX_ENTRY_ID {
+            return Err("invalid_transcript");
+        }
         if let Some(old) = self.entries.iter_mut().find(|old| old.id == entry.id) {
             if entry.record_refs.is_empty() {
                 entry.record_refs = old.record_refs.clone();
@@ -106,7 +184,7 @@ impl Transcript {
             _ => "unknown",
         };
         self.upsert(Entry {
-            id: format!("task:{source_id}"),
+            id: entry_id("task", source_id)?,
             kind: "tool".into(),
             text: summary,
             role: None,
@@ -161,7 +239,7 @@ impl Transcript {
         if !text.is_empty() {
             let (text, truncated) = bounded(&text);
             self.upsert(Entry {
-                id: format!("message:{source_id}"),
+                id: entry_id("message", source_id)?,
                 kind: "message".into(),
                 text,
                 role: Some(kind.into()),
@@ -187,7 +265,7 @@ impl Transcript {
                             .ok_or("invalid_transcript")?;
                         let (name, name_truncated) = bounded(name);
                         let (details, truncated) = bounded(&block["input"].to_string());
-                        let key = format!("tool:{id}");
+                        let key = entry_id("tool", id)?;
                         // A repeated call record must not revert a completed tool.
                         let old = self.entries.iter().find(|e| e.id == key);
                         let status = old
@@ -213,11 +291,8 @@ impl Transcript {
                             .as_str()
                             .filter(|s| !s.is_empty() && s.len() <= 256)
                             .ok_or("invalid_transcript")?;
-                        if let Some(old) = self
-                            .entries
-                            .iter_mut()
-                            .find(|e| e.id == format!("tool:{id}"))
-                        {
+                        let key = entry_id("tool", id)?;
+                        if let Some(old) = self.entries.iter_mut().find(|e| e.id == key) {
                             let (text, truncated) = bounded(&text_content(&block["content"]));
                             old.text = text;
                             old.status = Some(
@@ -298,7 +373,7 @@ impl Transcript {
         if !full_text.is_empty() {
             let (text, truncated) = bounded(&full_text);
             self.upsert(Entry {
-                id: format!("message:{source_id}"),
+                id: entry_id("message", source_id)?,
                 kind: "message".into(),
                 text,
                 role: Some(kind.into()),
@@ -327,7 +402,7 @@ impl Transcript {
                         let (name, name_truncated) = bounded(name);
                         let input_str = block.input.map(|v| v.get()).unwrap_or("null");
                         let (details, truncated) = bounded(input_str);
-                        let key = format!("tool:{id}");
+                        let key = entry_id("tool", id)?;
                         let old = self.entries.iter().find(|e| e.id == key);
                         let status = old
                             .and_then(|e| e.status.clone())
@@ -359,11 +434,8 @@ impl Transcript {
                         if sub_omission {
                             has_omission = true;
                         }
-                        if let Some(old) = self
-                            .entries
-                            .iter_mut()
-                            .find(|e| e.id == format!("tool:{id}"))
-                        {
+                        let key = entry_id("tool", id)?;
+                        if let Some(old) = self.entries.iter_mut().find(|e| e.id == key) {
                             let (text, truncated) = bounded(&res_text);
                             old.text = text;
                             let is_error =

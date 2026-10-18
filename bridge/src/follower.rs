@@ -1,6 +1,6 @@
 use crate::{Result, claude::Transcript};
 use std::{fs, io::Read, os::unix::fs::MetadataExt, path::Path};
-const MAX_SOURCE: u64 = 64 * 1024 * 1024;
+pub const MAX_SOURCE: u64 = 64 * 1024 * 1024;
 pub const MAX_RECORD: usize = 1024 * 1024;
 #[derive(Clone, Debug, PartialEq)]
 struct Stamp {
@@ -22,8 +22,16 @@ impl Stamp {
         }
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum AgentType {
+    #[default]
+    Claude,
+    Codex,
+}
+
 #[derive(Default)]
 pub struct Follower {
+    pub agent_type: AgentType,
     preserve_content: bool,
     pub transcript: Transcript,
     pub offset: u64,
@@ -34,8 +42,21 @@ pub struct Follower {
     buf: Vec<u8>,
 }
 impl Follower {
+    pub fn for_agent(agent_type: AgentType) -> Self {
+        Self {
+            agent_type,
+            ..Self::default()
+        }
+    }
     pub fn with_content() -> Self {
         Self {
+            preserve_content: true,
+            ..Self::default()
+        }
+    }
+    pub fn with_content_for_agent(agent_type: AgentType) -> Self {
+        Self {
+            agent_type,
             preserve_content: true,
             ..Self::default()
         }
@@ -127,11 +148,25 @@ impl Follower {
                 break;
             }
             if part != b"\n" {
-                let result = if part.len() > MAX_RECORD {
-                    transcript.apply_oversized(part, session)
-                } else {
-                    let row = serde_json::from_slice(part).map_err(|_| "invalid_transcript")?;
-                    transcript.apply(&row, session)
+                let result = match self.agent_type {
+                    AgentType::Claude => {
+                        if part.len() > MAX_RECORD {
+                            transcript.apply_oversized(part, session)
+                        } else {
+                            let row =
+                                serde_json::from_slice(part).map_err(|_| "invalid_transcript")?;
+                            transcript.apply(&row, session)
+                        }
+                    }
+                    AgentType::Codex => {
+                        if part.len() > MAX_RECORD {
+                            transcript.apply_codex_oversized(part, session, offset)
+                        } else {
+                            let row =
+                                serde_json::from_slice(part).map_err(|_| "invalid_transcript")?;
+                            transcript.apply_codex(&row, session, offset)
+                        }
+                    }
                 };
                 // Valid but unfamiliar message shapes remain inspectable as raw
                 // records. Ownership/security and resource-limit errors still fail.
@@ -141,7 +176,12 @@ impl Follower {
                     }
                 }
                 if self.preserve_content {
-                    transcript.preserve_record(part, session, offset)?;
+                    match self.agent_type {
+                        AgentType::Claude => transcript.preserve_record(part, session, offset)?,
+                        AgentType::Codex => {
+                            transcript.preserve_codex_record(part, session, offset)?
+                        }
+                    }
                 }
             }
             offset += part.len();

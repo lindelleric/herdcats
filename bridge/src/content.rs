@@ -1,6 +1,6 @@
 use crate::{
     Result,
-    claude::{Entry, Transcript, is_routine_metadata},
+    claude::{Entry, Transcript, entry_id, is_routine_metadata},
 };
 use serde_json::value::RawValue;
 use std::collections::BTreeMap;
@@ -39,7 +39,7 @@ impl RecordContext<'_> {
     }
 }
 impl Transcript {
-    fn attach_record(&mut self, id: &str, reference: &str) -> bool {
+    pub(crate) fn attach_record(&mut self, id: &str, reference: &str) -> bool {
         if let Some(entry) = self.entries.iter_mut().find(|e| e.id == id) {
             if entry.record_refs.iter().any(|r| r == reference) {
                 return true;
@@ -66,7 +66,10 @@ impl Transcript {
             (Some(s), t)
         };
         let (text, label_truncated) = preview(label);
-        let id = format!("content:{}:{}", context.offset, context.counter);
+        let id = entry_id(
+            "content",
+            &format!("{}:{}", context.offset, context.counter),
+        )?;
         context.counter += 1;
         self.upsert(Entry {
             id,
@@ -104,21 +107,20 @@ impl Transcript {
                 } else {
                     "tool_use_id"
                 };
-                let attached = string(fields.get(key)).is_some_and(|id| {
-                    self.attach_record(&format!("tool:{id}"), &context.reference)
-                });
+                let tool_id = string(fields.get(key));
+                let tool_key = tool_id
+                    .as_deref()
+                    .and_then(|tid| entry_id("tool", tid).ok());
+                let attached = tool_key
+                    .as_ref()
+                    .is_some_and(|k| self.attach_record(k, &context.reference));
                 if !attached {
                     self.content_bubble(context, &kind, raw.get(), false)?;
                 }
                 if attached && kind == "tool_use" {
-                    if let (Some(id), Some(input)) = (string(fields.get("id")), fields.get("input"))
-                    {
+                    if let (Some(k), Some(input)) = (tool_key.as_ref(), fields.get("input")) {
                         let reference = context.reference_for(input.get())?;
-                        if let Some(entry) = self
-                            .entries
-                            .iter_mut()
-                            .find(|entry| entry.id == format!("tool:{id}"))
-                        {
+                        if let Some(entry) = self.entries.iter_mut().find(|entry| &entry.id == k) {
                             entry.content_ref = Some(reference);
                         }
                     }
@@ -167,8 +169,14 @@ impl Transcript {
         };
         if matches!(kind.as_str(), "user" | "assistant") {
             let attached = string(fields.get("uuid")).is_some_and(|id| {
-                self.attach_record(&format!("message:{id}"), &context.reference)
-                    || self.attach_record(&format!("task:{id}"), &context.reference)
+                let msg_key = entry_id("message", &id).ok();
+                let task_key = entry_id("task", &id).ok();
+                msg_key
+                    .as_ref()
+                    .is_some_and(|k| self.attach_record(k, &context.reference))
+                    || task_key
+                        .as_ref()
+                        .is_some_and(|k| self.attach_record(k, &context.reference))
             });
             if let Some(message) = fields.get("message").and_then(|m| object(m.get())) {
                 if let Some(content) = message.get("content") {
