@@ -2060,6 +2060,12 @@ fn is_codex_injected_context_edge_cases() {
     assert!(is_codex_injected_text("<skill name=\"x\">"));
     assert!(is_codex_injected_text("<subagent>\n..."));
     assert!(is_codex_injected_text("<subagent id=\"1\">"));
+    assert!(is_codex_injected_text(
+        "<subagent_notification>{\"agent\":\"researcher\",\"status\":\"completed\"}</subagent_notification>"
+    ));
+    assert!(!is_codex_injected_text("<subagent_notificationX"));
+    assert!(!is_codex_injected_text("<send_user_message_question_reply>"));
+    assert!(!is_codex_injected_text("<image name=[Image #1] path=\"/tmp/foo.png\">"));
 
     // Empty content
     assert!(!is_codex_injected_context(&json!("")));
@@ -2068,6 +2074,12 @@ fn is_codex_injected_context_edge_cases() {
 
     // String content
     assert!(is_codex_injected_context(&json!("<environment_context>")));
+    assert!(is_codex_injected_context(&json!(
+        "<subagent_notification>{...}</subagent_notification>"
+    )));
+    assert!(!is_codex_injected_context(&json!(
+        "<subagent_notificationX{...}</subagent_notificationX>"
+    )));
     assert!(!is_codex_injected_context(&json!("Regular prompt")));
 
     // Non-text blocks (e.g. image) prevent message from being skipped as context
@@ -2079,4 +2091,74 @@ fn is_codex_injected_context_edge_cases() {
         {"type": "input_text", "text": "<environment_context>"}
     ]);
     assert!(!is_codex_injected_context(&mixed_image_and_context));
+}
+
+#[test]
+fn subagent_notification_message_is_hidden_and_near_miss_is_shown() {
+    let temp = Temp::new();
+    let file_path = temp.0.join("rollout-subagent-notification.jsonl");
+
+    let records = vec![
+        json!({"type": "session_meta", "payload": {"id": THREAD_ID, "cwd": "/test/cwd"}}),
+        // 1. Injected subagent_notification: must be HIDDEN
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "msg-subagent-notif",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "<subagent_notification>{\"agent\":\"researcher\",\"status\":\"completed\"}</subagent_notification>"
+                    }
+                ]
+            }
+        }),
+        // 2. Near-miss text "<subagent_notificationX": must be SHOWN
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "msg-near-miss",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "<subagent_notificationX>Some user text</subagent_notificationX>"
+                    }
+                ]
+            }
+        }),
+    ];
+
+    let mut content = String::new();
+    let mut offsets = Vec::new();
+    let mut lengths = Vec::new();
+    for r in &records {
+        let line = format!("{}\n", r);
+        offsets.push(content.len());
+        lengths.push(line.len());
+        content.push_str(&line);
+    }
+    fs::write(&file_path, &content).unwrap();
+
+    let mut follower = Follower::with_content_for_agent(AgentType::Codex);
+    assert!(follower.refresh(&file_path, THREAD_ID).unwrap());
+
+    let transcript = &follower.transcript;
+
+    // Only the near-miss message should be present; the exact subagent_notification is hidden
+    assert_eq!(transcript.entries.len(), 1);
+    assert_eq!(transcript.entries[0].id, "message:msg-near-miss");
+    assert_eq!(transcript.entries[0].kind, "message");
+    assert_eq!(transcript.entries[0].role.as_deref(), Some("user"));
+    assert_eq!(
+        transcript.entries[0].text,
+        "<subagent_notificationX>Some user text</subagent_notificationX>"
+    );
+    assert_eq!(
+        transcript.entries[0].record_refs,
+        vec![format!("source:{}:{}", offsets[2], lengths[2])]
+    );
 }

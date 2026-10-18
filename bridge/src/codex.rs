@@ -620,6 +620,7 @@ pub const CODEX_INJECTED_CONTEXT_PREFIXES: &[&str] = &[
     "<skill ",
     "<subagent>",
     "<subagent ",
+    "<subagent_notification>",
 ];
 
 pub fn is_codex_injected_text(text: &str) -> bool {
