@@ -241,7 +241,7 @@ struct AgentTimelineView: View {
                 if isCheckingSetup {
                     isCheckingSetup = false
                     setupFeedback = code == "helper_missing"
-                        ? "The helper was not found yet. Run the command on your SSH host, then check again."
+                        ? "Herdcats Bridge was not found yet. Run the command on your SSH host, then check again."
                         : explanation(code)
                 }
                 if ["helper_missing", "helper_update_required"].contains(code) && !showsSetup && canPinnedInstallerSupportAgent {
@@ -338,7 +338,7 @@ struct AgentTimelineView: View {
         setupReason = resolvedReason
         setupShouldUseTerminal = true
         setupFeedback = resolvedReason == .updateRequired
-            ? (agent == "codex" ? "Update the host helper to see Codex conversations." : "Update the host helper to display session images.") : nil
+            ? (agent == "codex" ? "Upgrade Herdcats Bridge to see Codex conversations." : "Upgrade Herdcats Bridge to display session images.") : nil
         showsSetup = true
     }
     @MainActor private func startHelperInstallation() {
@@ -402,13 +402,13 @@ struct AgentTimelineView: View {
                 case .missing:
                     helperStage = .idle
                     setupReason = .missing
-                    setupFeedback = "No helper was found. Tap Install Timeline helper to try installation, or use manual setup."
+                    setupFeedback = "No Herdcats Bridge was found. Tap Install Herdcats Bridge to try installation, or use manual setup."
                 case .replacementRequired(let probe):
                     helperStage = .replacementRequired(probe)
                     setupFeedback = HostHelperSetupPlan.replacementFeedback(probe: probe)
                 case .unsupportedByPinnedInstaller(let agent):
                     helperStage = .idle
-                    setupFeedback = "This version of Herdcats can't install a \(agent.capitalized)-capable helper yet."
+                    setupFeedback = "This version of Herdcats can't install a version of Herdcats Bridge that supports \(agent.capitalized) yet."
                 case .install: throw HostHelperSetupError.invalidResponse
                 }
             } catch {
@@ -486,7 +486,7 @@ struct AgentTimelineView: View {
 
             ContentUnavailableView {
                 Label(
-                    isCodex && isHelperOld ? "Update the Herdcats helper to see Codex conversations" :
+                    isCodex && isHelperOld ? "Upgrade Herdcats Bridge to see Codex conversations" :
                     isCodex && isNoSession ? "Codex session not identified" :
                     isCodex && isCwdMismatch ? "This pane’s Codex session could not be confirmed" :
                     (code == "helper_missing" ? "Set up Timeline" : "Timeline unavailable"),
@@ -500,7 +500,7 @@ struct AgentTimelineView: View {
                 }
             } actions: {
                 if ["helper_missing", "helper_update_required", "unsupported_agent", "protocol_mismatch", "record_too_large"].contains(code) && canPinnedInstallerSupportAgent {
-                    Button(isCodex && isHelperOld ? "Update helper" : "Set up Timeline") {
+                    Button(isCodex && isHelperOld ? "Upgrade Herdcats Bridge" : "Set up Timeline") {
                         beginSetup(reason: (isCodex && isHelperOld) || code == "helper_update_required" ? .updateRequired : .missing)
                     }
                         .buttonStyle(.herdrPrimary)
@@ -579,22 +579,22 @@ struct AgentTimelineView: View {
         case "helper_missing":
             if isCodex {
                 return canSupportCodex
-                    ? "Install the small host helper to see this session as native messages. Terminal is available now."
-                    : "This version of Herdcats can't install a Codex-capable helper yet."
+                    ? "Install Herdcats Bridge to see this session as native messages. Terminal is available now."
+                    : "This version of Herdcats can't install a version of Herdcats Bridge that supports Codex yet."
             }
-            return "Install the small host helper to see this session as native messages. Terminal is available now."
+            return "Install Herdcats Bridge to see this session as native messages. Terminal is available now."
         case "helper_update_required":
             if isCodex {
                 return canSupportCodex
-                    ? "Update the Herdcats helper to see Codex conversations."
-                    : "This version of Herdcats can't install a Codex-capable helper yet."
+                    ? "Upgrade Herdcats Bridge to see Codex conversations."
+                    : "This version of Herdcats can't install a version of Herdcats Bridge that supports Codex yet."
             }
-            return "Update the host helper to display session images."
+            return "Upgrade Herdcats Bridge to display session images."
         case "unsupported_agent":
             if isCodex {
                 return canSupportCodex
-                    ? "Update the Herdcats helper to see Codex conversations."
-                    : "This version of Herdcats can't install a Codex-capable helper yet."
+                    ? "Upgrade Herdcats Bridge to see Codex conversations."
+                    : "This version of Herdcats can't install a version of Herdcats Bridge that supports Codex yet."
             }
             return "Timeline is not available for this agent yet. You can still send messages below or use Terminal."
         case "routed_host_unsupported": return "Native history is not available through saved machines yet. Messages can still be sent below."
@@ -611,15 +611,15 @@ struct AgentTimelineView: View {
         case "transcript_root_unavailable":
             return "Session history is unavailable on this host."
         case "source_changing": return "Session history is being updated. Try again in a moment."
-        case "record_too_large": return "This helper cannot read an oversized session record. Update the helper to reload history."
+        case "record_too_large": return "Herdcats Bridge cannot read an oversized session record. Upgrade Herdcats Bridge to reload history."
         case "source_too_large": return "This session exceeds the current history size limit. Compose and Terminal remain available."
         case "unsafe_transcript_path", "invalid_transcript", "session_mismatch":
             return "Session history could not be read safely. Compose and Terminal remain available."
-        case "herdr_unavailable": return "The helper cannot reach Herdr on this host. Check the host session, then try again."
+        case "herdr_unavailable": return "Herdcats Bridge cannot reach Herdr on this host. Check the host session, then try again."
         case "unsupported_herdr_protocol", "protocol_mismatch":
-            return "The host helper and Herdr version are not compatible."
+            return "Herdcats Bridge and the Herdr version are not compatible."
         default:
-            return "Check that the optional herdcats-bridge helper is available on your host, then try again."
+            return "Check that optional Herdcats Bridge is available on your host, then try again."
         }
     }
     @MainActor private func run() async {
@@ -1142,14 +1142,14 @@ private struct AgentBridgeSetupView: View {
                     .padding(18).frame(maxWidth: .infinity, alignment: .leading)
                     .background(Theme.cardBackground, in: RoundedRectangle(cornerRadius: 18))
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("How the host helper works")
+                        Text("How Herdcats Bridge works")
                             .font(.jost(.headline)).accessibilityAddTraits(.isHeader)
-                        Text("A small helper on your SSH computer reads your existing agent session and sends its history to Herdcats over your SSH connection. Your agent keeps running in the same pane.")
+                        Text("Herdcats Bridge is a small program on your SSH computer that reads your existing agent session and sends its history to Herdcats over your SSH connection. Your agent keeps running in the same pane.")
                             .font(.jost(.subheadline)).foregroundStyle(Theme.textMuted)
                         Text("It runs only while Timeline is open. There’s no background service or agent hook to configure.")
                             .font(.jost(.subheadline)).foregroundStyle(Theme.textMuted)
                     }
-                    Text("Tapping Install downloads the pinned helper and verifies its checksum before running the installer. No sudo, background service, or agent hooks are required.")
+                    Text("Tapping Install downloads the pinned Herdcats Bridge release and verifies its checksum before running the installer. No sudo, background service, or agent hooks are required.")
                         .font(.jost(.subheadline)).foregroundStyle(Theme.textMuted)
                     DisclosureGroup("Manual setup") {
                     VStack(alignment: .leading, spacing: 14) {
@@ -1170,7 +1170,7 @@ private struct AgentBridgeSetupView: View {
                             .font(.system(.footnote, design: .monospaced)).textSelection(.enabled)
                             .padding(16).frame(maxWidth: .infinity, alignment: .leading)
                             .background(Theme.fieldBackground, in: RoundedRectangle(cornerRadius: 16))
-                        Text("The installer checks the download and installs in your user account. Already installed? Add --replace to update it.")
+                        Text("The installer checks the download and installs in your user account. Already installed? Add --replace to upgrade it.")
                             .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
                         Link("View downloads and setup details", destination: URL(string: "https://github.com/zhiyao/herdcats/releases")!)
                             .font(.jost(.subheadline))
@@ -1186,7 +1186,7 @@ private struct AgentBridgeSetupView: View {
                     VStack(spacing: 3) {
                         Text("\(target.username)@\(target.host)").font(.jost(.subheadline, weight: .semibold))
                         Text("~/.local/bin/herdcats-bridge").font(.system(.caption, design: .monospaced))
-                        Text("Port \(target.port) · helper \(HostHelperSetupPlan.version)").font(.jost(.caption))
+                        Text("Port \(target.port) · Herdcats Bridge \(HostHelperSetupPlan.version)").font(.jost(.caption))
                     }.foregroundStyle(Theme.textMuted)
                     if let feedback {
                         Text(feedback).font(.jost(.caption)).foregroundStyle(Theme.textMuted)

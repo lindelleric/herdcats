@@ -225,46 +225,60 @@ struct HostHelperSetupPolicyTests {
     }
 
     @Test func helperSetupLabelAndFeedbackLogic() throws {
-        // update reason idle -> "Update helper to 0.2.0"
+        // update reason idle -> "Upgrade Herdcats Bridge to 0.2.0"
         #expect(
             HostHelperSetupPlan.installLabel(stage: .idle, reason: .updateRequired)
-            == "Update helper to 0.2.0"
+            == "Upgrade Herdcats Bridge to 0.2.0"
         )
         #expect(
             HostHelperSetupPlan.installLabel(stage: .idle, reason: .updateRequired, pinnedVersion: "0.2.0")
-            == "Update helper to 0.2.0"
+            == "Upgrade Herdcats Bridge to 0.2.0"
         )
 
-        // missing -> "Install Timeline helper"
+        // missing -> "Install Herdcats Bridge"
         #expect(
             HostHelperSetupPlan.installLabel(stage: .idle, reason: .missing)
-            == "Install Timeline helper"
+            == "Install Herdcats Bridge"
         )
         #expect(
             HostHelperSetupPlan.installLabel(stage: .idle)
-            == "Install Timeline helper"
+            == "Install Herdcats Bridge"
         )
 
-        // managed 0.1.4 replacementRequired -> "Replace helper with 0.2.0" + found-version feedback
+        // managed 0.1.4 replacementRequired -> "Replace Herdcats Bridge with 0.2.0" + found-version feedback
         let managed014 = HostHelperProbe.present(version: "0.1.4", managed: true, compatible: false)
         #expect(
             HostHelperSetupPlan.installLabel(stage: .replacementRequired(managed014), pinnedVersion: "0.2.0")
-            == "Replace helper with 0.2.0"
+            == "Replace Herdcats Bridge with 0.2.0"
         )
         #expect(
             HostHelperSetupPlan.replacementFeedback(probe: managed014)
-            == "Found helper 0.1.4 on this host."
+            == "Found Herdcats Bridge 0.1.4 on this host. Tap Replace to upgrade it at the location shown."
         )
 
-        // external helper -> "Install managed helper"
+        // external helper -> "Install managed Herdcats Bridge"
         let externalHelper = HostHelperProbe.present(version: "0.1.4", managed: false, compatible: false)
         #expect(
             HostHelperSetupPlan.installLabel(stage: .replacementRequired(externalHelper))
-            == "Install managed helper"
+            == "Install managed Herdcats Bridge"
         )
         #expect(
             HostHelperSetupPlan.replacementFeedback(probe: externalHelper)
-            == "An existing helper was found elsewhere. Install a managed copy at the location shown; the other copy will remain unchanged."
+            == "An existing Herdcats Bridge was found elsewhere. Install a managed copy at the location shown; the other copy will remain unchanged."
+        )
+
+        // HostHelperSetupError localized descriptions
+        #expect(
+            HostHelperSetupError.invalidResponse.localizedDescription
+            == "Herdcats Bridge could not be verified. Check the installation or use manual setup."
+        )
+        #expect(
+            HostHelperSetupError.busy.localizedDescription
+            == "A Herdcats Bridge setup is already running on this connection. Check again when it finishes."
+        )
+        #expect(
+            HostHelperSetupError.failed("curl_missing").localizedDescription
+            == "This host needs curl to download Herdcats Bridge. Use manual setup to install it."
         )
     }
 }

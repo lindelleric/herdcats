@@ -95,7 +95,7 @@ final class AgentTimelineUITests: XCTestCase {
         app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-helper-missing", "-hc.light"]
         launch(app)
         XCTAssertTrue(app.staticTexts["A clearer view of your agent"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["How the host helper works"].exists)
+        XCTAssertTrue(app.staticTexts["How Herdcats Bridge works"].exists)
         XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label CONTAINS[c] %@", "Claude session")).firstMatch.exists)
         let drawer = app.scrollViews["timeline-setup-scroll"]
         XCTAssertTrue(drawer.exists)
@@ -118,7 +118,7 @@ final class AgentTimelineUITests: XCTestCase {
         copy.tap()
         XCTAssertTrue(app.staticTexts["Command copied"].waitForExistence(timeout: 3))
         app.buttons["timeline-helper-check-again"].tap()
-        XCTAssertTrue(app.staticTexts["The helper was not found yet. Run the command on your SSH host, then check again."].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Herdcats Bridge was not found yet. Run the command on your SSH host, then check again."].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["A clearer view of your agent"].exists)
         app.buttons["timeline-helper-use-terminal"].tap()
         XCTAssertTrue(app.scrollViews["pane-output-scroll-view"].waitForExistence(timeout: 5))
@@ -165,7 +165,7 @@ final class AgentTimelineUITests: XCTestCase {
         let exists = install.waitForExistence(timeout: 5)
         XCTAssertTrue(exists)
         guard exists else { app.terminate(); return }
-        XCTAssertEqual(install.label, "Install Timeline helper")
+        XCTAssertEqual(install.label, "Install Herdcats Bridge")
         XCTAssertTrue(app.staticTexts["demo@studio-mac"].exists)
         XCTAssertTrue(app.staticTexts["~/.local/bin/herdcats-bridge"].exists)
         XCTAssertTrue(app.staticTexts["A clearer view of your agent"].exists, "Opening the drawer must not install automatically")
@@ -187,7 +187,7 @@ final class AgentTimelineUITests: XCTestCase {
             XCTAssertTrue(feedback.waitForExistence(timeout: 5))
             XCTAssertFalse(app.buttons["timeline-tool-tool:read"].exists)
             if scenario == "replacement" {
-                XCTAssertEqual(install.label, "Replace helper with 0.2.0")
+                XCTAssertEqual(install.label, "Replace Herdcats Bridge with 0.2.0")
                 install.tap()
                 XCTAssertTrue(app.buttons["timeline-tool-tool:read"].waitForExistence(timeout: 5))
             } else if scenario == "uncertain" {
@@ -196,7 +196,7 @@ final class AgentTimelineUITests: XCTestCase {
                 XCTAssertTrue(app.buttons["timeline-tool-tool:read"].waitForExistence(timeout: 5))
             } else {
                 XCTAssertTrue(feedback.label.contains(scenario == "failure" ? "could not download" : "No installation was started"))
-                XCTAssertEqual(install.label, "Install Timeline helper")
+                XCTAssertEqual(install.label, "Install Herdcats Bridge")
                 app.buttons["timeline-helper-use-terminal"].tap()
                 XCTAssertTrue(app.scrollViews["pane-output-scroll-view"].waitForExistence(timeout: 5))
             }
@@ -281,12 +281,12 @@ final class AgentTimelineUITests: XCTestCase {
         launch(app)
         let install = app.buttons["timeline-helper-install"]
         XCTAssertTrue(install.waitForExistence(timeout: 5))
-        XCTAssertEqual(install.label, "Update helper to 0.2.0")
+        XCTAssertEqual(install.label, "Upgrade Herdcats Bridge to 0.2.0")
         install.tap()
         let feedback = app.staticTexts["timeline-setup-feedback"]
         XCTAssertTrue(feedback.waitForExistence(timeout: 5))
-        XCTAssertEqual(feedback.label, "Found helper 0.1.0 on this host.")
-        XCTAssertEqual(install.label, "Replace helper with 0.2.0")
+        XCTAssertEqual(feedback.label, "Found Herdcats Bridge 0.1.0 on this host. Tap Replace to upgrade it at the location shown.")
+        XCTAssertEqual(install.label, "Replace Herdcats Bridge with 0.2.0")
         app.terminate()
     }
 

@@ -221,27 +221,27 @@ struct CodexTimelineGatingTests {
             onSetupComplete: {}
         )
         // When Codex is supported by pinned installer (0.2.0 pinned release with HostHelperSetupPlan.agents == ["claude", "codex"])
-        #expect(view.explanation("helper_update_required") == "Update the Herdcats helper to see Codex conversations.")
-        #expect(view.explanation("unsupported_agent") == "Update the Herdcats helper to see Codex conversations.")
-        #expect(view.explanation("helper_missing") == "Install the small host helper to see this session as native messages. Terminal is available now.")
+        #expect(view.explanation("helper_update_required") == "Upgrade Herdcats Bridge to see Codex conversations.")
+        #expect(view.explanation("unsupported_agent") == "Upgrade Herdcats Bridge to see Codex conversations.")
+        #expect(view.explanation("helper_missing") == "Install Herdcats Bridge to see this session as native messages. Terminal is available now.")
 
         // Explicitly test both ways with injected supportedAgents:
         // 1. Without Codex in supportedAgents
         let unsupportedAgents: Set<String> = ["claude"]
-        #expect(AgentTimelineView.explanation("helper_update_required", agent: "codex", supportedAgents: unsupportedAgents) == "This version of Herdcats can't install a Codex-capable helper yet.")
-        #expect(AgentTimelineView.explanation("unsupported_agent", agent: "codex", supportedAgents: unsupportedAgents) == "This version of Herdcats can't install a Codex-capable helper yet.")
-        #expect(AgentTimelineView.explanation("helper_missing", agent: "codex", supportedAgents: unsupportedAgents) == "This version of Herdcats can't install a Codex-capable helper yet.")
+        #expect(AgentTimelineView.explanation("helper_update_required", agent: "codex", supportedAgents: unsupportedAgents) == "This version of Herdcats can't install a version of Herdcats Bridge that supports Codex yet.")
+        #expect(AgentTimelineView.explanation("unsupported_agent", agent: "codex", supportedAgents: unsupportedAgents) == "This version of Herdcats can't install a version of Herdcats Bridge that supports Codex yet.")
+        #expect(AgentTimelineView.explanation("helper_missing", agent: "codex", supportedAgents: unsupportedAgents) == "This version of Herdcats can't install a version of Herdcats Bridge that supports Codex yet.")
 
         // 2. With Codex in supportedAgents
         let supportedWithCodex: Set<String> = ["claude", "codex"]
-        #expect(AgentTimelineView.explanation("helper_update_required", agent: "codex", supportedAgents: supportedWithCodex) == "Update the Herdcats helper to see Codex conversations.")
-        #expect(AgentTimelineView.explanation("unsupported_agent", agent: "codex", supportedAgents: supportedWithCodex) == "Update the Herdcats helper to see Codex conversations.")
-        #expect(AgentTimelineView.explanation("helper_missing", agent: "codex", supportedAgents: supportedWithCodex) == "Install the small host helper to see this session as native messages. Terminal is available now.")
+        #expect(AgentTimelineView.explanation("helper_update_required", agent: "codex", supportedAgents: supportedWithCodex) == "Upgrade Herdcats Bridge to see Codex conversations.")
+        #expect(AgentTimelineView.explanation("unsupported_agent", agent: "codex", supportedAgents: supportedWithCodex) == "Upgrade Herdcats Bridge to see Codex conversations.")
+        #expect(AgentTimelineView.explanation("helper_missing", agent: "codex", supportedAgents: supportedWithCodex) == "Install Herdcats Bridge to see this session as native messages. Terminal is available now.")
 
         // 3. Claude is unaffected
-        #expect(AgentTimelineView.explanation("helper_update_required", agent: "claude", supportedAgents: unsupportedAgents) == "Update the host helper to display session images.")
+        #expect(AgentTimelineView.explanation("helper_update_required", agent: "claude", supportedAgents: unsupportedAgents) == "Upgrade Herdcats Bridge to display session images.")
         #expect(AgentTimelineView.explanation("unsupported_agent", agent: "claude", supportedAgents: unsupportedAgents) == "Timeline is not available for this agent yet. You can still send messages below or use Terminal.")
-        #expect(AgentTimelineView.explanation("helper_missing", agent: "claude", supportedAgents: unsupportedAgents) == "Install the small host helper to see this session as native messages. Terminal is available now.")
+        #expect(AgentTimelineView.explanation("helper_missing", agent: "claude", supportedAgents: unsupportedAgents) == "Install Herdcats Bridge to see this session as native messages. Terminal is available now.")
     }
 
     @Test func canPinnedInstallerSupportVerification() {
@@ -255,42 +255,42 @@ struct CodexTimelineGatingTests {
     }
 
     @Test func helperSetupViewLabelAndFeedbackLogic() {
-        // update reason idle -> "Update helper to 0.2.0"
+        // update reason idle -> "Upgrade Herdcats Bridge to 0.2.0"
         #expect(
             AgentTimelineView.installLabel(stage: .idle, reason: .updateRequired)
-            == "Update helper to 0.2.0"
+            == "Upgrade Herdcats Bridge to 0.2.0"
         )
 
-        // missing -> "Install Timeline helper"
+        // missing -> "Install Herdcats Bridge"
         #expect(
             AgentTimelineView.installLabel(stage: .idle, reason: .missing)
-            == "Install Timeline helper"
+            == "Install Herdcats Bridge"
         )
         #expect(
             AgentTimelineView.installLabel(stage: .idle)
-            == "Install Timeline helper"
+            == "Install Herdcats Bridge"
         )
 
-        // managed 0.1.4 replacementRequired -> "Replace helper with 0.2.0" + found-version feedback
+        // managed 0.1.4 replacementRequired -> "Replace Herdcats Bridge with 0.2.0" + found-version feedback
         let managed014 = HostHelperProbe.present(version: "0.1.4", managed: true, compatible: false)
         #expect(
             AgentTimelineView.installLabel(stage: .replacementRequired(managed014))
-            == "Replace helper with 0.2.0"
+            == "Replace Herdcats Bridge with 0.2.0"
         )
         #expect(
             AgentTimelineView.replacementFeedback(probe: managed014)
-            == "Found helper 0.1.4 on this host."
+            == "Found Herdcats Bridge 0.1.4 on this host. Tap Replace to upgrade it at the location shown."
         )
 
-        // external helper -> "Install managed helper"
+        // external helper -> "Install managed Herdcats Bridge"
         let externalHelper = HostHelperProbe.present(version: "0.1.4", managed: false, compatible: false)
         #expect(
             AgentTimelineView.installLabel(stage: .replacementRequired(externalHelper))
-            == "Install managed helper"
+            == "Install managed Herdcats Bridge"
         )
         #expect(
             AgentTimelineView.replacementFeedback(probe: externalHelper)
-            == "An existing helper was found elsewhere. Install a managed copy at the location shown; the other copy will remain unchanged."
+            == "An existing Herdcats Bridge was found elsewhere. Install a managed copy at the location shown; the other copy will remain unchanged."
         )
     }
 

@@ -475,14 +475,14 @@ extension HostHelperSetupPlan {
         case .idle:
             switch reason {
             case .updateRequired:
-                return "Update helper to \(pinnedVersion)"
+                return "Upgrade Herdcats Bridge to \(pinnedVersion)"
             case .missing:
-                return "Install Timeline helper"
+                return "Install Herdcats Bridge"
             }
         case .checking:
             return "Checking host…"
         case .installing:
-            return "Installing helper…"
+            return "Installing Herdcats Bridge…"
         case .verifying:
             return "Verifying installation…"
         case .uncertain:
@@ -491,9 +491,9 @@ extension HostHelperSetupPlan {
             return "Open Timeline"
         case .replacementRequired(let probe):
             if case .present(_, true, _) = probe {
-                return "Replace helper with \(pinnedVersion)"
+                return "Replace Herdcats Bridge with \(pinnedVersion)"
             } else {
-                return "Install managed helper"
+                return "Install managed Herdcats Bridge"
             }
         }
     }
@@ -502,12 +502,12 @@ extension HostHelperSetupPlan {
         guard case .present(let version, let managed, _) = probe else { return nil }
         if managed {
             if let version, !version.isEmpty {
-                return "Found helper \(version) on this host."
+                return "Found Herdcats Bridge \(version) on this host. Tap Replace to upgrade it at the location shown."
             } else {
-                return "Existing helper will be replaced at the location shown. Tap Replace to authorize this update."
+                return "Existing Herdcats Bridge will be replaced at the location shown. Tap Replace to upgrade it."
             }
         } else {
-            return "An existing helper was found elsewhere. Install a managed copy at the location shown; the other copy will remain unchanged."
+            return "An existing Herdcats Bridge was found elsewhere. Install a managed copy at the location shown; the other copy will remain unchanged."
         }
     }
 }

@@ -277,11 +277,11 @@ enum HostHelperSetupError: Error, LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .unsafeDestination: "The install location is a link or another nonregular file. Use manual setup to choose a safe location."
-        case .invalidResponse: "The helper could not be verified. Check the installation or use manual setup."
-        case .busy: "A helper setup is already running on this connection. Check again when it finishes."
+        case .invalidResponse: "Herdcats Bridge could not be verified. Check the installation or use manual setup."
+        case .busy: "A Herdcats Bridge setup is already running on this connection. Check again when it finishes."
         case .failed(let code):
             switch code {
-            case "curl_missing": "This host needs curl to download the helper. Use manual setup to install it."
+            case "curl_missing": "This host needs curl to download Herdcats Bridge. Use manual setup to install it."
             case "checksum_tool_missing": "This host needs shasum or sha256sum to verify the download."
             case "download_failed": "The host could not download the installer. Check its network access, or use manual setup."
             case "checksum_mismatch": "The installer did not match the app’s pinned checksum. Nothing was executed. Use manual setup or update Herdcats."
