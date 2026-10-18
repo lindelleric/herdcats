@@ -610,6 +610,49 @@ fn has_visible_summary_text(summary: &Value) -> bool {
     false
 }
 
+pub const CODEX_INJECTED_CONTEXT_PREFIXES: &[&str] = &[
+    "# AGENTS.md instructions",
+    "<environment_context>",
+    "<user_instructions>",
+    "<user_shell_command>",
+    "<turn_aborted>",
+    "<skill>",
+    "<skill ",
+    "<subagent>",
+    "<subagent ",
+];
+
+pub fn is_codex_injected_text(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    CODEX_INJECTED_CONTEXT_PREFIXES
+        .iter()
+        .any(|prefix| trimmed.starts_with(prefix))
+}
+
+pub fn is_codex_injected_context(content: &Value) -> bool {
+    if let Some(text) = content.as_str() {
+        return is_codex_injected_text(text);
+    }
+    if let Some(blocks) = content.as_array() {
+        if blocks.is_empty() {
+            return false;
+        }
+        return blocks.iter().all(|b| {
+            if let Some(text) = b.as_str() {
+                is_codex_injected_text(text)
+            } else if matches!(
+                b["type"].as_str(),
+                Some("text" | "input_text" | "output_text")
+            ) {
+                b["text"].as_str().is_some_and(is_codex_injected_text)
+            } else {
+                false
+            }
+        });
+    }
+    false
+}
+
 #[derive(Debug)]
 pub(crate) enum CodexRecordAction<'a> {
     SessionMeta {
@@ -732,6 +775,9 @@ pub(crate) fn classify_codex_record(record: &Value) -> Result<CodexRecordAction<
                     }
                     if !matches!(role, "user" | "assistant") {
                         return Ok(CodexRecordAction::Unknown { label: "message" });
+                    }
+                    if role == "user" && is_codex_injected_context(&payload["content"]) {
+                        return Ok(CodexRecordAction::Skip);
                     }
                     let id = required_entry_key_part(&payload["id"])?;
                     entry_id("message", id)?;
