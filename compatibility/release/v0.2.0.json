@@ -1,0 +1,57 @@
+{
+  "date": "2026-10-18",
+  "status": "published_and_public_installer_verified",
+  "version": "0.2.0",
+  "tag": "herdcats-bridge-v0.2.0",
+  "source_commit": "a4f11712251b3bcc3a321504547d80e2a6a2046f",
+  "url": "https://github.com/zhiyao/herdcats/releases/tag/herdcats-bridge-v0.2.0",
+  "ci_url": "https://github.com/zhiyao/herdcats/actions/runs/39098976148",
+  "native_builds": [
+    "darwin-arm64",
+    "darwin-x86_64",
+    "linux-arm64",
+    "linux-x86_64"
+  ],
+  "native_ci_result": "All four native test/Clippy/build/package jobs and draft assembly passed",
+  "binary_sha256": {
+    "herdcats-bridge-darwin-arm64": "8d849f254734e0b46f1b2bb4f47249d21404876cdd43564d11b09a73729405ec",
+    "herdcats-bridge-darwin-x86_64": "e28b63713f0b6bc339894f8ea8373931bc2f5e47768713184449eae244e142db",
+    "herdcats-bridge-linux-arm64": "f14fb78a1c51043f566ecf5fe9a3528a8b4d14a113ec72fcc921466abf4fe8e9",
+    "herdcats-bridge-linux-x86_64": "570b888745cd5297a1b4d327cd1eb49f07f7f6f35bada8139fca05610a4f85b8"
+  },
+  "installer_sha256": "e335a78a970bedeae94e1fdde0393cd3d23cde93ee0497a98af19cbcc8eca59d",
+  "public_install_smoke": {
+    "result": "passed",
+    "transport": "Unauthenticated GitHub HTTPS release installer; app-pinned digest verified before execution",
+    "target": "Owned temporary HOME and bin directory only",
+    "probe": {
+      "agents": [
+        "claude",
+        "codex"
+      ],
+      "herdr_protocol": 22,
+      "name": "herdcats-bridge",
+      "protocol": 1,
+      "version": "0.2.0"
+    },
+    "started_agent_or_service": false,
+    "user_helper_changed": false
+  },
+  "validation": {
+    "rust_tests": 98,
+    "installer_distribution_tests": 33,
+    "clippy": "passed",
+    "ios_unit_tests": 437,
+    "independent_review": "Codex review findings on PR 65 and PR 72 fixed before merge",
+    "pr_ci": "CI39098976148 passed: release build and assets verified"
+  },
+  "publication_authorization": "Tagged and published by the user",
+  "app_latest_release_preserved": "v0.4.0",
+  "limits": [
+    "Claude and Codex read-only timeline; question/approval responses and saved-machine routing remain unavailable",
+    "Codex requires exact session reference from Herdr (shared daemon off or codex --no-daemon)",
+    "Verified source hard limit 64MiB; retained entries 1000; references to retired entries unavailable",
+    "macOS binaries unsigned/unnotarized",
+    "App draft PR not merged; no phone deployment"
+  ]
+}

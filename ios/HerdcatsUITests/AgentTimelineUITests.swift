@@ -95,7 +95,7 @@ final class AgentTimelineUITests: XCTestCase {
         app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-helper-missing", "-hc.light"]
         launch(app)
         XCTAssertTrue(app.staticTexts["A clearer view of your agent"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["How the host helper works"].exists)
+        XCTAssertTrue(app.staticTexts["How Herdcats Bridge works"].exists)
         XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label CONTAINS[c] %@", "Claude session")).firstMatch.exists)
         let drawer = app.scrollViews["timeline-setup-scroll"]
         XCTAssertTrue(drawer.exists)
@@ -106,19 +106,26 @@ final class AgentTimelineUITests: XCTestCase {
         let sheetTop = app.navigationBars["Set up Timeline"].frame.minY
         let sheetBottom = app.buttons["timeline-helper-use-terminal"].frame.maxY
         XCTAssertGreaterThan(sheetBottom - sheetTop, app.frame.height * 0.75)
+        XCTAssertFalse(app.buttons["timeline-helper-check-again"].exists)
         let manual = app.buttons["Manual setup"]
         for _ in 0..<3 where !manual.isHittable { drawer.swipeUp() }
         manual.tap()
         let copy = app.buttons["timeline-helper-copy-command"]
         for _ in 0..<4 {
-            let visibleBottom = app.staticTexts["demo@studio-mac"].frame.minY - 8
+            let visibleBottom = app.buttons["timeline-helper-install"].frame.minY - 8
             if copy.isHittable && copy.frame.maxY < visibleBottom { break }
             drawer.swipeUp()
         }
         copy.tap()
-        XCTAssertTrue(app.staticTexts["Command copied"].waitForExistence(timeout: 3))
-        app.buttons["timeline-helper-check-again"].tap()
-        XCTAssertTrue(app.staticTexts["The helper was not found yet. Run the command on your SSH host, then check again."].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Command copied"].waitForExistence(timeout: 3) || copy.label == "Command copied")
+        let checkAgainInside = app.buttons["timeline-helper-check-again"]
+        for _ in 0..<4 {
+            let visibleBottom = app.buttons["timeline-helper-install"].frame.minY - 8
+            if checkAgainInside.isHittable && checkAgainInside.frame.maxY < visibleBottom { break }
+            drawer.swipeUp()
+        }
+        checkAgainInside.tap()
+        XCTAssertTrue(app.staticTexts["Herdcats Bridge was not found yet. Run the command on your SSH host, then check again."].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["A clearer view of your agent"].exists)
         app.buttons["timeline-helper-use-terminal"].tap()
         XCTAssertTrue(app.scrollViews["pane-output-scroll-view"].waitForExistence(timeout: 5))
@@ -147,7 +154,17 @@ final class AgentTimelineUITests: XCTestCase {
         XCTAssertTrue(app.scrollViews["pane-output-scroll-view"].waitForExistence(timeout: 5))
         app.buttons["terminal-open-timeline"].tap()
         XCTAssertTrue(app.staticTexts["A clearer view of your agent"].waitForExistence(timeout: 5))
-        app.buttons["timeline-helper-check-again"].tap()
+        let drawer = app.scrollViews["timeline-setup-scroll"]
+        let manual = app.buttons["Manual setup"]
+        for _ in 0..<3 where !manual.isHittable { drawer.swipeUp() }
+        manual.tap()
+        let checkAgain = app.buttons["timeline-helper-check-again"]
+        for _ in 0..<4 {
+            let visibleBottom = app.buttons["timeline-helper-install"].frame.minY - 8
+            if checkAgain.isHittable && checkAgain.frame.maxY < visibleBottom { break }
+            drawer.swipeUp()
+        }
+        checkAgain.tap()
         XCTAssertTrue(app.buttons["timeline-tool-tool:read"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts["A clearer view of your agent"].exists)
         XCTAssertTrue(app.buttons["timeline-open-terminal"].exists)
@@ -165,7 +182,7 @@ final class AgentTimelineUITests: XCTestCase {
         let exists = install.waitForExistence(timeout: 5)
         XCTAssertTrue(exists)
         guard exists else { app.terminate(); return }
-        XCTAssertEqual(install.label, "Install Timeline helper")
+        XCTAssertEqual(install.label, "Install Herdcats Bridge")
         XCTAssertTrue(app.staticTexts["demo@studio-mac"].exists)
         XCTAssertTrue(app.staticTexts["~/.local/bin/herdcats-bridge"].exists)
         XCTAssertTrue(app.staticTexts["A clearer view of your agent"].exists, "Opening the drawer must not install automatically")
@@ -187,7 +204,7 @@ final class AgentTimelineUITests: XCTestCase {
             XCTAssertTrue(feedback.waitForExistence(timeout: 5))
             XCTAssertFalse(app.buttons["timeline-tool-tool:read"].exists)
             if scenario == "replacement" {
-                XCTAssertEqual(install.label, "Replace helper with 0.1.4")
+                XCTAssertEqual(install.label, "Replace Herdcats Bridge with 0.2.0")
                 install.tap()
                 XCTAssertTrue(app.buttons["timeline-tool-tool:read"].waitForExistence(timeout: 5))
             } else if scenario == "uncertain" {
@@ -196,7 +213,7 @@ final class AgentTimelineUITests: XCTestCase {
                 XCTAssertTrue(app.buttons["timeline-tool-tool:read"].waitForExistence(timeout: 5))
             } else {
                 XCTAssertTrue(feedback.label.contains(scenario == "failure" ? "could not download" : "No installation was started"))
-                XCTAssertEqual(install.label, "Install Timeline helper")
+                XCTAssertEqual(install.label, "Install Herdcats Bridge")
                 app.buttons["timeline-helper-use-terminal"].tap()
                 XCTAssertTrue(app.scrollViews["pane-output-scroll-view"].waitForExistence(timeout: 5))
             }
@@ -262,7 +279,7 @@ final class AgentTimelineUITests: XCTestCase {
     }
 
     func testUnsupportedAgentsStayInTerminalWithoutTimelineSetup() {
-        for agent in ["codex", "cursor", "unknown"] {
+        for agent in ["cursor", "unknown"] {
             let app = XCUIApplication()
             app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-helper-missing", "-hc.agent", agent, "-hc.light", "-paneShowComposeByDefault", "YES"]
             launch(app)
@@ -273,6 +290,35 @@ final class AgentTimelineUITests: XCTestCase {
             XCTAssertTrue(app.descendants(matching: .any)["pane-compose-field"].firstMatch.exists)
             app.terminate()
         }
+    }
+
+    func testCodexHelperUpdateShowsUpdateHelperLabel() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-codex-helper-old", "-hc.agent", "codex", "-hc.light", "-hc.timeline-install-result", "replacement"]
+        launch(app)
+        let install = app.buttons["timeline-helper-install"]
+        XCTAssertTrue(install.waitForExistence(timeout: 5))
+        XCTAssertEqual(install.label, "Upgrade to 0.2.0")
+        XCTAssertTrue(app.staticTexts["A newer Herdcats Bridge is available"].exists)
+        install.tap()
+        XCTAssertTrue(app.buttons["timeline-tool-tool:read"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["A newer Herdcats Bridge is available"].exists)
+        app.terminate()
+
+        let appExternal = XCUIApplication()
+        appExternal.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-codex-helper-old", "-hc.agent", "codex", "-hc.light", "-hc.timeline-install-result", "external_replacement"]
+        launch(appExternal)
+        let installExt = appExternal.buttons["timeline-helper-install"]
+        XCTAssertTrue(installExt.waitForExistence(timeout: 5))
+        XCTAssertEqual(installExt.label, "Upgrade to 0.2.0")
+        installExt.tap()
+        let feedback = appExternal.staticTexts["timeline-setup-feedback"]
+        XCTAssertTrue(feedback.waitForExistence(timeout: 5))
+        XCTAssertEqual(feedback.label, "An existing Herdcats Bridge was found elsewhere. Install a managed copy at the location shown; the other copy will remain unchanged.")
+        XCTAssertEqual(installExt.label, "Install managed Herdcats Bridge")
+        installExt.tap()
+        XCTAssertTrue(appExternal.buttons["timeline-tool-tool:read"].waitForExistence(timeout: 5))
+        appExternal.terminate()
     }
 
     func testLatestIsCircularTrailingButtonAndResumesFollowing() {
@@ -531,5 +577,87 @@ final class AgentTimelineUITests: XCTestCase {
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         XCTAssertEqual(field.value as? String, draft)
         app.terminate()
+    }
+
+    private func saveNamedScreenshot(_ screenshot: XCUIScreenshot, name: String) {
+        let attachment = XCTAttachment(screenshot: screenshot)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        let dir = ProcessInfo.processInfo.environment["HC_SCREENSHOT_DIR"] ?? ProcessInfo.processInfo.environment["SIMCTL_CHILD_HC_SCREENSHOT_DIR"]
+        if let dir, !dir.isEmpty {
+            let url = URL(fileURLWithPath: dir).appendingPathComponent("\(name).png")
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? screenshot.pngRepresentation.write(to: url)
+        }
+    }
+
+    func testBridgeSetupScreenshotsAndFlows() {
+        // 1. codex-pane-needs-upgrade.png
+        let appUpgradePane = XCUIApplication()
+        appUpgradePane.launchArguments = [
+            "-hc.screenshots", "-hc.screen", "timeline-codex-needs-upgrade", "-hc.agent", "codex", "-hc.light", "-hc.timeline-suppress-drawer", "-paneShowComposeByDefault", "NO"
+        ]
+        launch(appUpgradePane)
+        let upgradeButton = appUpgradePane.buttons["timeline-helper-setup"]
+        XCTAssertTrue(upgradeButton.waitForExistence(timeout: 5))
+        XCTAssertEqual(upgradeButton.label, "Upgrade Herdcats Bridge")
+        XCTAssertTrue(appUpgradePane.staticTexts["Herdcats Bridge 0.1.4 on this computer can't show Codex conversations. Upgrade to 0.2.0."].exists)
+        XCTAssertFalse(appUpgradePane.buttons["timeline-helper-retry"].exists)
+        saveNamedScreenshot(appUpgradePane.screenshot(), name: "codex-pane-needs-upgrade")
+
+        // 2. upgrade-drawer.png
+        upgradeButton.tap()
+        let upgradeDrawer = appUpgradePane.scrollViews["timeline-setup-scroll"]
+        XCTAssertTrue(upgradeDrawer.waitForExistence(timeout: 5))
+        XCTAssertTrue(appUpgradePane.navigationBars["Upgrade Herdcats Bridge"].exists)
+        XCTAssertTrue(appUpgradePane.staticTexts["A newer Herdcats Bridge is available"].exists)
+        XCTAssertTrue(appUpgradePane.buttons["timeline-helper-install"].exists)
+        XCTAssertEqual(appUpgradePane.buttons["timeline-helper-install"].label, "Upgrade to 0.2.0")
+        saveNamedScreenshot(appUpgradePane.screenshot(), name: "upgrade-drawer")
+        appUpgradePane.terminate()
+
+        // 3. missing-pane.png
+        let appMissingPane = XCUIApplication()
+        appMissingPane.launchArguments = [
+            "-hc.screenshots", "-hc.screen", "timeline-pane-missing", "-hc.light", "-hc.timeline-suppress-drawer", "-paneShowComposeByDefault", "NO"
+        ]
+        launch(appMissingPane)
+        let installButton = appMissingPane.buttons["timeline-helper-setup"]
+        XCTAssertTrue(installButton.waitForExistence(timeout: 5))
+        XCTAssertEqual(installButton.label, "Install Herdcats Bridge")
+        XCTAssertTrue(appMissingPane.staticTexts["Install Herdcats Bridge to see this session as native messages. Terminal is available now."].exists)
+        XCTAssertFalse(appMissingPane.buttons["timeline-helper-retry"].exists)
+        saveNamedScreenshot(appMissingPane.screenshot(), name: "missing-pane")
+        appMissingPane.terminate()
+
+        // 4. missing-drawer.png
+        let appMissingDrawer = XCUIApplication()
+        appMissingDrawer.launchArguments = [
+            "-hc.screenshots", "-hc.screen", "timeline-helper-missing", "-hc.light", "-paneShowComposeByDefault", "NO"
+        ]
+        launch(appMissingDrawer)
+        let missingScroll = appMissingDrawer.scrollViews["timeline-setup-scroll"]
+        XCTAssertTrue(missingScroll.waitForExistence(timeout: 5))
+        XCTAssertTrue(appMissingDrawer.navigationBars["Set up Timeline"].exists)
+        XCTAssertTrue(appMissingDrawer.staticTexts["A clearer view of your agent"].exists)
+        XCTAssertEqual(appMissingDrawer.buttons["timeline-helper-install"].label, "Install Herdcats Bridge")
+        XCTAssertFalse(appMissingDrawer.buttons["timeline-helper-check-again"].exists)
+        saveNamedScreenshot(appMissingDrawer.screenshot(), name: "missing-drawer")
+
+        // 5. manual-setup-expanded.png
+        let manual = appMissingDrawer.buttons["Manual setup"]
+        for _ in 0..<3 where !manual.isHittable { missingScroll.swipeUp() }
+        manual.tap()
+        let checkAgain = appMissingDrawer.buttons["timeline-helper-check-again"]
+        for _ in 0..<4 {
+            let visibleBottom = appMissingDrawer.buttons["timeline-helper-install"].frame.minY - 8
+            if checkAgain.isHittable && checkAgain.frame.maxY < visibleBottom { break }
+            missingScroll.swipeUp()
+        }
+        XCTAssertTrue(checkAgain.waitForExistence(timeout: 3))
+        XCTAssertTrue(appMissingDrawer.buttons["timeline-helper-copy-command"].exists)
+        saveNamedScreenshot(appMissingDrawer.screenshot(), name: "manual-setup-expanded")
+        appMissingDrawer.terminate()
     }
 }
