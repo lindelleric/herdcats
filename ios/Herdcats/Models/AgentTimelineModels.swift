@@ -255,6 +255,18 @@ enum HostHelperSetupDecision: Equatable, Sendable {
     case install(replace: Bool)
     case unsupportedByPinnedInstaller(String)
 }
+enum HostHelperSetupReason: String, Equatable, Sendable {
+    case missing = "helper_missing"
+    case updateRequired = "helper_update_required"
+
+    init(code: String?) {
+        if code == "helper_update_required" {
+            self = .updateRequired
+        } else {
+            self = .missing
+        }
+    }
+}
 enum HostHelperSetupStage: Equatable, Sendable {
     case idle, checking, installing, verifying, uncertain, installed
     case replacementRequired(HostHelperProbe)

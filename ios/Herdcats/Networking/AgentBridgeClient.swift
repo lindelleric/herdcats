@@ -465,6 +465,51 @@ extension HostHelperSetupPlan {
             return .install(replace: managed)
         }
     }
+
+    static func installLabel(
+        stage: HostHelperSetupStage,
+        reason: HostHelperSetupReason = .missing,
+        pinnedVersion: String = HostHelperSetupPlan.version
+    ) -> String {
+        switch stage {
+        case .idle:
+            switch reason {
+            case .updateRequired:
+                return "Update helper to \(pinnedVersion)"
+            case .missing:
+                return "Install Timeline helper"
+            }
+        case .checking:
+            return "Checking host…"
+        case .installing:
+            return "Installing helper…"
+        case .verifying:
+            return "Verifying installation…"
+        case .uncertain:
+            return "Check installation"
+        case .installed:
+            return "Open Timeline"
+        case .replacementRequired(let probe):
+            if case .present(_, true, _) = probe {
+                return "Replace helper with \(pinnedVersion)"
+            } else {
+                return "Install managed helper"
+            }
+        }
+    }
+
+    static func replacementFeedback(probe: HostHelperProbe) -> String? {
+        guard case .present(let version, let managed, _) = probe else { return nil }
+        if managed {
+            if let version, !version.isEmpty {
+                return "Found helper \(version) on this host."
+            } else {
+                return "Existing helper will be replaced at the location shown. Tap Replace to authorize this update."
+            }
+        } else {
+            return "An existing helper was found elsewhere. Install a managed copy at the location shown; the other copy will remain unchanged."
+        }
+    }
 }
 
 /// One bounded command channel. Never closes the shared SSH client.

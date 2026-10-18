@@ -52,7 +52,7 @@
             let unavailableCode: String? = switch ScreenshotFixtures.screen {
             case "timeline-unavailable": "unsupported_agent"
             case "timeline-codex-no-session": "session_reference_unavailable"
-            case "timeline-codex-helper-old": "unsupported_agent"
+            case "timeline-codex-helper-old" where !helperInstalled: "helper_update_required"
             case "timeline-pending": "transcript_unavailable"
             case "timeline-helper-missing" where !helperInstalled: "helper_missing"
             default: nil

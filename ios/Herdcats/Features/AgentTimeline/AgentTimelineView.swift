@@ -23,6 +23,7 @@ struct AgentTimelineView: View {
     @State private var activeClient: AgentBridgeClient?
     @State private var activeOwner: UUID?
     @State private var showsSetup = false
+    @State private var setupReason: HostHelperSetupReason = .missing
     @State private var setupShouldUseTerminal = true
     @State private var isCheckingSetup = false
     @State private var setupFeedback: String?
@@ -72,6 +73,16 @@ struct AgentTimelineView: View {
     }
     static func canPinnedInstallerSupport(agent: String?, supportedAgents: Set<String> = Set(HostHelperSetupPlan.agents)) -> Bool {
         agent.map { supportedAgents.contains($0) } ?? true
+    }
+    static func installLabel(
+        stage: HostHelperSetupStage,
+        reason: HostHelperSetupReason = .missing,
+        pinnedVersion: String = HostHelperSetupPlan.version
+    ) -> String {
+        HostHelperSetupPlan.installLabel(stage: stage, reason: reason, pinnedVersion: pinnedVersion)
+    }
+    static func replacementFeedback(probe: HostHelperProbe) -> String? {
+        HostHelperSetupPlan.replacementFeedback(probe: probe)
     }
     var body: some View {
         ScrollViewReader { proxy in
@@ -233,7 +244,9 @@ struct AgentTimelineView: View {
                         ? "The helper was not found yet. Run the command on your SSH host, then check again."
                         : explanation(code)
                 }
-                if ["helper_missing", "helper_update_required"].contains(code) && !showsSetup && canPinnedInstallerSupportAgent { beginSetup() }
+                if ["helper_missing", "helper_update_required"].contains(code) && !showsSetup && canPinnedInstallerSupportAgent {
+                    beginSetup(reason: code == "helper_update_required" ? .updateRequired : .missing)
+                }
             case .disconnected:
                 if isCheckingSetup {
                     isCheckingSetup = false
@@ -257,6 +270,7 @@ struct AgentTimelineView: View {
             if setupShouldUseTerminal { onUseTerminal() }
         }) {
             AgentBridgeSetupView(
+                reason: setupReason,
                 isChecking: isCheckingSetup, feedback: setupFeedback,
                 stage: helperStage, target: setupTarget,
                 canInstall: connectionState.isReady && appModel.supportsHostServices && appModel.connectionIdentity == setupTarget && canPinnedInstallerSupportAgent,
@@ -319,9 +333,11 @@ struct AgentTimelineView: View {
         }
     }
 
-    private func beginSetup() {
+    private func beginSetup(reason: HostHelperSetupReason? = nil) {
+        let resolvedReason = reason ?? (timeline.phase == .unavailable("helper_update_required") ? .updateRequired : .missing)
+        setupReason = resolvedReason
         setupShouldUseTerminal = true
-        setupFeedback = timeline.phase == .unavailable("helper_update_required")
+        setupFeedback = resolvedReason == .updateRequired
             ? (agent == "codex" ? "Update the host helper to see Codex conversations." : "Update the host helper to display session images.") : nil
         showsSetup = true
     }
@@ -385,14 +401,11 @@ struct AgentTimelineView: View {
                     retry += 1
                 case .missing:
                     helperStage = .idle
+                    setupReason = .missing
                     setupFeedback = "No helper was found. Tap Install Timeline helper to try installation, or use manual setup."
                 case .replacementRequired(let probe):
                     helperStage = .replacementRequired(probe)
-                    if case .present(let version, let managed, _) = probe {
-                        setupFeedback = managed
-                            ? "Existing helper version \(version ?? "unknown") will be replaced at the location shown. Tap Replace to authorize this update."
-                            : "An existing helper was found elsewhere. Install a managed copy at the location shown; the other copy will remain unchanged."
-                    }
+                    setupFeedback = HostHelperSetupPlan.replacementFeedback(probe: probe)
                 case .unsupportedByPinnedInstaller(let agent):
                     helperStage = .idle
                     setupFeedback = "This version of Herdcats can't install a \(agent.capitalized)-capable helper yet."
@@ -487,7 +500,9 @@ struct AgentTimelineView: View {
                 }
             } actions: {
                 if ["helper_missing", "helper_update_required", "unsupported_agent", "protocol_mismatch", "record_too_large"].contains(code) && canPinnedInstallerSupportAgent {
-                    Button(isCodex && isHelperOld ? "Update helper" : "Set up Timeline") { beginSetup() }
+                    Button(isCodex && isHelperOld ? "Update helper" : "Set up Timeline") {
+                        beginSetup(reason: (isCodex && isHelperOld) || code == "helper_update_required" ? .updateRequired : .missing)
+                    }
                         .buttonStyle(.herdrPrimary)
                         .accessibilityIdentifier("timeline-helper-setup")
                 }
@@ -1091,6 +1106,7 @@ private struct AgentTimelineEntryView: View {
 
 /// Explicit opt-in installation on the displayed SSH endpoint; manual setup stays available.
 private struct AgentBridgeSetupView: View {
+    var reason: HostHelperSetupReason = .missing
     let isChecking: Bool
     let feedback: String?
     let stage: HostHelperSetupStage
@@ -1104,17 +1120,7 @@ private struct AgentBridgeSetupView: View {
         "curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v\(HostHelperSetupPlan.version)/install.sh | sh -s -- --version \(HostHelperSetupPlan.version)"
     }
     private var installLabel: String {
-        switch stage {
-        case .idle: "Install Timeline helper"
-        case .checking: "Checking host…"
-        case .installing: "Installing helper…"
-        case .verifying: "Verifying installation…"
-        case .uncertain: "Check installation"
-        case .installed: "Open Timeline"
-        case .replacementRequired(let probe):
-            if case .present(_, true, _) = probe { "Replace helper with \(HostHelperSetupPlan.version)" }
-            else { "Install managed helper" }
-        }
+        HostHelperSetupPlan.installLabel(stage: stage, reason: reason)
     }
 
     var body: some View {

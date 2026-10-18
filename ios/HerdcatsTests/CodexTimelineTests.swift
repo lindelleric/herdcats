@@ -254,6 +254,46 @@ struct CodexTimelineGatingTests {
         #expect(AgentTimelineView.canPinnedInstallerSupport(agent: nil, supportedAgents: ["claude"]))
     }
 
+    @Test func helperSetupViewLabelAndFeedbackLogic() {
+        // update reason idle -> "Update helper to 0.2.0"
+        #expect(
+            AgentTimelineView.installLabel(stage: .idle, reason: .updateRequired)
+            == "Update helper to 0.2.0"
+        )
+
+        // missing -> "Install Timeline helper"
+        #expect(
+            AgentTimelineView.installLabel(stage: .idle, reason: .missing)
+            == "Install Timeline helper"
+        )
+        #expect(
+            AgentTimelineView.installLabel(stage: .idle)
+            == "Install Timeline helper"
+        )
+
+        // managed 0.1.4 replacementRequired -> "Replace helper with 0.2.0" + found-version feedback
+        let managed014 = HostHelperProbe.present(version: "0.1.4", managed: true, compatible: false)
+        #expect(
+            AgentTimelineView.installLabel(stage: .replacementRequired(managed014))
+            == "Replace helper with 0.2.0"
+        )
+        #expect(
+            AgentTimelineView.replacementFeedback(probe: managed014)
+            == "Found helper 0.1.4 on this host."
+        )
+
+        // external helper -> "Install managed helper"
+        let externalHelper = HostHelperProbe.present(version: "0.1.4", managed: false, compatible: false)
+        #expect(
+            AgentTimelineView.installLabel(stage: .replacementRequired(externalHelper))
+            == "Install managed helper"
+        )
+        #expect(
+            AgentTimelineView.replacementFeedback(probe: externalHelper)
+            == "An existing helper was found elsewhere. Install a managed copy at the location shown; the other copy will remain unchanged."
+        )
+    }
+
     @Test func codexPaneDisplaysNoSessionReferenceState() {
         let view = AgentTimelineView(
             paneId: "p-codex",

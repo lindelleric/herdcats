@@ -262,7 +262,7 @@ final class AgentTimelineUITests: XCTestCase {
     }
 
     func testUnsupportedAgentsStayInTerminalWithoutTimelineSetup() {
-        for agent in ["codex", "cursor", "unknown"] {
+        for agent in ["cursor", "unknown"] {
             let app = XCUIApplication()
             app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-helper-missing", "-hc.agent", agent, "-hc.light", "-paneShowComposeByDefault", "YES"]
             launch(app)
@@ -273,6 +273,21 @@ final class AgentTimelineUITests: XCTestCase {
             XCTAssertTrue(app.descendants(matching: .any)["pane-compose-field"].firstMatch.exists)
             app.terminate()
         }
+    }
+
+    func testCodexHelperUpdateShowsUpdateHelperLabel() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-codex-helper-old", "-hc.agent", "codex", "-hc.light", "-hc.timeline-install-result", "replacement"]
+        launch(app)
+        let install = app.buttons["timeline-helper-install"]
+        XCTAssertTrue(install.waitForExistence(timeout: 5))
+        XCTAssertEqual(install.label, "Update helper to 0.2.0")
+        install.tap()
+        let feedback = app.staticTexts["timeline-setup-feedback"]
+        XCTAssertTrue(feedback.waitForExistence(timeout: 5))
+        XCTAssertEqual(feedback.label, "Found helper 0.1.0 on this host.")
+        XCTAssertEqual(install.label, "Replace helper with 0.2.0")
+        app.terminate()
     }
 
     func testLatestIsCircularTrailingButtonAndResumesFollowing() {
