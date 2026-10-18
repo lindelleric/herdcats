@@ -420,10 +420,10 @@ extension AgentBridgeClient {
 
 /// Immutable release selected by this app build, not a host-supplied URL.
 enum HostHelperSetupPlan {
-    static let version = "0.1.4"
-    static let installerSHA256 = "979c4a0fa8a6620c1748e76ceaa4be0b90b8e7dba13538202ed8c540656092a3"
+    static let version = "0.2.0"
+    static let installerSHA256 = "e335a78a970bedeae94e1fdde0393cd3d23cde93ee0497a98af19cbcc8eca59d"
     /// Supported agents bundled in this pinned release. Must be updated when bumping version / installerSHA256.
-    static let agents: [String] = ["claude"]
+    static let agents: [String] = ["claude", "codex"]
     static func installationScript(replace: Bool) -> String {
         return #"""
         set -eu

@@ -130,13 +130,15 @@ struct CodexTimelineGatingTests {
             return "HC_HELPER_MANAGED\n{\"name\":\"herdcats-bridge\",\"version\":\"\(version)\",\"protocol\":1,\"herdr_protocol\":22,\"agents\":[\(agentsJSON)]}"
         }
 
-        // Old helper (0.1.4) only has claude
+        // Old helper (0.1.4) only has claude and is older than pinned 0.2.0
         let oldHelperReport = report(agents: ["claude"], version: "0.1.4")
         let probeForClaudeOnOld = try HostHelperProbe(output: oldHelperReport, agent: "claude")
-        #expect(probeForClaudeOnOld == .present(version: "0.1.4", managed: true, compatible: true))
+        #expect(probeForClaudeOnOld == .present(version: "0.1.4", managed: true, compatible: false))
 
         let probeForCodexOnOld = try HostHelperProbe(output: oldHelperReport, agent: "codex")
         #expect(probeForCodexOnOld == .present(version: "0.1.4", managed: true, compatible: false))
+        #expect(HostHelperSetupPlan.decision(probe: probeForCodexOnOld, replace: false, checkOnly: false, agent: "codex") == .replacementRequired(probeForCodexOnOld))
+        #expect(HostHelperSetupPlan.decision(probe: probeForCodexOnOld, replace: true, checkOnly: false, agent: "codex") == .install(replace: true))
 
         // New helper (0.2.0) has both claude and codex
         let newHelperReport = report(agents: ["claude", "codex"], version: "0.2.0")
@@ -218,10 +220,10 @@ struct CodexTimelineGatingTests {
             onUseTerminal: {},
             onSetupComplete: {}
         )
-        // When Codex is unsupported by pinned installer (current state where HostHelperSetupPlan.agents == ["claude"])
-        #expect(view.explanation("helper_update_required") == "This version of Herdcats can't install a Codex-capable helper yet.")
-        #expect(view.explanation("unsupported_agent") == "This version of Herdcats can't install a Codex-capable helper yet.")
-        #expect(view.explanation("helper_missing") == "This version of Herdcats can't install a Codex-capable helper yet.")
+        // When Codex is supported by pinned installer (0.2.0 pinned release with HostHelperSetupPlan.agents == ["claude", "codex"])
+        #expect(view.explanation("helper_update_required") == "Update the Herdcats helper to see Codex conversations.")
+        #expect(view.explanation("unsupported_agent") == "Update the Herdcats helper to see Codex conversations.")
+        #expect(view.explanation("helper_missing") == "Install the small host helper to see this session as native messages. Terminal is available now.")
 
         // Explicitly test both ways with injected supportedAgents:
         // 1. Without Codex in supportedAgents
@@ -230,7 +232,7 @@ struct CodexTimelineGatingTests {
         #expect(AgentTimelineView.explanation("unsupported_agent", agent: "codex", supportedAgents: unsupportedAgents) == "This version of Herdcats can't install a Codex-capable helper yet.")
         #expect(AgentTimelineView.explanation("helper_missing", agent: "codex", supportedAgents: unsupportedAgents) == "This version of Herdcats can't install a Codex-capable helper yet.")
 
-        // 2. With Codex in supportedAgents (e.g. future 0.2.0 pinned release)
+        // 2. With Codex in supportedAgents
         let supportedWithCodex: Set<String> = ["claude", "codex"]
         #expect(AgentTimelineView.explanation("helper_update_required", agent: "codex", supportedAgents: supportedWithCodex) == "Update the Herdcats helper to see Codex conversations.")
         #expect(AgentTimelineView.explanation("unsupported_agent", agent: "codex", supportedAgents: supportedWithCodex) == "Update the Herdcats helper to see Codex conversations.")
@@ -243,6 +245,9 @@ struct CodexTimelineGatingTests {
     }
 
     @Test func canPinnedInstallerSupportVerification() {
+        #expect(AgentTimelineView.canPinnedInstallerSupport(agent: "claude"))
+        #expect(AgentTimelineView.canPinnedInstallerSupport(agent: "codex"))
+        #expect(AgentTimelineView.canPinnedInstallerSupport(agent: nil))
         #expect(AgentTimelineView.canPinnedInstallerSupport(agent: "claude", supportedAgents: ["claude"]))
         #expect(!AgentTimelineView.canPinnedInstallerSupport(agent: "codex", supportedAgents: ["claude"]))
         #expect(AgentTimelineView.canPinnedInstallerSupport(agent: "codex", supportedAgents: ["claude", "codex"]))

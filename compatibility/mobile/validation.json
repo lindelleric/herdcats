@@ -122,7 +122,7 @@
     }
   },
   "limitations": [
-    "Claude only; Codex history/context adapter remains gated",
+    "Claude and Codex supported; other agent adapters remain gated",
     "Direct SSH default session only; saved-machine routing unsupported",
     "Inline Markdown styling; no complete block Markdown renderer",
     "Host helper must be installed explicitly; no auto-install",
@@ -143,7 +143,7 @@
     "ios/Herdcats/Features/AgentTimeline/AgentTimelineState.swift",
     "ios/Herdcats/Features/AgentTimeline/AgentTimelineView.swift"
   ],
-  "onboarding_release_gate": "Helper0.1.4 published after explicit user approval; four native jobs and public installer passed. App not merged or deployed.",
+  "onboarding_release_gate": "Helper 0.2.0 published after explicit user approval; four native jobs and public installer passed. App not merged or deployed.",
   "first_use_drawer": {
     "size": "large detent with drag indicator",
     "preference_scope": "ConnectionIdentity.storageKey (SSH host, port, user and route identity)",
@@ -153,7 +153,7 @@
     "screenshot": ".lavish/timeline-first-use-drawer.png"
   },
   "one_click_setup": {
-    "helper_version": "0.1.4",
+    "helper_version": "0.2.0",
     "direct_ssh_only": true,
     "opening_timeline_installs": false,
     "uses_sudo": false,
@@ -199,10 +199,10 @@
     "copy": "Agent-neutral setup, empty state, error descriptions and assistant labels",
     "selection": "Detect the selected pane agent and expose Timeline only for an implemented bridge adapter; unsupported and unknown agents stay in Terminal with Compose",
     "implemented": [
-      "claude"
+      "claude",
+      "codex"
     ],
     "not_implemented": [
-      "codex/chatgpt",
       "cursor",
       "agy"
     ],
@@ -249,7 +249,7 @@
       "original_image": "Passed focused follow-up: actual Quick Look controller, asynchronously rendered original image and full fallback source. /private/tmp/hc-rich-image-original-green.log"
     },
     "review": "Independent reviewer found no P0/P1; unfamiliar text-block P2 fixed with regression",
-    "helper_release": "https://github.com/zhiyao/herdcats/releases/tag/herdcats-bridge-v0.1.4",
+    "helper_release": "https://github.com/zhiyao/herdcats/releases/tag/herdcats-bridge-v0.2.0",
     "screenshots": [
       ".lavish/timeline-rich-content.png",
       ".lavish/timeline-original-image.png"

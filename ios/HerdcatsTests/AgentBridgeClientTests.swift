@@ -150,16 +150,16 @@ struct AgentBridgeClientTests {
 
 @Suite("Host helper explicit setup policy")
 struct HostHelperSetupPolicyTests {
-    private func report(_ version: String = "0.1.4", protocolNumber: Int = 1) -> String {
-        "HC_HELPER_MANAGED\n{\"name\":\"herdcats-bridge\",\"version\":\"\(version)\",\"protocol\":\(protocolNumber),\"herdr_protocol\":22,\"agents\":[\"claude\"]}"
+    private func report(_ version: String = "0.2.0", protocolNumber: Int = 1) -> String {
+        "HC_HELPER_MANAGED\n{\"name\":\"herdcats-bridge\",\"version\":\"\(version)\",\"protocol\":\(protocolNumber),\"herdr_protocol\":22,\"agents\":[\"claude\",\"codex\"]}"
     }
     @Test func currentInstallationNeedsNoDownloadOrReplacement() throws {
         let probe = try HostHelperProbe(output: report())
-        #expect(probe == .present(version: "0.1.4", managed: true, compatible: true))
+        #expect(probe == .present(version: "0.2.0", managed: true, compatible: true))
         #expect(HostHelperSetupPlan.decision(probe: probe, replace: true, checkOnly: false) == .ready)
     }
     @Test func unknownAndOldManagedFilesRequireExplicitReplacement() throws {
-        for output in [report("0.1.0"), "HC_HELPER_MANAGED\nnot a version report"] {
+        for output in [report("0.1.4"), report("0.1.0"), "HC_HELPER_MANAGED\nnot a version report"] {
             let probe = try HostHelperProbe(output: output)
             #expect(HostHelperSetupPlan.decision(probe: probe, replace: false, checkOnly: false) == .replacementRequired(probe))
             #expect(HostHelperSetupPlan.decision(probe: probe, replace: true, checkOnly: false) == .install(replace: true))
@@ -168,36 +168,60 @@ struct HostHelperSetupPolicyTests {
     @Test func inspectionNeverInstallsEvenWithReplacementAuthorized() throws {
         let missing = try HostHelperProbe(output: "HC_HELPER_MISSING\n")
         #expect(HostHelperSetupPlan.decision(probe: missing, replace: true, checkOnly: true) == .missing)
-        let old = try HostHelperProbe(output: report("0.1.0"))
+        let old = try HostHelperProbe(output: report("0.1.4"))
         #expect(HostHelperSetupPlan.decision(probe: old, replace: true, checkOnly: true) == .replacementRequired(old))
     }
     @Test func externalHelperIsNotOverwrittenAndNewerCompatibleHelperIsNotDowngraded() throws {
-        let external = try HostHelperProbe(output: report("0.1.0").replacingOccurrences(of: "MANAGED", with: "EXTERNAL"))
+        let external = try HostHelperProbe(output: report("0.1.4").replacingOccurrences(of: "MANAGED", with: "EXTERNAL"))
         #expect(HostHelperSetupPlan.decision(probe: external, replace: true, checkOnly: false) == .install(replace: false))
-        let newer = try HostHelperProbe(output: report("0.1.5"))
+        let newer = try HostHelperProbe(output: report("0.2.1"))
         #expect(HostHelperSetupPlan.decision(probe: newer, replace: true, checkOnly: false) == .ready)
     }
     @Test func incompatibleProtocolDoesNotCountAsInstalledAndUnsafeTargetFailsClosed() throws {
         let probe = try HostHelperProbe(output: report(protocolNumber: 2))
-        #expect(probe == .present(version: "0.1.4", managed: true, compatible: false))
+        #expect(probe == .present(version: "0.2.0", managed: true, compatible: false))
         #expect(throws: HostHelperSetupError.unsafeDestination) { try HostHelperProbe(output: "HC_HELPER_BLOCKED\n") }
     }
     @Test func unsupportedAgentInPinnedInstallerRefusesInstallOrReplace() throws {
-        let missing = try HostHelperProbe(output: "HC_HELPER_MISSING\n", agent: "codex")
-        #expect(HostHelperSetupPlan.decision(probe: missing, replace: true, checkOnly: false, agent: "codex") == .unsupportedByPinnedInstaller("codex"))
-        #expect(HostHelperSetupPlan.decision(probe: missing, replace: false, checkOnly: true, agent: "codex") == .unsupportedByPinnedInstaller("codex"))
+        let missing = try HostHelperProbe(output: "HC_HELPER_MISSING\n", agent: "cursor")
+        #expect(HostHelperSetupPlan.decision(probe: missing, replace: true, checkOnly: false, agent: "cursor") == .unsupportedByPinnedInstaller("cursor"))
+        #expect(HostHelperSetupPlan.decision(probe: missing, replace: false, checkOnly: true, agent: "cursor") == .unsupportedByPinnedInstaller("cursor"))
 
-        let oldHelperForCodex = try HostHelperProbe(output: report("0.1.4"), agent: "codex")
-        #expect(HostHelperSetupPlan.decision(probe: oldHelperForCodex, replace: true, checkOnly: false, agent: "codex") == .unsupportedByPinnedInstaller("codex"))
-        #expect(HostHelperSetupPlan.decision(probe: oldHelperForCodex, replace: false, checkOnly: false, agent: "codex") == .unsupportedByPinnedInstaller("codex"))
+        let oldHelperForCursor = try HostHelperProbe(output: report("0.1.4"), agent: "cursor")
+        #expect(HostHelperSetupPlan.decision(probe: oldHelperForCursor, replace: true, checkOnly: false, agent: "cursor") == .unsupportedByPinnedInstaller("cursor"))
+        #expect(HostHelperSetupPlan.decision(probe: oldHelperForCursor, replace: false, checkOnly: false, agent: "cursor") == .unsupportedByPinnedInstaller("cursor"))
+    }
+    @Test func codexAndClaudeSetupDecisions() throws {
+        // Codex pane with no helper offers install
+        let missingCodex = try HostHelperProbe(output: "HC_HELPER_MISSING\n", agent: "codex")
+        #expect(HostHelperSetupPlan.decision(probe: missingCodex, replace: false, checkOnly: false, agent: "codex") == .install(replace: false))
+        #expect(HostHelperSetupPlan.decision(probe: missingCodex, replace: true, checkOnly: false, agent: "codex") == .install(replace: false))
+        #expect(HostHelperSetupPlan.decision(probe: missingCodex, replace: false, checkOnly: true, agent: "codex") == .missing)
 
-        let missingForClaude = try HostHelperProbe(output: "HC_HELPER_MISSING\n", agent: "claude")
-        #expect(HostHelperSetupPlan.decision(probe: missingForClaude, replace: true, checkOnly: false, agent: "claude") == .install(replace: false))
+        // A 0.1.4 host on a Codex pane shows helper_update_required and offers update (install with replace)
+        let old014ForCodex = try HostHelperProbe(
+            output: "HC_HELPER_MANAGED\n{\"name\":\"herdcats-bridge\",\"version\":\"0.1.4\",\"protocol\":1,\"herdr_protocol\":22,\"agents\":[\"claude\"]}",
+            agent: "codex"
+        )
+        #expect(old014ForCodex == .present(version: "0.1.4", managed: true, compatible: false))
+        #expect(HostHelperSetupPlan.decision(probe: old014ForCodex, replace: false, checkOnly: false, agent: "codex") == .replacementRequired(old014ForCodex))
+        #expect(HostHelperSetupPlan.decision(probe: old014ForCodex, replace: true, checkOnly: false, agent: "codex") == .install(replace: true))
+        #expect(HostHelperSetupPlan.decision(probe: old014ForCodex, replace: false, checkOnly: true, agent: "codex") == .replacementRequired(old014ForCodex))
 
-        let reportCodex = "HC_HELPER_MANAGED\n{\"name\":\"herdcats-bridge\",\"version\":\"0.2.0\",\"protocol\":1,\"herdr_protocol\":22,\"agents\":[\"claude\",\"codex\"]}"
-        let compatibleCodex = try HostHelperProbe(output: reportCodex, agent: "codex")
+        // Claude setup flow/probe unchanged
+        let missingClaude = try HostHelperProbe(output: "HC_HELPER_MISSING\n", agent: "claude")
+        #expect(HostHelperSetupPlan.decision(probe: missingClaude, replace: false, checkOnly: false, agent: "claude") == .install(replace: false))
+        #expect(HostHelperSetupPlan.decision(probe: missingClaude, replace: true, checkOnly: false, agent: "claude") == .install(replace: false))
+
+        // A 0.2.0 helper compatible with both claude and codex
+        let report020 = "HC_HELPER_MANAGED\n{\"name\":\"herdcats-bridge\",\"version\":\"0.2.0\",\"protocol\":1,\"herdr_protocol\":22,\"agents\":[\"claude\",\"codex\"]}"
+        let compatibleCodex = try HostHelperProbe(output: report020, agent: "codex")
         #expect(compatibleCodex == .present(version: "0.2.0", managed: true, compatible: true))
-        #expect(HostHelperSetupPlan.decision(probe: compatibleCodex, replace: true, checkOnly: false, agent: "codex") == .ready)
+        #expect(HostHelperSetupPlan.decision(probe: compatibleCodex, replace: false, checkOnly: false, agent: "codex") == .ready)
+
+        let compatibleClaude = try HostHelperProbe(output: report020, agent: "claude")
+        #expect(compatibleClaude == .present(version: "0.2.0", managed: true, compatible: true))
+        #expect(HostHelperSetupPlan.decision(probe: compatibleClaude, replace: false, checkOnly: false, agent: "claude") == .ready)
     }
 }
 
@@ -290,8 +314,17 @@ struct HostHelperSetupGuardTests {
             try HostHelperSetupPlan.verifyInstallation("HC_HELPER_ERROR:checksum_mismatch\n")
         }
         #expect(throws: HostHelperSetupError.invalidResponse) {
-            try HostHelperSetupPlan.verifyInstallation("HC_HELPER_INSTALLED\n{\"name\":\"herdcats-bridge\",\"version\":\"0.1.4\",\"protocol\":2,\"herdr_protocol\":22,\"agents\":[\"claude\"]}")
+            try HostHelperSetupPlan.verifyInstallation("HC_HELPER_INSTALLED\n{\"name\":\"herdcats-bridge\",\"version\":\"0.2.0\",\"protocol\":2,\"herdr_protocol\":22,\"agents\":[\"claude\",\"codex\"]}")
         }
+        #expect(throws: HostHelperSetupError.invalidResponse) {
+            try HostHelperSetupPlan.verifyInstallation("HC_HELPER_INSTALLED\n{\"name\":\"herdcats-bridge\",\"version\":\"0.1.4\",\"protocol\":1,\"herdr_protocol\":22,\"agents\":[\"claude\"]}")
+        }
+    }
+    @Test func verifyInstallationAccepts020ReportWithClaudeAndCodex() throws {
+        let output = "HC_HELPER_INSTALLED\n{\"name\":\"herdcats-bridge\",\"version\":\"0.2.0\",\"protocol\":1,\"herdr_protocol\":22,\"agents\":[\"claude\",\"codex\"]}\n"
+        try HostHelperSetupPlan.verifyInstallation(output)
+        try HostHelperSetupPlan.verifyInstallation(output, agent: "claude")
+        try HostHelperSetupPlan.verifyInstallation(output, agent: "codex")
     }
 }
 

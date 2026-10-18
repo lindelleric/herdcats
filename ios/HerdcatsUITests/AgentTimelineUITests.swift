@@ -187,7 +187,7 @@ final class AgentTimelineUITests: XCTestCase {
             XCTAssertTrue(feedback.waitForExistence(timeout: 5))
             XCTAssertFalse(app.buttons["timeline-tool-tool:read"].exists)
             if scenario == "replacement" {
-                XCTAssertEqual(install.label, "Replace helper with 0.1.4")
+                XCTAssertEqual(install.label, "Replace helper with 0.2.0")
                 install.tap()
                 XCTAssertTrue(app.buttons["timeline-tool-tool:read"].waitForExistence(timeout: 5))
             } else if scenario == "uncertain" {

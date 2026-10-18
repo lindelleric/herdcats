@@ -29,7 +29,10 @@ class MobileHelperInstallationTests(unittest.TestCase):
         self.destination = self.home / '.local/bin/herdcats-bridge'
         self.fake = self.root / 'bin'
         self.fake.mkdir()
-        self.report = {'agents':['claude'], 'herdr_protocol':22, 'name':'herdcats-bridge', 'protocol':1, 'version':'0.1.4'}
+        source = SOURCE.read_text()
+        version = re.search(r'static let version = "([^"]+)"', source)[1]
+        agents = ['claude', 'codex'] if version != '0.1.4' else ['claude']
+        self.report = {'agents': agents, 'herdr_protocol': 22, 'name': 'herdcats-bridge', 'protocol': 1, 'version': version}
         self.binary = self.root / 'binary'
         self.binary.write_text('#!/bin/sh\nprintf \'%s\\n\' \'' + json.dumps(self.report, separators=(',', ':')) + "'\n")
         self.binary.chmod(0o755)
@@ -75,7 +78,8 @@ out.write_bytes(data)
         self.assertTrue(self.destination.is_file(), result.stdout)
         self.assertEqual(self.destination.read_bytes(), self.binary.read_bytes())
         self.assertIn('HC_HELPER_INSTALLED', result.stdout)
-        self.assertIn('"version":"0.1.4"', result.stdout)
+        ver = self.report['version']
+        self.assertIn(f'"version":"{ver}"', result.stdout)
 
     def test_untrusted_download_is_never_executed(self):
         result = self.run_install(case='tampered')
@@ -124,7 +128,8 @@ out.write_bytes(data)
         before=self.destination.read_bytes()
         result=self.probe()
         self.assertTrue(result.stdout.startswith('HC_HELPER_MANAGED\n'), result.stderr)
-        self.assertIn('"version":"0.1.4"',result.stdout)
+        ver = self.report['version']
+        self.assertIn(f'"version":"{ver}"', result.stdout)
         self.assertEqual(before,self.destination.read_bytes())
 
     def test_probe_never_executes_a_symlink_destination(self):
