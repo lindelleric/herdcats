@@ -302,10 +302,12 @@ struct HostHelperSetupPolicyTests {
 
     @Test func oneTapUpgradeDecisionPath() {
         let managed014 = HostHelperProbe.present(version: "0.1.4", managed: true, compatible: false)
+        let managed030Incompatible = HostHelperProbe.present(version: "0.3.0", managed: true, compatible: false)
+        let managedUnknown = HostHelperProbe.present(version: nil, managed: true, compatible: false)
         let external014 = HostHelperProbe.present(version: "0.1.4", managed: false, compatible: false)
         let compatible020 = HostHelperProbe.present(version: "0.2.0", managed: true, compatible: true)
 
-        // 1. managed old -> replace in one tap for update reason
+        // 1. managed 0.1.4 + updateRequired -> install(replace: true)
         #expect(
             HostHelperSetupPlan.decision(probe: managed014, replace: false, checkOnly: false, agent: "codex", reason: .updateRequired)
             == .install(replace: true)
@@ -315,7 +317,19 @@ struct HostHelperSetupPolicyTests {
             == .install(replace: true)
         )
 
-        // 2. external old -> stops and shows replacementRequired even for update reason
+        // 2. managed 0.3.0 incompatible + updateRequired -> replacementRequired
+        #expect(
+            HostHelperSetupPlan.decision(probe: managed030Incompatible, replace: false, checkOnly: false, agent: "codex", reason: .updateRequired)
+            == .replacementRequired(managed030Incompatible)
+        )
+
+        // 3. managed unknown version + updateRequired -> replacementRequired
+        #expect(
+            HostHelperSetupPlan.decision(probe: managedUnknown, replace: false, checkOnly: false, agent: "codex", reason: .updateRequired)
+            == .replacementRequired(managedUnknown)
+        )
+
+        // 4. external old -> stops and shows replacementRequired even for update reason
         #expect(
             HostHelperSetupPlan.decision(probe: external014, replace: false, checkOnly: false, agent: "codex", reason: .updateRequired)
             == .replacementRequired(external014)
@@ -326,7 +340,7 @@ struct HostHelperSetupPolicyTests {
             == .install(replace: false)
         )
 
-        // 3. missing reason + managed old -> explicit Replace required (first tap returns replacementRequired)
+        // 5. missing reason + managed old -> explicit Replace required (first tap returns replacementRequired)
         #expect(
             HostHelperSetupPlan.decision(probe: managed014, replace: false, checkOnly: false, agent: "codex", reason: .missing)
             == .replacementRequired(managed014)
@@ -337,17 +351,24 @@ struct HostHelperSetupPolicyTests {
             == .install(replace: true)
         )
 
-        // 4. checkOnly returns replacementRequired regardless of reason
+        // 6. checkOnly returns replacementRequired regardless of reason
         #expect(
             HostHelperSetupPlan.decision(probe: managed014, replace: false, checkOnly: true, agent: "codex", reason: .updateRequired)
             == .replacementRequired(managed014)
         )
 
-        // 5. already compatible -> ready (no install)
+        // 7. already compatible -> ready (no install)
         #expect(
             HostHelperSetupPlan.decision(probe: compatible020, replace: false, checkOnly: false, agent: "codex", reason: .updateRequired)
             == .ready
         )
+
+        // 8. HostHelperProbe.isOlderThanPinned helper verification
+        #expect(HostHelperProbe.isOlderThanPinned("0.1.4"))
+        #expect(!HostHelperProbe.isOlderThanPinned("0.2.0"))
+        #expect(!HostHelperProbe.isOlderThanPinned("0.3.0"))
+        #expect(!HostHelperProbe.isOlderThanPinned(nil))
+        #expect(!HostHelperProbe.isOlderThanPinned("invalid"))
     }
 }
 

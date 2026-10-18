@@ -112,7 +112,7 @@ final class AgentTimelineUITests: XCTestCase {
         manual.tap()
         let copy = app.buttons["timeline-helper-copy-command"]
         for _ in 0..<4 {
-            let visibleBottom = app.staticTexts["demo@studio-mac"].frame.minY - 8
+            let visibleBottom = app.buttons["timeline-helper-install"].frame.minY - 8
             if copy.isHittable && copy.frame.maxY < visibleBottom { break }
             drawer.swipeUp()
         }
@@ -120,7 +120,7 @@ final class AgentTimelineUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Command copied"].waitForExistence(timeout: 3) || copy.label == "Command copied")
         let checkAgainInside = app.buttons["timeline-helper-check-again"]
         for _ in 0..<4 {
-            let visibleBottom = app.staticTexts["demo@studio-mac"].frame.minY - 8
+            let visibleBottom = app.buttons["timeline-helper-install"].frame.minY - 8
             if checkAgainInside.isHittable && checkAgainInside.frame.maxY < visibleBottom { break }
             drawer.swipeUp()
         }
@@ -160,7 +160,7 @@ final class AgentTimelineUITests: XCTestCase {
         manual.tap()
         let checkAgain = app.buttons["timeline-helper-check-again"]
         for _ in 0..<4 {
-            let visibleBottom = app.staticTexts["demo@studio-mac"].frame.minY - 8
+            let visibleBottom = app.buttons["timeline-helper-install"].frame.minY - 8
             if checkAgain.isHittable && checkAgain.frame.maxY < visibleBottom { break }
             drawer.swipeUp()
         }
@@ -603,6 +603,7 @@ final class AgentTimelineUITests: XCTestCase {
         XCTAssertTrue(upgradeButton.waitForExistence(timeout: 5))
         XCTAssertEqual(upgradeButton.label, "Upgrade Herdcats Bridge")
         XCTAssertTrue(appUpgradePane.staticTexts["Herdcats Bridge 0.1.4 on this computer can't show Codex conversations. Upgrade to 0.2.0."].exists)
+        XCTAssertFalse(appUpgradePane.buttons["timeline-helper-retry"].exists)
         saveNamedScreenshot(appUpgradePane.screenshot(), name: "codex-pane-needs-upgrade")
 
         // 2. upgrade-drawer.png
@@ -626,6 +627,7 @@ final class AgentTimelineUITests: XCTestCase {
         XCTAssertTrue(installButton.waitForExistence(timeout: 5))
         XCTAssertEqual(installButton.label, "Install Herdcats Bridge")
         XCTAssertTrue(appMissingPane.staticTexts["Install Herdcats Bridge to see this session as native messages. Terminal is available now."].exists)
+        XCTAssertFalse(appMissingPane.buttons["timeline-helper-retry"].exists)
         saveNamedScreenshot(appMissingPane.screenshot(), name: "missing-pane")
         appMissingPane.terminate()
 
@@ -649,7 +651,7 @@ final class AgentTimelineUITests: XCTestCase {
         manual.tap()
         let checkAgain = appMissingDrawer.buttons["timeline-helper-check-again"]
         for _ in 0..<4 {
-            let visibleBottom = appMissingDrawer.staticTexts["demo@studio-mac"].frame.minY - 8
+            let visibleBottom = appMissingDrawer.buttons["timeline-helper-install"].frame.minY - 8
             if checkAgain.isHittable && checkAgain.frame.maxY < visibleBottom { break }
             missingScroll.swipeUp()
         }

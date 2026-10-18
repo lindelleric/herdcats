@@ -261,6 +261,39 @@ struct CodexTimelineGatingTests {
         #expect(AgentTimelineView.canPinnedInstallerSupport(agent: nil, supportedAgents: ["claude"]))
     }
 
+    @Test func unavailableGatingAndPaneActions() {
+        // record_too_large means an older Bridge: treated as needs-upgrade scenario
+        #expect(AgentTimelineView.isNeedsUpgrade(code: "record_too_large", agent: "codex"))
+        #expect(AgentTimelineView.isNeedsUpgrade(code: "record_too_large", agent: "claude"))
+        #expect(AgentTimelineView.showsInstallOrUpgrade(code: "record_too_large", agent: "codex"))
+        #expect(AgentTimelineView.showsInstallOrUpgrade(code: "record_too_large", agent: "claude"))
+        #expect(!AgentTimelineView.showsPaneCheckAgain(code: "record_too_large", agent: "codex"))
+
+        // helper_missing and helper_update_required show setup button and suppress pane Check again
+        #expect(AgentTimelineView.showsInstallOrUpgrade(code: "helper_missing", agent: "codex"))
+        #expect(!AgentTimelineView.showsPaneCheckAgain(code: "helper_missing", agent: "codex"))
+        #expect(AgentTimelineView.showsInstallOrUpgrade(code: "helper_update_required", agent: "codex"))
+        #expect(!AgentTimelineView.showsPaneCheckAgain(code: "helper_update_required", agent: "codex"))
+
+        // protocol_mismatch stays as is (not needsUpgrade, shows pane Check again)
+        #expect(!AgentTimelineView.isNeedsUpgrade(code: "protocol_mismatch", agent: "codex"))
+        #expect(!AgentTimelineView.showsInstallOrUpgrade(code: "protocol_mismatch", agent: "codex"))
+        #expect(AgentTimelineView.showsPaneCheckAgain(code: "protocol_mismatch", agent: "codex"))
+
+        // other unavailable codes keep pane Check again
+        #expect(AgentTimelineView.showsPaneCheckAgain(code: "session_reference_unavailable", agent: "codex"))
+        #expect(AgentTimelineView.showsPaneCheckAgain(code: "session_cwd_mismatch", agent: "codex"))
+        #expect(AgentTimelineView.showsPaneCheckAgain(code: "transcript_root_unavailable", agent: "codex"))
+        #expect(AgentTimelineView.showsPaneCheckAgain(code: "source_changing", agent: "codex"))
+        #expect(AgentTimelineView.showsPaneCheckAgain(code: "source_too_large", agent: "codex"))
+
+        // unsupported agent refuses upgrade/install and keeps Check again
+        let unsupportedAgents: Set<String> = ["claude"]
+        #expect(!AgentTimelineView.isNeedsUpgrade(code: "record_too_large", agent: "codex", supportedAgents: unsupportedAgents))
+        #expect(!AgentTimelineView.showsInstallOrUpgrade(code: "record_too_large", agent: "codex", supportedAgents: unsupportedAgents))
+        #expect(AgentTimelineView.showsPaneCheckAgain(code: "record_too_large", agent: "codex", supportedAgents: unsupportedAgents))
+    }
+
     @Test func helperSetupViewLabelAndFeedbackLogic() {
         // update reason idle -> "Upgrade to 0.2.0"
         #expect(

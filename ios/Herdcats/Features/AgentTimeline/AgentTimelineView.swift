@@ -501,8 +501,10 @@ struct AgentTimelineView: View {
         case .unavailable(let code):
             let isCodex = agent == "codex"
             let isSupportedAgent = canPinnedInstallerSupportAgent
-            let isNeedsUpgrade = isSupportedAgent && (code == "helper_update_required" || (isCodex && code == "unsupported_agent"))
+            let isNeedsUpgrade = Self.isNeedsUpgrade(code: code, agent: agent)
             let isMissing = code == "helper_missing"
+            let showsInstallOrUpgrade = Self.showsInstallOrUpgrade(code: code, agent: agent)
+            let showsProtocolMismatch = code == "protocol_mismatch" && isSupportedAgent
             let isNoSession = ["session_reference_unavailable", "ambiguous_session", "invalid_session_reference"].contains(code)
             let isCwdMismatch = code == "session_cwd_mismatch"
             let canTurnOffCodexDaemon = Self.canConfigureCodexDaemon(
@@ -527,12 +529,12 @@ struct AgentTimelineView: View {
                     Text(explanation(code))
                 }
             } actions: {
-                if (isMissing || isNeedsUpgrade || ["protocol_mismatch", "record_too_large"].contains(code)) && isSupportedAgent {
+                if showsInstallOrUpgrade || showsProtocolMismatch {
                     Button(isNeedsUpgrade ? "Upgrade Herdcats Bridge" : (isMissing ? "Install Herdcats Bridge" : "Set up Timeline")) {
                         beginSetup(reason: isNeedsUpgrade ? .updateRequired : .missing)
                     }
-                        .buttonStyle(.herdrPrimary)
-                        .accessibilityIdentifier("timeline-helper-setup")
+                    .buttonStyle(.herdrPrimary)
+                    .accessibilityIdentifier("timeline-helper-setup")
                 }
                 if isCodex && isNoSession {
                     if canTurnOffCodexDaemon && !codexDaemonErrorOccurred && codexDaemonFeedback == nil {
@@ -570,8 +572,10 @@ struct AgentTimelineView: View {
                         }
                     }
                 }
-                Button("Check again") { retry += 1 }.buttonStyle(.herdrSecondary)
-                    .accessibilityIdentifier("timeline-helper-retry")
+                if !showsInstallOrUpgrade {
+                    Button("Check again") { retry += 1 }.buttonStyle(.herdrSecondary)
+                        .accessibilityIdentifier("timeline-helper-retry")
+                }
             }
         case .ready: EmptyView()
         }
@@ -584,6 +588,35 @@ struct AgentTimelineView: View {
             pinnedVersion: HostHelperSetupPlan.version,
             supportedAgents: Set(HostHelperSetupPlan.agents)
         )
+    }
+
+    static func isNeedsUpgrade(
+        code: String,
+        agent: String?,
+        supportedAgents: Set<String> = Set(HostHelperSetupPlan.agents)
+    ) -> Bool {
+        let isSupported = canPinnedInstallerSupport(agent: agent, supportedAgents: supportedAgents)
+        guard isSupported else { return false }
+        let isCodex = agent == "codex"
+        return code == "helper_update_required" || code == "record_too_large" || (isCodex && code == "unsupported_agent")
+    }
+
+    static func showsInstallOrUpgrade(
+        code: String,
+        agent: String?,
+        supportedAgents: Set<String> = Set(HostHelperSetupPlan.agents)
+    ) -> Bool {
+        let isSupported = canPinnedInstallerSupport(agent: agent, supportedAgents: supportedAgents)
+        guard isSupported else { return false }
+        return code == "helper_missing" || isNeedsUpgrade(code: code, agent: agent, supportedAgents: supportedAgents)
+    }
+
+    static func showsPaneCheckAgain(
+        code: String,
+        agent: String?,
+        supportedAgents: Set<String> = Set(HostHelperSetupPlan.agents)
+    ) -> Bool {
+        !showsInstallOrUpgrade(code: code, agent: agent, supportedAgents: supportedAgents)
     }
 
     static func canConfigureCodexDaemon(
@@ -1236,6 +1269,18 @@ private struct AgentBridgeSetupView: View {
                             Text("It runs only while Timeline is open. There’s no background service or agent hook to configure.")
                                 .font(.jost(.subheadline)).foregroundStyle(Theme.textMuted)
                         }
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("\(target.username)@\(target.host)")
+                                .font(.jost(.subheadline, weight: .semibold))
+                            Text("~/.local/bin/herdcats-bridge")
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(Theme.textMuted)
+                            Text("Port \(target.port) · Herdcats Bridge \(pinnedVersion)")
+                                .font(.jost(.caption))
+                                .foregroundStyle(Theme.textMuted)
+                        }
+                        .padding(18).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Theme.cardBackground, in: RoundedRectangle(cornerRadius: 18))
                         Text("Tapping Install downloads the pinned Herdcats Bridge release and verifies its checksum before running the installer. No sudo, background service, or agent hooks are required.")
                             .font(.jost(.subheadline)).foregroundStyle(Theme.textMuted)
                     }
@@ -1267,7 +1312,7 @@ private struct AgentBridgeSetupView: View {
                                 .font(.system(.footnote, design: .monospaced)).textSelection(.enabled)
                                 .padding(16).frame(maxWidth: .infinity, alignment: .leading)
                                 .background(Theme.fieldBackground, in: RoundedRectangle(cornerRadius: 16))
-                            Text("The installer checks the download and installs in your user account. Already installed? Add --replace to upgrade it.")
+                            Text("The installer checks the download and installs in your user account. Already installed? Add `--replace` to upgrade it.")
                                 .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
                             Link("View downloads and setup details", destination: URL(string: "https://github.com/zhiyao/herdcats/releases")!)
                                 .font(.jost(.subheadline))
@@ -1280,13 +1325,6 @@ private struct AgentBridgeSetupView: View {
             .accessibilityIdentifier("timeline-setup-scroll")
             .safeAreaInset(edge: .bottom) {
                 VStack(spacing: 12) {
-                    if reason == .missing {
-                        VStack(spacing: 3) {
-                            Text("\(target.username)@\(target.host)").font(.jost(.subheadline, weight: .semibold))
-                            Text("~/.local/bin/herdcats-bridge").font(.system(.caption, design: .monospaced))
-                            Text("Port \(target.port) · Herdcats Bridge \(pinnedVersion)").font(.jost(.caption))
-                        }.foregroundStyle(Theme.textMuted)
-                    }
                     if let feedback {
                         Text(feedback).font(.jost(.caption)).foregroundStyle(Theme.textMuted)
                             .accessibilityIdentifier("timeline-setup-feedback")

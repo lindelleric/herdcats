@@ -237,16 +237,23 @@ enum HostHelperProbe: Equatable, Sendable {
         } ?? false
         self = .present(version: version, managed: marker == "HC_HELPER_MANAGED", compatible: compatible)
     }
-    private static func versionNumbers(_ version: String) -> [Int]? {
+    static func versionNumbers(_ version: String) -> [Int]? {
         guard version.utf8.count <= 64 else { return nil }
         let parts = version.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 3, parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy({ $0.isASCII && $0.isNumber }) }) else { return nil }
         let numbers = parts.compactMap { Int($0) }
         return numbers.count == 3 ? numbers : nil
     }
-    private static func isAtLeastPinned(_ version: String) -> Bool {
+    static func isAtLeastPinned(_ version: String) -> Bool {
         guard let current = versionNumbers(version), let minimum = versionNumbers(HostHelperSetupPlan.version) else { return false }
         return current == minimum || minimum.lexicographicallyPrecedes(current)
+    }
+    static func isOlderThanPinned(_ version: String?) -> Bool {
+        guard let version,
+              let current = versionNumbers(version),
+              let pinned = versionNumbers(HostHelperSetupPlan.version)
+        else { return false }
+        return current.lexicographicallyPrecedes(pinned)
     }
 }
 enum HostHelperSetupDecision: Equatable, Sendable {

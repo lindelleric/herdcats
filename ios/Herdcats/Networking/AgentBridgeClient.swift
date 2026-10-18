@@ -467,10 +467,10 @@ extension HostHelperSetupPlan {
         switch probe {
         case .missing:
             return checkOnly ? .missing : .install(replace: false)
-        case .present(_, let managed, let compatible):
+        case .present(let version, let managed, let compatible):
             if compatible { return .ready }
             if checkOnly { return .replacementRequired(probe) }
-            if reason == .updateRequired && managed {
+            if reason == .updateRequired && managed && HostHelperProbe.isOlderThanPinned(version) {
                 return .install(replace: true)
             }
             if replace {
