@@ -221,8 +221,9 @@ struct CodexTimelineGatingTests {
             onSetupComplete: {}
         )
         // When Codex is supported by pinned installer (0.2.0 pinned release with HostHelperSetupPlan.agents == ["claude", "codex"])
-        #expect(view.explanation("helper_update_required") == "Upgrade Herdcats Bridge to see Codex conversations.")
-        #expect(view.explanation("unsupported_agent") == "Upgrade Herdcats Bridge to see Codex conversations.")
+        // Without an installedVersion recorded yet:
+        #expect(view.explanation("helper_update_required") == "The Herdcats Bridge on this computer can't show Codex conversations. Upgrade to 0.2.0.")
+        #expect(view.explanation("unsupported_agent") == "The Herdcats Bridge on this computer can't show Codex conversations. Upgrade to 0.2.0.")
         #expect(view.explanation("helper_missing") == "Install Herdcats Bridge to see this session as native messages. Terminal is available now.")
 
         // Explicitly test both ways with injected supportedAgents:
@@ -234,14 +235,20 @@ struct CodexTimelineGatingTests {
 
         // 2. With Codex in supportedAgents
         let supportedWithCodex: Set<String> = ["claude", "codex"]
-        #expect(AgentTimelineView.explanation("helper_update_required", agent: "codex", supportedAgents: supportedWithCodex) == "Upgrade Herdcats Bridge to see Codex conversations.")
-        #expect(AgentTimelineView.explanation("unsupported_agent", agent: "codex", supportedAgents: supportedWithCodex) == "Upgrade Herdcats Bridge to see Codex conversations.")
+        #expect(AgentTimelineView.explanation("helper_update_required", agent: "codex", installedVersion: "0.1.4", supportedAgents: supportedWithCodex) == "Herdcats Bridge 0.1.4 on this computer can't show Codex conversations. Upgrade to 0.2.0.")
+        #expect(AgentTimelineView.explanation("helper_update_required", agent: "codex", installedVersion: nil, supportedAgents: supportedWithCodex) == "The Herdcats Bridge on this computer can't show Codex conversations. Upgrade to 0.2.0.")
+        #expect(AgentTimelineView.explanation("unsupported_agent", agent: "codex", installedVersion: "0.1.4", supportedAgents: supportedWithCodex) == "Herdcats Bridge 0.1.4 on this computer can't show Codex conversations. Upgrade to 0.2.0.")
+        #expect(AgentTimelineView.explanation("unsupported_agent", agent: "codex", installedVersion: nil, supportedAgents: supportedWithCodex) == "The Herdcats Bridge on this computer can't show Codex conversations. Upgrade to 0.2.0.")
         #expect(AgentTimelineView.explanation("helper_missing", agent: "codex", supportedAgents: supportedWithCodex) == "Install Herdcats Bridge to see this session as native messages. Terminal is available now.")
 
-        // 3. Claude is unaffected
-        #expect(AgentTimelineView.explanation("helper_update_required", agent: "claude", supportedAgents: unsupportedAgents) == "Upgrade Herdcats Bridge to display session images.")
+        // 3. Claude with and without installedVersion
+        #expect(AgentTimelineView.explanation("helper_update_required", agent: "claude", installedVersion: "0.1.4", supportedAgents: unsupportedAgents) == "Herdcats Bridge 0.1.4 on this computer can't show session images. Upgrade to 0.2.0.")
+        #expect(AgentTimelineView.explanation("helper_update_required", agent: "claude", installedVersion: nil, supportedAgents: unsupportedAgents) == "The Herdcats Bridge on this computer can't show session images. Upgrade to 0.2.0.")
         #expect(AgentTimelineView.explanation("unsupported_agent", agent: "claude", supportedAgents: unsupportedAgents) == "Timeline is not available for this agent yet. You can still send messages below or use Terminal.")
         #expect(AgentTimelineView.explanation("helper_missing", agent: "claude", supportedAgents: unsupportedAgents) == "Install Herdcats Bridge to see this session as native messages. Terminal is available now.")
+
+        // 4. Grammar for fallback
+        #expect(AgentTimelineView.explanation("unknown_code", agent: "codex") == "Check that the optional Herdcats Bridge is available on your host, then try again.")
     }
 
     @Test func canPinnedInstallerSupportVerification() {
@@ -255,10 +262,32 @@ struct CodexTimelineGatingTests {
     }
 
     @Test func helperSetupViewLabelAndFeedbackLogic() {
-        // update reason idle -> "Upgrade Herdcats Bridge to 0.2.0"
+        // update reason idle -> "Upgrade to 0.2.0"
         #expect(
             AgentTimelineView.installLabel(stage: .idle, reason: .updateRequired)
-            == "Upgrade Herdcats Bridge to 0.2.0"
+            == "Upgrade to 0.2.0"
+        )
+        #expect(
+            AgentTimelineView.installLabel(stage: .idle, reason: .updateRequired, pinnedVersion: "0.2.0")
+            == "Upgrade to 0.2.0"
+        )
+
+        // busy labels
+        #expect(
+            AgentTimelineView.installLabel(stage: .checking)
+            == "Checking host…"
+        )
+        #expect(
+            AgentTimelineView.installLabel(stage: .installing, reason: .updateRequired)
+            == "Upgrading Herdcats Bridge…"
+        )
+        #expect(
+            AgentTimelineView.installLabel(stage: .installing, reason: .missing)
+            == "Installing Herdcats Bridge…"
+        )
+        #expect(
+            AgentTimelineView.installLabel(stage: .verifying)
+            == "Verifying installation…"
         )
 
         // missing -> "Install Herdcats Bridge"
@@ -583,8 +612,8 @@ struct CodexDaemonConfigTests {
             try await client.performHandshakeAndWatch(
                 paneId: "p-codex",
                 agent: "codex",
-                onHandshake: { capabilities in
-                    await connection.recordAgentBridgeCapabilities(capabilities, generation: generation)
+                onHandshake: { capabilities, version in
+                    await connection.recordAgentBridgeHandshake(capabilities: capabilities, version: version, generation: generation)
                 }
             )
         }
@@ -619,6 +648,8 @@ struct CodexDaemonConfigTests {
 
         let recordedCaps = await connection.bridgeCapabilities(for: generation)
         #expect(recordedCaps?.codexDaemonConfig == true)
+        let recordedVersion = await connection.bridgeVersion(for: generation)
+        #expect(recordedVersion == "0.2.0")
 
         let canTurnOff = AgentTimelineView.canConfigureCodexDaemon(
             agent: "codex",

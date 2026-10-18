@@ -61,7 +61,7 @@
       "Dismiss or Use Terminal for now selects Terminal and remembers the SSH-host choice",
       "Timeline toolbar icon retries and reopens guidance while helper is missing",
       "Display SSH host/user/port and ~/.local/bin/herdcats-bridge before an explicit Install action",
-      "Probe existing helper, then install pinned release with progress; incompatible existing helper requires separate Replace authorization",
+      "Probe existing helper, then install pinned release with progress; a managed older copy upgrades in one tap from the Upgrade drawer, while an unmanaged copy elsewhere still needs explicit confirmation and is left unchanged",
       "After uncertain installation, check existing helper before allowing a retry; retain Manual setup copy instructions",
       "Check again remains in guidance when unavailable; verified native Timeline closes the sheet and restores its default"
     ],

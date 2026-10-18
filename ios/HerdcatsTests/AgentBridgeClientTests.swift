@@ -225,14 +225,32 @@ struct HostHelperSetupPolicyTests {
     }
 
     @Test func helperSetupLabelAndFeedbackLogic() throws {
-        // update reason idle -> "Upgrade Herdcats Bridge to 0.2.0"
+        // update reason idle -> "Upgrade to 0.2.0"
         #expect(
             HostHelperSetupPlan.installLabel(stage: .idle, reason: .updateRequired)
-            == "Upgrade Herdcats Bridge to 0.2.0"
+            == "Upgrade to 0.2.0"
         )
         #expect(
             HostHelperSetupPlan.installLabel(stage: .idle, reason: .updateRequired, pinnedVersion: "0.2.0")
-            == "Upgrade Herdcats Bridge to 0.2.0"
+            == "Upgrade to 0.2.0"
+        )
+
+        // busy labels
+        #expect(
+            HostHelperSetupPlan.installLabel(stage: .checking)
+            == "Checking host…"
+        )
+        #expect(
+            HostHelperSetupPlan.installLabel(stage: .installing, reason: .updateRequired)
+            == "Upgrading Herdcats Bridge…"
+        )
+        #expect(
+            HostHelperSetupPlan.installLabel(stage: .installing, reason: .missing)
+            == "Installing Herdcats Bridge…"
+        )
+        #expect(
+            HostHelperSetupPlan.installLabel(stage: .verifying)
+            == "Verifying installation…"
         )
 
         // missing -> "Install Herdcats Bridge"
@@ -279,6 +297,56 @@ struct HostHelperSetupPolicyTests {
         #expect(
             HostHelperSetupError.failed("curl_missing").localizedDescription
             == "This host needs curl to download Herdcats Bridge. Use manual setup to install it."
+        )
+    }
+
+    @Test func oneTapUpgradeDecisionPath() {
+        let managed014 = HostHelperProbe.present(version: "0.1.4", managed: true, compatible: false)
+        let external014 = HostHelperProbe.present(version: "0.1.4", managed: false, compatible: false)
+        let compatible020 = HostHelperProbe.present(version: "0.2.0", managed: true, compatible: true)
+
+        // 1. managed old -> replace in one tap for update reason
+        #expect(
+            HostHelperSetupPlan.decision(probe: managed014, replace: false, checkOnly: false, agent: "codex", reason: .updateRequired)
+            == .install(replace: true)
+        )
+        #expect(
+            HostHelperSetupPlan.decision(probe: managed014, replace: false, checkOnly: false, agent: "claude", reason: .updateRequired)
+            == .install(replace: true)
+        )
+
+        // 2. external old -> stops and shows replacementRequired even for update reason
+        #expect(
+            HostHelperSetupPlan.decision(probe: external014, replace: false, checkOnly: false, agent: "codex", reason: .updateRequired)
+            == .replacementRequired(external014)
+        )
+        // when confirmed with replace (managed: false -> replace: false)
+        #expect(
+            HostHelperSetupPlan.decision(probe: external014, replace: true, checkOnly: false, agent: "codex", reason: .updateRequired)
+            == .install(replace: false)
+        )
+
+        // 3. missing reason + managed old -> explicit Replace required (first tap returns replacementRequired)
+        #expect(
+            HostHelperSetupPlan.decision(probe: managed014, replace: false, checkOnly: false, agent: "codex", reason: .missing)
+            == .replacementRequired(managed014)
+        )
+        // second tap with replace returns install(replace: true)
+        #expect(
+            HostHelperSetupPlan.decision(probe: managed014, replace: true, checkOnly: false, agent: "codex", reason: .missing)
+            == .install(replace: true)
+        )
+
+        // 4. checkOnly returns replacementRequired regardless of reason
+        #expect(
+            HostHelperSetupPlan.decision(probe: managed014, replace: false, checkOnly: true, agent: "codex", reason: .updateRequired)
+            == .replacementRequired(managed014)
+        )
+
+        // 5. already compatible -> ready (no install)
+        #expect(
+            HostHelperSetupPlan.decision(probe: compatible020, replace: false, checkOnly: false, agent: "codex", reason: .updateRequired)
+            == .ready
         )
     }
 }
