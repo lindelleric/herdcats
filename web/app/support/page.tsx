@@ -93,7 +93,12 @@ const supportSections = [
   },
   {
     "id": "using-app-what-is-the-timeline-helper-and-why-does-timeline-need-it",
-    "label": "Timeline helper",
+    "label": "Herdcats Bridge",
+    "depth": 1
+  },
+  {
+    "id": "using-app-codex-shared-background-server",
+    "label": "Codex background server",
     "depth": 1
   },
   {
@@ -243,7 +248,12 @@ const supportSections = [
   },
   {
     "id": "troubleshooting-timeline-helper-missing-or-install-failed",
-    "label": "Timeline helper",
+    "label": "Herdcats Bridge",
+    "depth": 1
+  },
+  {
+    "id": "troubleshooting-codex-session-not-identified",
+    "label": "Codex session not identified",
     "depth": 1
   }
 ];
@@ -388,7 +398,7 @@ export default function SupportPage() {
         </div>
         <div className="faq-item">
         <h4 id="faq-do-i-need-any-other-software-on-my-computer" className="faq-question">Do I need any other software on my computer?</h4>
-        <p>Herdr and SSH are required. Terminal, Compose, voice, and photos need nothing else. The optional Timeline view does: a small helper (<code>herdcats-bridge</code>) on the computer you connect to directly. A terminal pane is a scrolling log; the helper reads your Claude session&#x27;s structured transcript so Herdcats can show it as readable messages, tool activity, and images instead. It is installed only when you tap Install, runs only while Timeline is open, and everything else works without it. The optional <code>quota-axi</code> tool adds provider quota information.</p>
+        <p>Herdr and SSH are required. Terminal, Compose, voice, and photos need nothing else. The optional Timeline view does: Herdcats Bridge (<code>herdcats-bridge</code>) on the computer you connect to directly. A terminal pane is a scrolling log; Herdcats Bridge reads your Claude and Codex sessions&#x27; structured transcripts so Herdcats can show them as readable messages, tool activity, and images instead. It is installed only when you tap Install, runs only while Timeline is open, and everything else works without it. The optional <code>quota-axi</code> tool adds provider quota information.</p>
         </div>
         </div>
         <h3 id="privacy" className="faq-category">Signing in and privacy</h3>
@@ -434,9 +444,28 @@ export default function SupportPage() {
         </ul>
         </div>
         <div className="faq-item">
-        <h4 id="using-app-what-is-the-timeline-helper-and-why-does-timeline-need-it" className="faq-question">What is the Timeline helper, and why does Timeline need it?</h4>
-        <p>Timeline turns an agent session into a phone-friendly conversation: readable messages, tool activity, and images. A terminal pane can&#x27;t provide that — its output is a scrolling log. The helper (<code>herdcats-bridge</code>) is a small program on your SSH computer that reads the session&#x27;s structured transcript and sends it to your phone over the same SSH connection, only while Timeline is open.</p>
-        <p>It is optional. Terminal, Compose, voice, and photos never need it, and Timeline asks before installing anything: no sudo, no background service, no agent hooks. Timeline currently supports Claude; other agents keep using Terminal and Compose. Delete <code>~/.local/bin/herdcats-bridge</code> to remove it.</p>
+        <h4 id="using-app-what-is-the-timeline-helper-and-why-does-timeline-need-it" className="faq-question">What is Herdcats Bridge, and why does Timeline need it?</h4>
+        <p>Timeline turns an agent session into a phone-friendly conversation: readable messages, tool activity, and images. A terminal pane can&#x27;t provide that — its output is a scrolling log. Herdcats Bridge (<code>herdcats-bridge</code>) is a small program on your SSH computer that reads the session&#x27;s structured transcript and sends it to your phone over the same SSH connection, only while Timeline is open.</p>
+        <p>It is optional. Terminal, Compose, voice, and photos never need it, and Timeline asks before installing anything: no sudo, no background service, no agent hooks. Timeline currently supports Claude and Codex; other agents keep using Terminal and Compose. Delete <code>~/.local/bin/herdcats-bridge</code> to remove it.</p>
+        </div>
+        <div className="faq-item">
+        <h4 id="using-app-codex-shared-background-server" className="faq-question">Why does Codex Timeline ask me to turn off Codex&#x27;s shared background server?</h4>
+        <p>Since Codex 0.157, Codex runs sessions inside one shared background server. That server only remembers the terminal that started it, so Herdr can&#x27;t tell which pane a Codex conversation belongs to. Herdcats never guesses: showing the wrong conversation is worse than showing none, so Timeline says the session isn&#x27;t identified.</p>
+        <p>There are two ways to fix it:</p>
+        <ol>
+        <li>Start Codex with <code>codex --no-daemon</code> in the panes you want in Timeline.</li>
+        <li>Turn the shared server off for all sessions: in a Codex pane&#x27;s Timeline, tap <strong>Turn off Codex&#x27;s shared daemon</strong>. Herdcats Bridge sets <code>daemon_auto_start = false</code> in <code>~/.codex/config.toml</code> (or <code>$CODEX_HOME/config.toml</code> if you set <code>CODEX_HOME</code>), keeps a backup, and changes nothing else in the file. If the server is already running, it stops it after you confirm. Codex sessions using it disconnect; start them again with <code>codex</code>, or <code>codex resume</code> to continue a conversation.</li>
+        </ol>
+        <p>Turning off the shared server gives up:</p>
+        <ul>
+        <li>Codex sessions surviving a closed terminal or dropped SSH connection. Herdr already keeps your panes running, so this is usually covered.</li>
+        <li>Slightly faster Codex startup, since setup happens per session again.</li>
+        <li>Features that need the shared server, such as forking an open conversation.</li>
+        <li>Controlling those Codex sessions from ChatGPT&#x27;s Codex Remote. If you rely on Codex Remote, keep the server on and use <code>codex --no-daemon</code> only in the panes you want in Herdcats.</li>
+        <li>Codex&#x27;s self-updating background package. The <code>codex</code> you installed is used instead.</li>
+        </ul>
+        <p>Undo any time with <code>codex features enable daemon_auto_start</code>.</p>
+        <p>A brand-new Codex session appears in Timeline after its first message. Codex starts the session when you send one.</p>
         </div>
         <div className="faq-item">
         <h4 id="using-app-does-herdcats-run-agents-on-my-iphone" className="faq-question">Does Herdcats run agents on my iPhone?</h4>
@@ -774,10 +803,16 @@ Set-Service -Name sshd -StartupType 'Automatic'`}</code></pre>
                 </div>
 
                 <div className="faq-item">
-                  <h3 id="troubleshooting-timeline-helper-missing-or-install-failed"><TriangleAlert className="warn-icon" size={18} strokeWidth={2.25} aria-hidden="true" /><span>&ldquo;Timeline says the helper is missing or could not be installed&rdquo;</span></h3>
+                  <h3 id="troubleshooting-timeline-helper-missing-or-install-failed"><TriangleAlert className="warn-icon" size={18} strokeWidth={2.25} aria-hidden="true" /><span>&ldquo;Timeline says Herdcats Bridge is missing or could not be installed&rdquo;</span></h3>
                   <p>
-                    Timeline needs the optional <code>herdcats-bridge</code> helper on the computer your phone connects to directly — without it, that view falls back to Terminal, which stays fully usable. Tap <strong>Install</strong> in the setup sheet, or copy the manual install command shown there and run it on that computer, then tap <strong>Check again</strong>. Updating an existing helper requires <code>--replace</code>. If installation cannot be verified, choose <strong>Check installation</strong>; Terminal and Compose keep working without the helper.
+                    Timeline needs optional Herdcats Bridge (<code>herdcats-bridge</code>) on the computer your phone connects to directly — without it, that view falls back to Terminal, which stays fully usable. Tap <strong>Install</strong> in the setup sheet, or copy the manual install command shown there and run it on that computer, then tap <strong>Check again</strong>. For an existing installation, tap <strong>Upgrade</strong>; manual upgrades require <code>--replace</code>. If installation cannot be verified, choose <strong>Check installation</strong>; Terminal and Compose keep working without Herdcats Bridge.
                   </p>
+                </div>
+                <div className="faq-item">
+                  <h4 id="troubleshooting-codex-session-not-identified" className="faq-question">Timeline says &ldquo;Waiting for Codex session&rdquo; or &ldquo;Codex session not identified&rdquo;</h4>
+                  <p>Send a message first. A new Codex session is identified after its first message.</p>
+                  <p>If the message remains after Codex replies, that Codex is attached to the shared background server. Follow <a href="#using-app-codex-shared-background-server">Codex background server</a>, then restart that pane&#x27;s Codex.</p>
+                  <p>Codex sessions started before you turned the server off keep using it until restarted.</p>
                 </div>
               </div>
             </div>

@@ -10,7 +10,7 @@ export default function TermsPage() {
     <SitePage current="terms" title="Terms of Service">
       <section className={styles.section}>
         <p>
-          <strong>Last updated:</strong> 16 October 2026
+          <strong>Last updated:</strong> 19 October 2026
         </p>
         <p>
           These Terms of Service (&ldquo;Terms&rdquo;) govern your access to and use of the Herdcats
@@ -77,10 +77,18 @@ export default function TermsPage() {
           misconfiguration, compromised credentials, or agent behavior.
         </p>
         <p>
-          The Service can, at your direction, download and install optional companion software (the
-          Timeline helper) on your remote host from our GitHub releases. Downloads are verified by
+          The Service can, at your direction, download and install optional Herdcats Bridge
+          software (<code>herdcats-bridge</code>) on your remote host from our GitHub releases. Downloads are verified by
           checksum but are not independently code-signed; you are responsible for reviewing and
           authorizing installations on machines you control.
+        </p>
+        <p>
+          Only when you tap &ldquo;Turn off Codex&rsquo;s shared daemon&rdquo; and confirm,
+          Herdcats Bridge changes <code>daemon_auto_start</code> to <code>false</code> in
+          <code>~/.codex/config.toml</code> (or <code>$CODEX_HOME/config.toml</code> if you set <code>CODEX_HOME</code>) and stops Codex&rsquo;s shared background server
+          if running. It keeps a config backup and leaves other settings unchanged. Codex
+          sessions using the server disconnect and must be restarted with <code>codex</code>
+          or <code>codex resume</code>.
         </p>
         <p>
           The Service is a developer tool. It is not designed for use in safety-critical, medical,
@@ -134,7 +142,7 @@ export default function TermsPage() {
         <p>
           The Service may interoperate with third-party software and services you choose (for example
           Herdr, SSH hosts, Tailscale, AI agent CLIs, quota tooling, and GitHub, which serves
-          optional helper downloads). Those services are governed
+          optional Herdcats Bridge downloads). Those services are governed
           by their own terms and privacy policies. We do not control them and are not responsible for
           their availability, security, billing, or conduct.
         </p>
