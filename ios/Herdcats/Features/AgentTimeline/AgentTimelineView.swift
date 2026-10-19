@@ -272,7 +272,9 @@ struct AgentTimelineView: View {
         .onChange(of: bridgeUpgrade.requested) { _, requested in
             if requested {
                 bridgeUpgrade.requested = false
-                beginSetup(reason: .updateRequired)
+                // The menu item is offered while Timeline is working; dismissing
+                // the optional upgrade must not dump a working Timeline.
+                beginSetup(reason: .updateRequired, shouldUseTerminalOnDismiss: timeline.phase != .ready)
             }
         }
         .onChange(of: contentScope) { _, _ in
@@ -353,7 +355,7 @@ struct AgentTimelineView: View {
         }
     }
 
-    private func beginSetup(reason: HostHelperSetupReason? = nil) {
+    private func beginSetup(reason: HostHelperSetupReason? = nil, shouldUseTerminalOnDismiss: Bool = true) {
         let isNeedsUpgrade: Bool
         if case .unavailable(let code) = timeline.phase {
             isNeedsUpgrade = Self.isNeedsUpgrade(code: code, agent: agent, bridgeVersion: bridgeVersion)
@@ -362,7 +364,7 @@ struct AgentTimelineView: View {
         }
         let resolvedReason = reason ?? (isNeedsUpgrade ? .updateRequired : .missing)
         setupReason = resolvedReason
-        setupShouldUseTerminal = true
+        setupShouldUseTerminal = shouldUseTerminalOnDismiss
         setupFeedback = nil
         showsSetup = true
     }
@@ -673,6 +675,18 @@ struct AgentTimelineView: View {
     static let codexManualConfigLine = "daemon_auto_start = false"
     static let codexDaemonStopCommand = "codex app-server daemon stop"
 
+    /// The pane options menu's optional upgrade item reads `bridgeUpgrade`,
+    /// which outlives this view's runs. Every refresh of the handshake-derived
+    /// Bridge version must reach it, but only while `owner` still owns the run
+    /// — a superseded run must not clobber a newer handshake's version.
+    @MainActor
+    static func publishBridgeVersion(
+        _ version: String?, to upgrade: TimelineBridgeUpgrade, owner: UUID, activeOwner: UUID?
+    ) {
+        guard activeOwner == owner else { return }
+        upgrade.bridgeVersion = version
+    }
+
     static func codexManualFallbackText() -> String {
         "Add `daemon_auto_start = false` under `[features]` in `~/.codex/config.toml`, or start Codex with `codex --no-daemon`."
     }
@@ -791,7 +805,7 @@ struct AgentTimelineView: View {
         isPaging = false
         bridgeCapabilities = await connection.bridgeCapabilities(for: connectionState.generation)
         bridgeVersion = await connection.bridgeVersion(for: connectionState.generation)
-        bridgeUpgrade.bridgeVersion = bridgeVersion
+        Self.publishBridgeVersion(bridgeVersion, to: bridgeUpgrade, owner: owner, activeOwner: activeOwner)
         codexDaemonFeedback = nil
         codexDaemonErrorOccurred = false
         guard scenePhase == .active, connectionState.isReady else {
@@ -809,7 +823,7 @@ struct AgentTimelineView: View {
                 if ScreenshotFixtures.screen == "timeline-codex-no-session" {
                     bridgeCapabilities = AgentBridgeCapabilities(claudeTimeline: true, codexTimeline: true, codexDaemonConfig: true, recordContent: true)
                 }
-                bridgeUpgrade.bridgeVersion = bridgeVersion
+                Self.publishBridgeVersion(bridgeVersion, to: bridgeUpgrade, owner: owner, activeOwner: activeOwner)
                 do {
                     try timeline.consume(AgentTimelineScreenshotFixture.frame(
                         paneId: paneId,
@@ -831,12 +845,14 @@ struct AgentTimelineView: View {
                 activeClient = client
                 bridgeCapabilities = await connection.bridgeCapabilities(for: ownedConnection.generation)
                 bridgeVersion = await connection.bridgeVersion(for: ownedConnection.generation)
+                Self.publishBridgeVersion(bridgeVersion, to: bridgeUpgrade, owner: owner, activeOwner: activeOwner)
             }
             try await client.waitUntilClosed()
         } catch {
             if activeOwner == owner {
                 bridgeCapabilities = await connection.bridgeCapabilities(for: ownedConnection.generation)
                 bridgeVersion = await connection.bridgeVersion(for: ownedConnection.generation)
+                Self.publishBridgeVersion(bridgeVersion, to: bridgeUpgrade, owner: owner, activeOwner: activeOwner)
             }
             timeline.end(owner: owner, error: (error as? AgentBridgeError) ?? .closed)
         }
@@ -878,6 +894,7 @@ struct AgentTimelineView: View {
         try owned.requireCurrent(connectionState)
         guard activeOwner == owner else { return }
         bridgeVersion = version
+        Self.publishBridgeVersion(version, to: bridgeUpgrade, owner: owner, activeOwner: activeOwner)
         try timeline.consume(frame, owner: owner)
     }
     @MainActor private func mergeHistoryPreservingPosition(
@@ -1203,10 +1220,6 @@ private struct AgentTimelineEntryView: View {
     @State private var imageLink: URL?
     @State private var imageError: String?
 
-    private var isTurnInterrupted: Bool {
-        entry.role == "assistant" && entry.status == "failed"
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if entry.kind == "image" {
@@ -1219,7 +1232,7 @@ private struct AgentTimelineEntryView: View {
                         .textSelection(.enabled).lineLimit(8)
                         .accessibilityIdentifier("timeline-record-\(entry.id)")
                 }
-            } else if isTurnInterrupted {
+            } else if entry.isTurnInterrupted {
                 Label(entry.text, systemImage: "stop.circle")
                     .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
                     .accessibilityIdentifier("timeline-interrupted-\(entry.id)")
@@ -1234,7 +1247,7 @@ private struct AgentTimelineEntryView: View {
         }
         .foregroundStyle(Theme.text).frame(maxWidth: .infinity, alignment: .leading)
         .padding(entry.role == "user" ? 16 : 0)
-        .padding(.vertical, entry.role == "user" ? 0 : (isTurnInterrupted ? 4 : 8))
+        .padding(.vertical, entry.role == "user" ? 0 : (entry.isTurnInterrupted ? 4 : 8))
         .background {
             if entry.role == "user" {
                 RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.lg)

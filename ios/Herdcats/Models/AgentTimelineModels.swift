@@ -43,6 +43,13 @@ struct AgentTimelineEntry: Codable, Identifiable, Equatable, Sendable {
     let truncated: Bool
     var contentRef: String? = nil
     var recordRefs: [String]? = nil
+
+    /// Only Codex turn-abort markers render as the interrupted status line.
+    /// Error records are also assistant/failed but keep normal message
+    /// rendering, so the marker is keyed on the entry id.
+    var isTurnInterrupted: Bool {
+        id.hasPrefix("turn_aborted:") && role == "assistant" && status == "failed"
+    }
 }
 struct AgentTimelineIdentity: Codable, Equatable, Sendable {
     let paneId: String

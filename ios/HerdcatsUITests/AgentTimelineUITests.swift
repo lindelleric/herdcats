@@ -719,4 +719,27 @@ final class AgentTimelineUITests: XCTestCase {
         saveNamedScreenshot(app.screenshot(), name: "routed-host")
         app.terminate()
     }
+
+    func testDismissingMenuOpenedUpgradeKeepsTimelineSelected() {
+        let app = XCUIApplication()
+        app.launchArguments = [
+            "-hc.screenshots", "-hc.screen", "optional-upgrade-menu", "-hc.light", "-paneShowComposeByDefault", "NO"
+        ]
+        launch(app)
+        XCTAssertTrue(app.buttons["timeline-tool-tool:read"].waitForExistence(timeout: 5))
+        app.buttons["pane-options-menu"].tap()
+        let upgradeOption = app.buttons["timeline-upgrade-menu-button"]
+        XCTAssertTrue(upgradeOption.waitForExistence(timeout: 5))
+        upgradeOption.tap()
+        XCTAssertTrue(app.navigationBars["Upgrade Herdcats Bridge"].waitForExistence(timeout: 5))
+        // Dismiss the optional upgrade without acting on it.
+        let top = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.07))
+        let bottom = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9))
+        top.press(forDuration: 0.1, thenDragTo: bottom)
+        XCTAssertTrue(app.buttons["timeline-tool-tool:read"].waitForExistence(timeout: 5),
+                      "Dismissing a menu-opened upgrade must keep the working Timeline")
+        XCTAssertTrue(app.buttons["timeline-open-terminal"].exists)
+        XCTAssertFalse(app.scrollViews["pane-output-scroll-view"].exists)
+        app.terminate()
+    }
 }

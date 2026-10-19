@@ -313,3 +313,40 @@ struct TimelineFileChangeTests {
         #expect(TimelineActivitySummary.title([entry]) == "Background task update")
     }
 }
+
+@Suite("Timeline entry interruption rendering")
+struct TimelineEntryInterruptionTests {
+    @Test func codexErrorRecordsRenderAsMessagesAndOnlyAbortsMarkInterruption() {
+        func message(id: String, status: String?) -> AgentTimelineEntry {
+            AgentTimelineEntry(id: id, kind: "message", text: "Stream disconnected", role: "assistant",
+                               toolName: nil, status: status, details: nil, truncated: false)
+        }
+        // Codex error records (CodexRecordAction::Error) are assistant/failed
+        // with message:/error: ids and must keep normal message rendering.
+        #expect(!message(id: "message:msg_0123", status: "failed").isTurnInterrupted)
+        #expect(!message(id: "error:3", status: "failed").isTurnInterrupted)
+        // Only turn-abort markers render as the interrupted status line.
+        #expect(message(id: "turn_aborted:42", status: "failed").isTurnInterrupted)
+        #expect(!message(id: "turn_aborted:42", status: "completed").isTurnInterrupted)
+        #expect(!message(id: "message:msg_0123", status: nil).isTurnInterrupted)
+    }
+}
+
+@Suite("Optional upgrade menu version publishing")
+@MainActor struct BridgeUpgradePublishingTests {
+    @Test func handshakeVersionReachesMenuOnlyWhileRunIsOwned() {
+        let upgrade = TimelineBridgeUpgrade()
+        let owner = UUID()
+        // The handshake lands after the run started: the shared menu version updates.
+        AgentTimelineView.publishBridgeVersion("0.2.0", to: upgrade, owner: owner, activeOwner: owner)
+        #expect(upgrade.bridgeVersion == "0.2.0")
+        #expect(HostHelperProbe.isOlderThanPinned("0.2.0"), "A 0.2.0 host must see the optional upgrade item")
+        // A superseded run (or a finished run that cleared its owner) cannot
+        // clobber the menu version with a stale handshake value.
+        AgentTimelineView.publishBridgeVersion("0.1.4", to: upgrade, owner: owner, activeOwner: UUID())
+        #expect(upgrade.bridgeVersion == "0.2.0")
+        AgentTimelineView.publishBridgeVersion("0.2.1", to: upgrade, owner: owner, activeOwner: nil)
+        #expect(upgrade.bridgeVersion == "0.2.0")
+        #expect(!HostHelperProbe.isOlderThanPinned("0.2.1"))
+    }
+}
