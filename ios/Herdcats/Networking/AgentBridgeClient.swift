@@ -405,7 +405,7 @@ extension HerdrConnection {
 
 extension AgentBridgeClient {
     static func unavailableCodeForCodex(handshake: AgentBridgePayload) -> String {
-        let isOldHelper = !isVersionAtLeast(handshake.bridgeVersion ?? handshake.version, major: 0, minor: 2)
+        let isOldHelper = !HostHelperProbe.isAtLeastMinimum(handshake.bridgeVersion ?? handshake.version)
         return isOldHelper ? "helper_update_required" : "transcript_root_unavailable"
     }
 
@@ -421,8 +421,10 @@ extension AgentBridgeClient {
 
 /// Immutable release selected by this app build, not a host-supplied URL.
 enum HostHelperSetupPlan {
-    static let version = "0.2.0"
-    static let installerSHA256 = "e335a78a970bedeae94e1fdde0393cd3d23cde93ee0497a98af19cbcc8eca59d"
+    static let version = "0.2.1"
+    /// The oldest bridge this app works with; bump only when the app needs a newer bridge feature.
+    static let minimumVersion = "0.2.0"
+    static let installerSHA256 = "c7ef7992befa6eacc4bd7a71774f625758777aafaab931266cec79bc977e6a7b"
     /// Supported agents bundled in this pinned release. Must be updated when bumping version / installerSHA256.
     static let agents: [String] = ["claude", "codex"]
     static func manualInstallCommand(reason: HostHelperSetupReason, pinnedVersion: String = version) -> String {
@@ -463,7 +465,6 @@ extension HostHelperSetupPlan {
         agent: String? = nil,
         reason: HostHelperSetupReason = .missing
     ) -> HostHelperSetupDecision {
-        if case .present(_, _, true) = probe { return .ready }
         if let agent, !agents.contains(agent) {
             return .unsupportedByPinnedInstaller(agent)
         }
@@ -471,11 +472,16 @@ extension HostHelperSetupPlan {
         case .missing:
             return checkOnly ? .missing : .install(replace: false)
         case .present(let version, let managed, let compatible):
-            if compatible { return .ready }
-            if checkOnly { return .replacementRequired(probe) }
-            if reason == .updateRequired && managed && HostHelperProbe.isOlderThanPinned(version) {
-                return .install(replace: true)
+            if checkOnly {
+                return compatible ? .ready : .replacementRequired(probe)
             }
+            if reason == .updateRequired && HostHelperProbe.isOlderThanPinned(version) {
+                if managed {
+                    return .install(replace: true)
+                }
+                return replace ? .install(replace: false) : .replacementRequired(probe)
+            }
+            if compatible { return .ready }
             if replace {
                 return .install(replace: managed)
             }
