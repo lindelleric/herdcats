@@ -454,7 +454,7 @@ export default function SupportPage() {
         <p>There are two ways to fix it:</p>
         <ol>
         <li>Start Codex with <code>codex --no-daemon</code> in the panes you want in Timeline.</li>
-        <li>Turn the shared server off for all sessions: in a Codex pane&#x27;s Timeline, tap <strong>Turn off Codex&#x27;s shared daemon</strong>. Herdcats Bridge sets <code>daemon_auto_start = false</code> in <code>~/.codex/config.toml</code>, keeps a backup, and changes nothing else in the file. If the server is already running, it stops it after you confirm. Codex sessions using it disconnect; start them again with <code>codex</code>, or <code>codex resume</code> to continue a conversation.</li>
+        <li>Turn the shared server off for all sessions: in a Codex pane&#x27;s Timeline, tap <strong>Turn off Codex&#x27;s shared daemon</strong>. Herdcats Bridge sets <code>daemon_auto_start = false</code> in <code>~/.codex/config.toml</code> (or <code>$CODEX_HOME/config.toml</code> if you set <code>CODEX_HOME</code>), keeps a backup, and changes nothing else in the file. If the server is already running, it stops it after you confirm. Codex sessions using it disconnect; start them again with <code>codex</code>, or <code>codex resume</code> to continue a conversation.</li>
         </ol>
         <p>Turning off the shared server gives up:</p>
         <ul>

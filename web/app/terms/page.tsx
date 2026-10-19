@@ -85,7 +85,7 @@ export default function TermsPage() {
         <p>
           Only when you tap &ldquo;Turn off Codex&rsquo;s shared daemon&rdquo; and confirm,
           Herdcats Bridge changes <code>daemon_auto_start</code> to <code>false</code> in
-          <code>~/.codex/config.toml</code> and stops Codex&rsquo;s shared background server
+          <code>~/.codex/config.toml</code> (or <code>$CODEX_HOME/config.toml</code> if you set <code>CODEX_HOME</code>) and stops Codex&rsquo;s shared background server
           if running. It keeps a config backup and leaves other settings unchanged. Codex
           sessions using the server disconnect and must be restarted with <code>codex</code>
           or <code>codex resume</code>.
