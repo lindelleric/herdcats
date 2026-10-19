@@ -107,6 +107,10 @@ impl Peer {
             .arg("--codex-root")
             .arg(server.root.join("codex"))
             .args(["--poll-ms", "50"])
+            // Daemon status is read from CODEX_HOME, not from --codex-root;
+            // point it at an empty temp home so the host's real Codex daemon
+            // never leaks into assertions.
+            .env("CODEX_HOME", server.root.join("codex-home"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -143,8 +147,9 @@ impl Peer {
         let x = self.next();
         assert_eq!(x["id"], "init");
         assert_eq!(x["result"]["capabilities"]["claude_timeline"], true);
+        assert_eq!(x["result"]["capabilities"]["codex_daemon_stop"], true);
+        assert_eq!(x["result"]["capabilities"]["codex_daemon_config"], true);
         assert_eq!(x["result"]["capabilities"]["approvals"], false);
-        assert_eq!(x["result"]["capabilities"]["codex_timeline"], false);
         for capability in ["git", "prompts", "approvals", "questions", "routed_hosts"] {
             assert_eq!(x["result"]["capabilities"][capability], false);
         }
@@ -219,9 +224,109 @@ fn missing_reference_and_unsupported_agent_never_guess_a_transcript() {
     assert_eq!(missing["event"], "timeline.unavailable");
     assert_eq!(missing["data"]["code"], "session_reference_unavailable");
     assert!(!missing.to_string().contains("secret"));
+    assert!(missing["data"].get("codex_daemon").is_none());
     server.state.lock().unwrap()["panes"][0]["agent"] = json!("codex");
     let unsupported = peer.next();
     assert_eq!(unsupported["data"]["code"], "unsupported_agent");
+}
+#[test]
+fn timeline_unavailable_carries_codex_daemon_for_codex_and_not_for_claude() {
+    let server = Server::new();
+    fs::create_dir_all(server.root.join("codex")).unwrap();
+    server.state.lock().unwrap()["panes"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("agent_session");
+    let mut peer = Peer::new(&server);
+    peer.initialize();
+
+    // 1. Claude pane with missing reference: codex_daemon NOT present
+    let claude_missing = peer.watch();
+    assert_eq!(claude_missing["event"], "timeline.unavailable");
+    assert_eq!(
+        claude_missing["data"]["code"],
+        "session_reference_unavailable"
+    );
+    assert!(claude_missing["data"].get("codex_daemon").is_none());
+
+    // 2. Switch to Codex pane with missing reference: codex_daemon IS present
+    server.state.lock().unwrap()["panes"][0]["agent"] = json!("codex");
+    peer.send(json!({"id":"unwatch","method":"unwatch","params":{}}));
+    assert_eq!(peer.next()["result"]["watching"], Value::Null);
+    peer.send(json!({"id":"watch-codex","method":"watch","params":{"pane_id":"w1:p1"}}));
+    assert_eq!(peer.next()["id"], "watch-codex");
+    let codex_missing = peer.next();
+    assert_eq!(codex_missing["event"], "timeline.unavailable");
+    assert_eq!(
+        codex_missing["data"]["code"],
+        "session_reference_unavailable"
+    );
+    assert_eq!(codex_missing["data"]["codex_daemon"], "not_running");
+}
+
+#[test]
+fn unavailable_agent_flip_with_same_code_reemits_and_resets_generation() {
+    let server = Server::new();
+    fs::create_dir_all(server.root.join("codex")).unwrap();
+    server.state.lock().unwrap()["panes"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("agent_session");
+    server.state.lock().unwrap()["panes"][0]["agent"] = json!("codex");
+    let mut peer = Peer::new(&server);
+    peer.initialize();
+
+    // 1. Codex occupant with a missing session reference: codex_daemon present.
+    let codex_missing = peer.watch();
+    assert_eq!(codex_missing["event"], "timeline.unavailable");
+    assert_eq!(
+        codex_missing["data"]["code"],
+        "session_reference_unavailable"
+    );
+    assert_eq!(codex_missing["data"]["codex_daemon"], "not_running");
+
+    // 2. Unchanged occupant + code + daemon status: nothing new is emitted.
+    assert!(
+        peer.frames.recv_timeout(Duration::from_millis(300)).is_err(),
+        "unchanged unavailable state must not re-emit"
+    );
+
+    // 3. Occupant flips codex -> claude with the SAME code: a fresh
+    // timeline.unavailable WITHOUT the Codex-only codex_daemon field, and a
+    // new generation for the new occupant.
+    server.state.lock().unwrap()["panes"][0]["agent"] = json!("claude");
+    let claude_missing = peer.next();
+    assert_eq!(claude_missing["event"], "timeline.unavailable");
+    assert_eq!(
+        claude_missing["data"]["code"],
+        "session_reference_unavailable"
+    );
+    assert!(claude_missing["data"].get("codex_daemon").is_none());
+    assert_ne!(
+        claude_missing["data"]["generation"],
+        codex_missing["data"]["generation"]
+    );
+
+    // 4. Occupant flips back claude -> codex: a fresh event WITH codex_daemon
+    // and another generation bump.
+    server.state.lock().unwrap()["panes"][0]["agent"] = json!("codex");
+    let codex_again = peer.next();
+    assert_eq!(codex_again["event"], "timeline.unavailable");
+    assert_eq!(
+        codex_again["data"]["code"],
+        "session_reference_unavailable"
+    );
+    assert_eq!(codex_again["data"]["codex_daemon"], "not_running");
+    assert_ne!(
+        codex_again["data"]["generation"],
+        claude_missing["data"]["generation"]
+    );
+
+    // 5. Unchanged again: silence.
+    assert!(
+        peer.frames.recv_timeout(Duration::from_millis(300)).is_err(),
+        "unchanged unavailable state must not re-emit"
+    );
 }
 #[test]
 fn history_pages_are_bounded_and_stale_cursors_are_rejected() {
@@ -450,4 +555,156 @@ fn content_reads_are_lossless_generation_bound_and_revalidated_against_live_occu
             break;
         }
     }
+}
+
+#[test]
+fn daemon_status_resolves_from_configured_codex_home_not_symlink_target() {
+    assert_daemon_status_uses_configured_home(true);
+}
+
+#[test]
+fn daemon_status_keeps_codex_home_when_transcript_root_is_unrelated() {
+    assert_daemon_status_uses_configured_home(false);
+}
+
+fn assert_daemon_status_uses_configured_home(symlink_sessions: bool) {
+    use herdcats_bridge::codex_config::{
+        ProcessStatus, check_process, current_boot_id, process_start_time,
+    };
+    use herdcats_bridge::service::Service;
+    use std::os::unix::{fs::PermissionsExt, process::CommandExt};
+
+    let server = Server::new();
+    // Codex occupant with no session reference: the pane reports unavailable
+    // and the event carries the cached codex_daemon status.
+    {
+        let mut state = server.state.lock().unwrap();
+        let pane = &mut state["panes"][0];
+        pane.as_object_mut().unwrap().remove("agent_session");
+        pane["agent"] = json!("codex");
+    }
+
+    // The transcript root may be symlinked or mounted independently of the
+    // configured home; daemon discovery must always use the home.
+    static N: AtomicU64 = AtomicU64::new(0);
+    let base = std::env::temp_dir().join(format!(
+        "hcb-symlink-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::SeqCst)
+    ));
+    let home = base.join("codex-home");
+    let target = base.join("other-volume");
+    let packages_bin = home.join("packages").join("app-server-daemon").join("bin");
+    fs::create_dir_all(&packages_bin).unwrap();
+    fs::create_dir_all(target.join("sessions-real")).unwrap();
+    let transcript_root = if symlink_sessions {
+        std::os::unix::fs::symlink(target.join("sessions-real"), home.join("sessions")).unwrap();
+        home.join("sessions")
+    } else {
+        target.join("sessions-real")
+    };
+    fs::create_dir_all(target.join("app-server-daemon")).unwrap();
+    fs::write(
+        target.join("app-server-daemon/daemon.pid"),
+        r#"{"pid":2147483647}"#,
+    )
+    .unwrap();
+
+    // A live, verified managed daemon recorded under the CONFIGURED home.
+    let script = packages_bin.join("daemon.sh");
+    fs::write(&script, "#!/bin/sh\nwhile true; do sleep 0.05; done\n").unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    // Guard the detached dummy's entire process group even on assertion failure.
+    struct OrphanGuard {
+        outer: Child,
+        pgid: libc::pid_t,
+        base: PathBuf,
+    }
+    impl Drop for OrphanGuard {
+        fn drop(&mut self) {
+            unsafe {
+                libc::kill(-self.pgid, libc::SIGKILL);
+            }
+            let _ = self.outer.wait();
+            let _ = fs::remove_dir_all(&self.base);
+        }
+    }
+    let record = base.join("daemon-record");
+    let outer = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!(
+            "/bin/sh '{}' & echo $! > '{}'",
+            script.display(),
+            record.display()
+        ))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let mut dummy = OrphanGuard {
+        pgid: outer.id() as libc::pid_t,
+        outer,
+        base: base.clone(),
+    };
+    dummy.outer.wait().unwrap();
+    let pid: libc::pid_t = fs::read_to_string(&record).unwrap().trim().parse().unwrap();
+    let (sec, usec) = process_start_time(pid).expect("could not read dummy start time");
+    let pid_file = home.join("app-server-daemon").join("daemon.pid");
+    fs::create_dir_all(pid_file.parent().unwrap()).unwrap();
+    let mut identity = json!({"startSeconds": sec});
+    if let Some(u) = usec {
+        identity["startMicroseconds"] = json!(u);
+    }
+    if let Some(b) = current_boot_id() {
+        identity["bootId"] = json!(b);
+    }
+    fs::write(
+        &pid_file,
+        json!({"pid": pid, "processIdentity": identity}).to_string(),
+    )
+    .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while check_process(&pid_file, &home) != ProcessStatus::Running {
+        if std::time::Instant::now() >= deadline {
+            panic!("dummy never classified running");
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+
+    // The resolver canonicalizes home/sessions to the symlink target; the
+    // daemon lookup must still use the configured home.
+    let mut service = Service::new(server.socket.clone(), server.root.join("projects"))
+        .with_codex_home(home.clone())
+        .with_codex_root(transcript_root);
+    let mut output = Vec::new();
+    service
+        .request(
+            br#"{"id":"i","method":"initialize","params":{"protocol":1}}"#,
+            &mut output,
+        )
+        .unwrap();
+    output.clear();
+    service
+        .request(
+            br#"{"id":"w","method":"watch","params":{"pane_id":"w1:p1"}}"#,
+            &mut output,
+        )
+        .unwrap();
+    let frames: Vec<Value> = String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|s| serde_json::from_str(s).unwrap())
+        .collect();
+    drop(dummy);
+    let unavailable = frames
+        .iter()
+        .find(|f| f["event"] == "timeline.unavailable")
+        .expect("no timeline.unavailable emitted");
+    assert_eq!(unavailable["data"]["code"], "session_reference_unavailable");
+    assert_eq!(
+        unavailable["data"]["codex_daemon"], "running",
+        "daemon status must come from the configured home, not the symlink target"
+    );
 }
