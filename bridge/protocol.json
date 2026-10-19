@@ -25,7 +25,7 @@
   },
   "subcommands": {
     "herdcats-bridge codex-config daemon-status": "Reports running/not_running/unknown state of the managed daemon and updater, and config.toml auto_start setting; exits 0 and prints JSON",
-    "herdcats-bridge codex-config disable-daemon [--stop-running]": "Sets features.daemon_auto_start = false in Codex config.toml; with --stop-running, also safely stops the running managed daemon and updater (note: stopping disconnects sessions attached to the daemon, which must be restarted); exits 0 and prints status/error JSON whose optional daemon/updater fields are one of stopped, not_running, stop_failed, unknown (stop_failed = still running after the stop passes — including a process that started or restarted mid-operation — or the stop command failed/timed out; unknown = a possibly-matching process is alive but its identity could not be verified; it is never signalled)"
+    "herdcats-bridge codex-config disable-daemon [--stop-running]": "Sets features.daemon_auto_start = false in Codex config.toml; with --stop-running, also safely stops the running managed daemon and updater (note: stopping disconnects sessions attached to the daemon, which must be restarted); exits 0 and prints status/error JSON whose optional daemon/updater fields are one of stopped, not_running, stop_failed, unknown (stop_failed = still running after the stop passes — including a process that started or restarted mid-operation — or any stop command failed, exited nonzero, or timed out; unknown = a possibly-matching process is alive but its identity could not be verified; it is never signalled)"
   },
   "requests": [
     {

@@ -1261,6 +1261,75 @@ exit 1
 }
 
 #[test]
+fn test_stop_running_nonzero_exit_after_pid_removal_reports_failure() {
+    assert_failed_stop_after_pid_removal("exit 1");
+}
+
+#[test]
+fn test_stop_running_signal_exit_after_pid_removal_reports_failure() {
+    assert_failed_stop_after_pid_removal("kill -TERM $$");
+}
+
+#[test]
+fn test_stop_running_failure_is_preserved_after_successful_second_pass() {
+    assert_failed_stop_after_pid_removal("exit 0");
+}
+
+fn assert_failed_stop_after_pid_removal(final_command: &str) {
+    let temp = TempCodex::new("stop-failure");
+    let stop_bin = temp
+        .path
+        .join("packages/app-server-daemon/current/bin/codex");
+    fs::create_dir_all(stop_bin.parent().unwrap()).unwrap();
+    // Fail once with the daemon still running, then succeed on the second
+    // pass. The earlier failure must survive the successful stop.
+    let first_pass = if final_command == "exit 0" {
+        r#"if [ ! -f "$CODEX_HOME/first-pass" ]; then
+    touch "$CODEX_HOME/first-pass"
+    exit 1
+fi"#
+    } else {
+        ""
+    };
+    fs::write(
+        &stop_bin,
+        format!(
+            r#"#!/bin/sh
+[ "$1 $2 $3" = "app-server daemon stop" ] || exit 2
+{first_pass}
+rm -f "$CODEX_HOME/app-server-daemon/daemon.pid"
+{final_command}
+"#
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&stop_bin, fs::Permissions::from_mode(0o755)).unwrap();
+    let daemon = spawn_orphan_in_packages(
+        &temp.path,
+        "daemon.sh",
+        &temp.path.join("daemon-record"),
+        "exit 0",
+    );
+    let (sec, usec) = process_start_time(daemon.pid).unwrap();
+    let pid_file = temp.path.join("app-server-daemon/daemon.pid");
+    write_pid_file(
+        &pid_file,
+        daemon.pid as u32,
+        current_boot_id().as_deref(),
+        sec,
+        usec,
+    );
+    wait_for_check_status(&pid_file, &temp.path, ProcessStatus::Running, "running");
+    let (status, _) = stop_daemon_and_updater_with_timeouts(
+        &temp.path,
+        Duration::from_secs(1),
+        Duration::from_millis(200),
+    );
+    assert!(!pid_file.exists());
+    assert_eq!(status, DaemonStopStatus::StopFailed);
+}
+
+#[test]
 fn test_stop_running_hanging_daemon_stop_is_killed_and_fails() {
     let temp = TempCodex::new("stop-hanging");
 

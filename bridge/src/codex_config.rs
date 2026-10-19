@@ -658,7 +658,7 @@ pub fn stop_daemon_and_updater_with_timeouts(
 
     let mut daemon_stopped_by_us = false;
     let mut updater_stopped_by_us = false;
-    // Whether the most recent `daemon stop` attempt failed or timed out.
+    // Whether any `daemon stop` attempt failed, exited nonzero, or timed out.
     let mut daemon_stop_failed = false;
     let mut daemon_status = check_process(&daemon_pid_file, codex_dir);
     let mut updater_status = check_process(&updater_pid_file, codex_dir);
@@ -681,10 +681,9 @@ pub fn stop_daemon_and_updater_with_timeouts(
 
         // Then ask the official binary to stop the daemon, bounded by a hard
         // timeout.
-        daemon_stop_failed = false;
         if daemon_status == ProcessStatus::Running && stop_bin.is_file() {
             daemon_stopped_by_us = true;
-            daemon_stop_failed =
+            daemon_stop_failed |=
                 run_daemon_stop_command(&stop_bin, codex_dir, stop_command_timeout);
         }
 
@@ -824,7 +823,8 @@ fn wait_for_process_exit(pid_file: &Path, codex_dir: &Path, poll_wait: Duration)
 // Runs `<codex> app-server daemon stop` with stdin/stdout/stderr tied to /dev/null
 // (the bridge speaks NDJSON on its own stdout and must not inherit stdio into the
 // child, nor block on its output) and polls try_wait for up to `timeout`. On
-// timeout the child is killed and the stop is reported as failed.
+// timeout the child is killed. Spawn errors, nonzero exits (including signals),
+// wait errors, and timeouts all report failure.
 fn run_daemon_stop_command(stop_bin: &Path, codex_dir: &Path, timeout: Duration) -> bool {
     use std::process::Stdio;
     let child = std::process::Command::new(stop_bin)
@@ -836,14 +836,12 @@ fn run_daemon_stop_command(stop_bin: &Path, codex_dir: &Path, timeout: Duration)
         .spawn();
     let mut child = match child {
         Ok(c) => c,
-        // Could not even start the command; whether the daemon stopped is left
-        // to the final re-check.
-        Err(_) => return false,
+        Err(_) => return true,
     };
     let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => return false,
+            Ok(Some(status)) => return !status.success(),
             Ok(None) => {
                 if Instant::now() >= deadline {
                     let _ = child.kill();

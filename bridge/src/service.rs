@@ -161,10 +161,13 @@ impl Service {
         self.codex_daemon_cache = Some((std::time::Instant::now(), status));
         status
     }
+    #[doc(hidden)]
+    pub fn with_codex_home(mut self, home: PathBuf) -> Self {
+        self.codex_home = Some(home);
+        self.invalidate_codex_daemon_cache();
+        self
+    }
     pub fn with_codex_root(mut self, root: PathBuf) -> Self {
-        // Remember the configured home (sessions root minus "sessions")
-        // BEFORE the resolver canonicalizes the root.
-        self.codex_home = root.parent().map(Path::to_path_buf);
         self.codex_resolver = CodexResolver::new(&root).ok();
         self.adapters = vec![
             Box::new(ClaudeAdapter::new(self.resolver.clone())),
@@ -604,6 +607,32 @@ mod tests {
     use std::{fs, os::unix::net::UnixListener};
     const SESSION: &str = "16246b9d-4c3d-54fc-b6d3-2a765d418491";
     const OTHER: &str = "11111111-1111-4111-8111-111111111111";
+
+    #[test]
+    fn transcript_override_keeps_daemon_home_and_home_override_invalidates_cache() {
+        let root = std::env::temp_dir().join(format!(
+            "service-home-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let home = root.join("home");
+        let transcripts = root.join("other-volume/transcripts");
+        fs::create_dir_all(home.join("app-server-daemon")).unwrap();
+        fs::create_dir_all(&transcripts).unwrap();
+        // A malformed home pid file gives Unknown; the unrelated transcript
+        // parent has no pid file and would incorrectly give NotRunning.
+        fs::write(home.join("app-server-daemon/daemon.pid"), "invalid").unwrap();
+        let mut service = Service::with_resolvers(root.join("unused.sock"), None, None)
+            .with_codex_home(root.join("empty-home"));
+        assert_eq!(service.cached_codex_daemon_status(), "not_running");
+        service = service.with_codex_home(home).with_codex_root(transcripts);
+        let status = service.cached_codex_daemon_status();
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(status, "unknown");
+    }
 
     // Return snapshots synchronously for each explicit poll. The injected
     // refresh boundary makes source_changing independent of timing/file races.

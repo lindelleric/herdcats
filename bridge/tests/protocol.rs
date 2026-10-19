@@ -107,6 +107,10 @@ impl Peer {
             .arg("--codex-root")
             .arg(server.root.join("codex"))
             .args(["--poll-ms", "50"])
+            // Daemon status is read from CODEX_HOME, not from --codex-root;
+            // point it at an empty temp home so the host's real Codex daemon
+            // never leaks into assertions.
+            .env("CODEX_HOME", server.root.join("codex-home"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -555,9 +559,20 @@ fn content_reads_are_lossless_generation_bound_and_revalidated_against_live_occu
 
 #[test]
 fn daemon_status_resolves_from_configured_codex_home_not_symlink_target() {
-    use herdcats_bridge::codex_config::{ProcessStatus, check_process, current_boot_id, process_start_time};
+    assert_daemon_status_uses_configured_home(true);
+}
+
+#[test]
+fn daemon_status_keeps_codex_home_when_transcript_root_is_unrelated() {
+    assert_daemon_status_uses_configured_home(false);
+}
+
+fn assert_daemon_status_uses_configured_home(symlink_sessions: bool) {
+    use herdcats_bridge::codex_config::{
+        ProcessStatus, check_process, current_boot_id, process_start_time,
+    };
     use herdcats_bridge::service::Service;
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::{fs::PermissionsExt, process::CommandExt};
 
     let server = Server::new();
     // Codex occupant with no session reference: the pane reports unavailable
@@ -569,8 +584,8 @@ fn daemon_status_resolves_from_configured_codex_home_not_symlink_target() {
         pane["agent"] = json!("codex");
     }
 
-    // Configured home A whose `sessions` is a symlink to a dir elsewhere; the
-    // daemon pid file and the daemon itself live under A, not the target.
+    // The transcript root may be symlinked or mounted independently of the
+    // configured home; daemon discovery must always use the home.
     static N: AtomicU64 = AtomicU64::new(0);
     let base = std::env::temp_dir().join(format!(
         "hcb-symlink-{}-{}",
@@ -582,31 +597,60 @@ fn daemon_status_resolves_from_configured_codex_home_not_symlink_target() {
     let packages_bin = home.join("packages").join("app-server-daemon").join("bin");
     fs::create_dir_all(&packages_bin).unwrap();
     fs::create_dir_all(target.join("sessions-real")).unwrap();
-    std::os::unix::fs::symlink(target.join("sessions-real"), home.join("sessions")).unwrap();
+    let transcript_root = if symlink_sessions {
+        std::os::unix::fs::symlink(target.join("sessions-real"), home.join("sessions")).unwrap();
+        home.join("sessions")
+    } else {
+        target.join("sessions-real")
+    };
+    fs::create_dir_all(target.join("app-server-daemon")).unwrap();
+    fs::write(
+        target.join("app-server-daemon/daemon.pid"),
+        r#"{"pid":2147483647}"#,
+    )
+    .unwrap();
 
     // A live, verified managed daemon recorded under the CONFIGURED home.
     let script = packages_bin.join("daemon.sh");
     fs::write(&script, "#!/bin/sh\nwhile true; do sleep 0.05; done\n").unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
-    let mut dummy = Command::new("/bin/sh")
-        .arg(&script)
+    // Guard the detached dummy's entire process group even on assertion failure.
+    struct OrphanGuard {
+        outer: Child,
+        pgid: libc::pid_t,
+        base: PathBuf,
+    }
+    impl Drop for OrphanGuard {
+        fn drop(&mut self) {
+            unsafe {
+                libc::kill(-self.pgid, libc::SIGKILL);
+            }
+            let _ = self.outer.wait();
+            let _ = fs::remove_dir_all(&self.base);
+        }
+    }
+    let record = base.join("daemon-record");
+    let outer = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!(
+            "/bin/sh '{}' & echo $! > '{}'",
+            script.display(),
+            record.display()
+        ))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .process_group(0)
         .spawn()
         .unwrap();
-    let cleanup = |dummy: &mut Child| {
-        let _ = dummy.kill();
-        let _ = dummy.wait();
-        let _ = fs::remove_dir_all(&base);
+    let mut dummy = OrphanGuard {
+        pgid: outer.id() as libc::pid_t,
+        outer,
+        base: base.clone(),
     };
-    let (sec, usec) = match process_start_time(dummy.id() as libc::pid_t) {
-        Some(times) => times,
-        None => {
-            cleanup(&mut dummy);
-            panic!("could not read dummy start time");
-        }
-    };
+    dummy.outer.wait().unwrap();
+    let pid: libc::pid_t = fs::read_to_string(&record).unwrap().trim().parse().unwrap();
+    let (sec, usec) = process_start_time(pid).expect("could not read dummy start time");
     let pid_file = home.join("app-server-daemon").join("daemon.pid");
     fs::create_dir_all(pid_file.parent().unwrap()).unwrap();
     let mut identity = json!({"startSeconds": sec});
@@ -618,13 +662,12 @@ fn daemon_status_resolves_from_configured_codex_home_not_symlink_target() {
     }
     fs::write(
         &pid_file,
-        json!({"pid": dummy.id(), "processIdentity": identity}).to_string(),
+        json!({"pid": pid, "processIdentity": identity}).to_string(),
     )
     .unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while check_process(&pid_file, &home) != ProcessStatus::Running {
         if std::time::Instant::now() >= deadline {
-            cleanup(&mut dummy);
             panic!("dummy never classified running");
         }
         thread::sleep(Duration::from_millis(25));
@@ -633,7 +676,8 @@ fn daemon_status_resolves_from_configured_codex_home_not_symlink_target() {
     // The resolver canonicalizes home/sessions to the symlink target; the
     // daemon lookup must still use the configured home.
     let mut service = Service::new(server.socket.clone(), server.root.join("projects"))
-        .with_codex_root(home.join("sessions"));
+        .with_codex_home(home.clone())
+        .with_codex_root(transcript_root);
     let mut output = Vec::new();
     service
         .request(
@@ -653,7 +697,7 @@ fn daemon_status_resolves_from_configured_codex_home_not_symlink_target() {
         .lines()
         .map(|s| serde_json::from_str(s).unwrap())
         .collect();
-    cleanup(&mut dummy);
+    drop(dummy);
     let unavailable = frames
         .iter()
         .find(|f| f["event"] == "timeline.unavailable")
