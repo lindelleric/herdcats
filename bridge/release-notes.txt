@@ -12,7 +12,7 @@ Changes in this release:
 - Rich content is negotiated explicitly; older clients keep the existing message/tool protocol behavior.
 - Large inline images stay out of live event frames. Existing transcript size, identity and retention bounds remain enforced.
 
-Install on the direct SSH computer that owns Herdr and the agent transcripts:
+Install on the computer Herdcats connects to with SSH, the one that runs Herdr and your agents:
 
 curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v__BRIDGE_VERSION__/install.sh | sh -s -- --version __BRIDGE_VERSION__
 
@@ -20,4 +20,4 @@ Requires macOS 13+ or Linux with glibc 2.35+ (Ubuntu 22.04+), curl and SHA-256 t
 
 Checksums detect damaged downloads; they are provided through the same HTTPS release channel. These binaries are not Developer ID signed/notarized. Native question/approval responses and saved-machine routing remain unavailable; use Terminal for those interactions.
 
-After installation, return to Herdcats and tap Check again.
+After installing, return to Herdcats and tap Check again.
