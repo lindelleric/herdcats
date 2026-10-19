@@ -1,16 +1,11 @@
-Optional Herdcats Bridge (`herdcats-bridge`) for Herdcats native Claude and Codex Timelines.
+Herdcats Bridge (`herdcats-bridge`) is the optional companion on your computer that powers native Claude and Codex Timelines in Herdcats.
 
 Changes in this release:
-- Support for Codex conversation history and live timelines alongside Claude.
-- Codex rollouts are followed from $CODEX_HOME/sessions (or ~/.codex/sessions) with strict session identity, directory confinement, and duplicate detection.
-- Codex timelines require an exact session reference from Herdr, which requires Codex's shared daemon to be off or running sessions with codex --no-daemon.
-- New Herdcats Bridge subcommand `herdcats-bridge codex-config disable-daemon` powers the in-app "Turn off" button, safely updating features.daemon_auto_start in config.toml while preserving user formatting and creating a backup.
-- Images have individual Timeline entries and on-demand original bytes instead of being omitted from streamed records.
-- Unfamiliar records and content blocks get fallback bubbles with complete original source access.
-- Text and tool entries retain links to their original records, including output shortened in previews.
-- Bounded content chunks revalidate the current native session, source generation and published reference before retrieval; no host file paths are accepted.
-- Rich content is negotiated explicitly; older clients keep the existing message/tool protocol behavior.
-- Large inline images stay out of live event frames. Existing transcript size, identity and retention bounds remain enforced.
+- New `herdcats-bridge codex-config daemon-status` reports whether Codex's shared background server (its daemon) and the server's updater are running, and whether Codex starts the server automatically.
+- `herdcats-bridge codex-config disable-daemon --stop-running` turns off automatic start and then stops the running server and its updater. Herdcats runs it only after you tap the button and confirm. Without --stop-running the command only changes config.toml, as before.
+- Stopping the server disconnects every Codex session attached to it. Restart those sessions; new sessions start without the shared server. To turn automatic start back on: codex features enable daemon_auto_start
+- A process is stopped only after its identity is checked against Codex's own records (owner, start time, boot and executable location). Anything that can't be verified is reported as unknown and left alone. A stop that fails, times out, or finds the server restarted is reported as stop_failed.
+- When a Codex pane isn't identified yet, Timeline events now say whether the shared server is running, so Herdcats can explain what to do.
 
 Install on the computer Herdcats connects to with SSH, the one that runs Herdr and your agents:
 
