@@ -1,7 +1,8 @@
 use herdcats_bridge::codex_config::{
     CodexConfigResult, DaemonStatusResult, DaemonStopStatus, ProcessStatus, check_process,
-    current_boot_id, daemon_status_in_dir, disable_daemon_in_dir,
+    check_process_snapshot, current_boot_id, daemon_status_in_dir, disable_daemon_in_dir,
     disable_daemon_in_dir_with_options, process_start_time, stop_daemon_and_updater_with_timeout,
+    term_updater,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1400,6 +1401,93 @@ fn test_stop_running_slow_exiting_updater_still_stopped() {
             Instant::now() < deadline,
             "slow updater should have exited after SIGTERM"
         );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[test]
+fn test_check_process_snapshot_returns_the_pid_it_verified() {
+    let temp = TempCodex::new("snapshot-pid");
+    let pid_file = temp.path.join("app-server-daemon").join("daemon.pid");
+
+    // No pid file: not running, nothing to signal.
+    assert_eq!(
+        check_process_snapshot(&pid_file, &temp.path),
+        (ProcessStatus::NotRunning, None)
+    );
+
+    // Live dummy with matching identity: the returned pid is exactly the one
+    // from the single snapshot that was validated.
+    let (guard, sec, usec) = spawn_dummy_in_packages(&temp.path, "daemon.sh", &pid_file);
+    write_pid_file(
+        &pid_file,
+        guard.0.id(),
+        current_boot_id().as_deref(),
+        sec,
+        usec,
+    );
+    wait_for_check_status(&pid_file, &temp.path, ProcessStatus::Running, "running");
+    assert_eq!(
+        check_process_snapshot(&pid_file, &temp.path),
+        (ProcessStatus::Running, Some(guard.0.id() as libc::pid_t))
+    );
+
+    // Malformed pid file: unknown, and no pid may be acted on.
+    fs::write(&pid_file, "not json").unwrap();
+    assert_eq!(
+        check_process_snapshot(&pid_file, &temp.path),
+        (ProcessStatus::Unknown, None)
+    );
+}
+
+#[test]
+fn test_term_updater_signals_only_the_verified_pid() {
+    let temp = TempCodex::new("term-snapshot");
+    let pid_file = temp.path.join("app-server-daemon").join("daemon-updater.pid");
+    let (mut guard, sec, usec) = spawn_dummy_in_packages(&temp.path, "updater.sh", &pid_file);
+    let pid = guard.0.id() as libc::pid_t;
+
+    // Identity does NOT verify (start-time mismatch): term_updater must not
+    // signal the live process even though the pid file names it.
+    write_pid_file(
+        &pid_file,
+        guard.0.id(),
+        current_boot_id().as_deref(),
+        sec + 5000,
+        Some(0),
+    );
+    wait_for_check_status(
+        &pid_file,
+        &temp.path,
+        ProcessStatus::Unknown,
+        "identity-unknown",
+    );
+    assert!(!term_updater(&pid_file, &temp.path));
+    assert_eq!(unsafe { libc::kill(pid, 0) }, 0);
+
+    // With a verifiable identity, term_updater signals exactly the pid from
+    // the snapshot it validated: the dummy exits and removes its pid file.
+    write_pid_file(
+        &pid_file,
+        guard.0.id(),
+        current_boot_id().as_deref(),
+        sec,
+        usec,
+    );
+    wait_for_check_status(&pid_file, &temp.path, ProcessStatus::Running, "running");
+    assert!(term_updater(&pid_file, &temp.path));
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while pid_file.exists() {
+        assert!(Instant::now() < deadline, "signalled updater did not exit");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Ok(Some(_)) = guard.0.try_wait() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "signalled updater was not reaped");
         std::thread::sleep(Duration::from_millis(25));
     }
 }

@@ -548,31 +548,46 @@ pub fn read_auto_start(codex_dir: &Path) -> Option<bool> {
 ///   could really be running while the app tells the user to "send a message"
 ///   forever.
 pub fn check_process(pid_file: &Path, codex_dir: &Path) -> ProcessStatus {
+    check_process_snapshot(pid_file, codex_dir).0
+}
+
+// Read the pid file ONCE and classify the process it describes, returning
+// together with the pid that was actually verified from that single
+// consistent snapshot (Some only for Running). Callers that act on the pid
+// (e.g. signalling) must use the returned pid, never a separately-read one:
+// if the updater rewrites its pid file mid-check, mixing a stale pid with a
+// fresh validation (or vice versa) would defeat the identity check and could
+// signal a reused pid belonging to an unrelated process.
+#[doc(hidden)]
+pub fn check_process_snapshot(
+    pid_file: &Path,
+    codex_dir: &Path,
+) -> (ProcessStatus, Option<libc::pid_t>) {
     if !pid_file.exists() {
-        return ProcessStatus::NotRunning;
+        return (ProcessStatus::NotRunning, None);
     }
     let metadata = match fs::symlink_metadata(pid_file) {
         Ok(m) => m,
-        Err(_) => return ProcessStatus::Unknown,
+        Err(_) => return (ProcessStatus::Unknown, None),
     };
     if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return ProcessStatus::Unknown;
+        return (ProcessStatus::Unknown, None);
     }
     let content = match fs::read_to_string(pid_file) {
         Ok(c) => c,
-        Err(_) => return ProcessStatus::Unknown,
+        Err(_) => return (ProcessStatus::Unknown, None),
     };
     let val: serde_json::Value = match serde_json::from_str(&content) {
         Ok(v) => v,
-        Err(_) => return ProcessStatus::Unknown,
+        Err(_) => return (ProcessStatus::Unknown, None),
     };
     let pid_i64 = match val.get("pid").and_then(|p| p.as_i64()) {
         Some(p) if p > 0 => p,
-        _ => return ProcessStatus::Unknown,
+        _ => return (ProcessStatus::Unknown, None),
     };
     let pid: libc::pid_t = match pid_i64.try_into() {
         Ok(p) => p,
-        Err(_) => return ProcessStatus::Unknown,
+        Err(_) => return (ProcessStatus::Unknown, None),
     };
 
     let start_seconds = match val
@@ -581,7 +596,7 @@ pub fn check_process(pid_file: &Path, codex_dir: &Path) -> ProcessStatus {
         .and_then(|s| s.as_i64())
     {
         Some(s) => s,
-        None => return ProcessStatus::Unknown,
+        None => return (ProcessStatus::Unknown, None),
     };
     let start_microseconds = val
         .get("processIdentity")
@@ -596,15 +611,15 @@ pub fn check_process(pid_file: &Path, codex_dir: &Path) -> ProcessStatus {
     if alive != 0 {
         let err = std::io::Error::last_os_error();
         if err.raw_os_error() == Some(libc::ESRCH) || err.raw_os_error() == Some(libc::EPERM) {
-            return ProcessStatus::NotRunning;
+            return (ProcessStatus::NotRunning, None);
         }
-        return ProcessStatus::Unknown;
+        return (ProcessStatus::Unknown, None);
     }
 
     match verify_process_identity(pid, codex_dir, boot_id, start_seconds, start_microseconds) {
-        Ok(true) => ProcessStatus::Running,
-        Ok(false) => ProcessStatus::NotRunning,
-        Err(_) => ProcessStatus::Unknown,
+        Ok(true) => (ProcessStatus::Running, Some(pid)),
+        Ok(false) => (ProcessStatus::NotRunning, None),
+        Err(_) => (ProcessStatus::Unknown, None),
     }
 }
 
@@ -699,25 +714,23 @@ fn stop_status(
     }
 }
 
-// SIGTERM the updater recorded in `updater_pid_file` after re-verifying its
-// identity right before signalling, so a reused pid is never signalled.
+// SIGTERM the updater recorded in `updater_pid_file` — validating the pid and
+// its identity from ONE consistent snapshot of the pid file and signalling
+// exactly the pid that snapshot verified. Reading the pid separately from the
+// validation could, if the updater restarts and rewrites the file mid-check,
+// signal a stale pid that has since been reused by an unrelated process.
 // Returns true iff the signal was sent.
-fn term_updater(updater_pid_file: &Path, codex_dir: &Path) -> bool {
-    if let Ok(content) = fs::read_to_string(updater_pid_file) {
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
-            if let Some(pid_i64) = val.get("pid").and_then(|p| p.as_i64()) {
-                if let Ok(pid) = libc::pid_t::try_from(pid_i64) {
-                    if check_process(updater_pid_file, codex_dir) == ProcessStatus::Running {
-                        unsafe {
-                            libc::kill(pid, libc::SIGTERM);
-                        }
-                        return true;
-                    }
-                }
+#[doc(hidden)]
+pub fn term_updater(updater_pid_file: &Path, codex_dir: &Path) -> bool {
+    match check_process_snapshot(updater_pid_file, codex_dir) {
+        (ProcessStatus::Running, Some(pid)) => {
+            unsafe {
+                libc::kill(pid, libc::SIGTERM);
             }
+            true
         }
+        _ => false,
     }
-    false
 }
 
 fn wait_for_process_exit(pid_file: &Path, codex_dir: &Path) {
