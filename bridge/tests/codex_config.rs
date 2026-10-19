@@ -1172,6 +1172,88 @@ fn test_stop_running_mismatched_daemon_reports_unknown_and_no_stop() {
 }
 
 #[test]
+fn test_stop_running_live_updater_with_transient_unknown_blocks_daemon_stop() {
+    let temp = TempCodex::new("stop-updater-flap");
+    let stop_bin = temp
+        .path
+        .join("packages/app-server-daemon/current/bin/codex");
+    fs::create_dir_all(stop_bin.parent().unwrap()).unwrap();
+    fs::write(
+        &stop_bin,
+        r#"#!/bin/sh
+[ "$1 $2 $3" = "app-server daemon stop" ] || exit 2
+echo called >> "$CODEX_HOME/stop-calls"
+rm -f "$CODEX_HOME/app-server-daemon/daemon.pid"
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&stop_bin, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let daemon = spawn_orphan_in_packages(
+        &temp.path,
+        "daemon.sh",
+        &temp.path.join("daemon-record"),
+        "exit 0",
+    );
+    let daemon_file = temp.path.join("app-server-daemon/daemon.pid");
+    let (sec, usec) = process_start_time(daemon.pid).unwrap();
+    write_pid_file(
+        &daemon_file,
+        daemon.pid as u32,
+        current_boot_id().as_deref(),
+        sec,
+        usec,
+    );
+
+    let updater_file = temp.path.join("app-server-daemon/daemon-updater.pid");
+    let saved_file = temp.path.join("updater-saved.json");
+    let flap_marker = temp.path.join("updater-flapped");
+    // The first TERM produces one Unknown observation, then restores the
+    // verified pid file. The updater ignores subsequent TERM and stays alive.
+    let handler = format!(
+        r#"trap "" TERM; printf invalid > "{}"; touch "{}"; sleep 0.12; cp "{}" "{}""#,
+        updater_file.display(),
+        flap_marker.display(),
+        saved_file.display(),
+        updater_file.display(),
+    );
+    let updater = spawn_orphan_in_packages(
+        &temp.path,
+        "updater.sh",
+        &temp.path.join("updater-record"),
+        &handler,
+    );
+    let (sec, usec) = process_start_time(updater.pid).unwrap();
+    write_pid_file(
+        &updater_file,
+        updater.pid as u32,
+        current_boot_id().as_deref(),
+        sec,
+        usec,
+    );
+    fs::copy(&updater_file, &saved_file).unwrap();
+    wait_for_check_status(&daemon_file, &temp.path, ProcessStatus::Running, "running");
+    wait_for_check_status(&updater_file, &temp.path, ProcessStatus::Running, "running");
+
+    let (daemon_status, updater_status) = stop_daemon_and_updater_with_timeouts(
+        &temp.path,
+        Duration::from_secs(1),
+        Duration::from_millis(400),
+    );
+    assert!(flap_marker.exists(), "updater must have handled TERM");
+    assert!(
+        !temp.path.join("stop-calls").exists(),
+        "daemon stop ran while updater was alive"
+    );
+    assert_eq!(updater_status, DaemonStopStatus::StopFailed);
+    assert_eq!(daemon_status, DaemonStopStatus::StopFailed);
+    assert_eq!(
+        check_process(&updater_file, &temp.path),
+        ProcessStatus::Running
+    );
+}
+
+#[test]
 fn test_stop_running_updater_stopped_before_daemon_stop() {
     let temp = TempCodex::new("stop-order");
     let config_path = temp.path.join("config.toml");

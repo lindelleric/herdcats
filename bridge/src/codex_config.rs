@@ -673,15 +673,16 @@ pub fn stop_daemon_and_updater_with_timeouts(
         // and wait for it to disappear before running `daemon stop`, so it
         // cannot restart the daemon in between. Only a process that is
         // Running with a verified pid is ever signalled; Unknown is untouched.
+        let mut updater_exit_confirmed = updater_status != ProcessStatus::Running;
         if updater_status == ProcessStatus::Running && term_updater(&updater_pid_file, codex_dir)
         {
             updater_stopped_by_us = true;
-            wait_for_process_exit(&updater_pid_file, codex_dir, poll_wait);
+            updater_exit_confirmed = wait_for_process_exit(&updater_pid_file, codex_dir, poll_wait);
         }
 
         // Then ask the official binary to stop the daemon, bounded by a hard
-        // timeout.
-        if daemon_status == ProcessStatus::Running && stop_bin.is_file() {
+        // timeout, only after a signalled updater has confirmed its exit.
+        if updater_exit_confirmed && daemon_status == ProcessStatus::Running && stop_bin.is_file() {
             daemon_stopped_by_us = true;
             daemon_stop_failed |=
                 run_daemon_stop_command(&stop_bin, codex_dir, stop_command_timeout);
@@ -810,14 +811,19 @@ pub fn term_updater(updater_pid_file: &Path, codex_dir: &Path) -> bool {
     }
 }
 
-fn wait_for_process_exit(pid_file: &Path, codex_dir: &Path, poll_wait: Duration) {
+fn wait_for_process_exit(pid_file: &Path, codex_dir: &Path, poll_wait: Duration) -> bool {
     let deadline = Instant::now() + poll_wait;
+    let mut poll = StatusPoll::new(pid_file, codex_dir);
     while Instant::now() < deadline {
-        if check_process(pid_file, codex_dir) != ProcessStatus::Running {
-            return;
+        poll.observe(pid_file, codex_dir);
+        if poll.done() {
+            return true;
         }
-        std::thread::sleep(PROCESS_EXIT_POLL_STEP);
+        std::thread::sleep(
+            PROCESS_EXIT_POLL_STEP.min(deadline.saturating_duration_since(Instant::now())),
+        );
     }
+    false
 }
 
 // Runs `<codex> app-server daemon stop` with stdin/stdout/stderr tied to /dev/null
