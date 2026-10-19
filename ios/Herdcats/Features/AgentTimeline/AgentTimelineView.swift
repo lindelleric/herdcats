@@ -577,7 +577,7 @@ struct AgentTimelineView: View {
                         }
                     }
                 }
-                if !showsInstallOrUpgrade {
+                if Self.showsPaneCheckAgain(code: code, agent: agent, bridgeVersion: bridgeVersion) {
                     Button("Check again") { retry += 1 }.buttonStyle(.herdrSecondary)
                         .accessibilityIdentifier("timeline-helper-retry")
                 }
@@ -591,7 +591,9 @@ struct AgentTimelineView: View {
             agent: agent,
             installedVersion: bridgeVersion,
             pinnedVersion: HostHelperSetupPlan.version,
-            supportedAgents: Set(HostHelperSetupPlan.agents)
+            supportedAgents: Set(HostHelperSetupPlan.agents),
+            gatewayHost: setupTarget.host,
+            machineLabel: connection.route?.machine.label
         )
     }
 
@@ -649,7 +651,10 @@ struct AgentTimelineView: View {
         bridgeVersion: String? = nil,
         supportedAgents: Set<String> = Set(HostHelperSetupPlan.agents)
     ) -> Bool {
-        !showsInstallOrUpgrade(code: code, agent: agent, bridgeVersion: bridgeVersion, supportedAgents: supportedAgents)
+        // Retrying can never help a routed host: the pane is reached through
+        // Herdr on the SSH-connected gateway, not a computer Herdcats dialed.
+        guard code != "routed_host_unsupported" else { return false }
+        return !showsInstallOrUpgrade(code: code, agent: agent, bridgeVersion: bridgeVersion, supportedAgents: supportedAgents)
     }
 
     static func canConfigureCodexDaemon(
@@ -687,7 +692,24 @@ struct AgentTimelineView: View {
         if isCodex && isNoSession { return "Waiting for Codex session" }
         if isCodex && isCwdMismatch { return "This pane’s Codex session could not be confirmed" }
         if isMissing { return "Set up Timeline" }
+        if code == "routed_host_unsupported" { return routedHostUnavailableTitle }
         return "Timeline unavailable"
+    }
+
+    /// A saved machine is reached through the Herdr running on the SSH-connected
+    /// gateway computer; the user is connected, so the copy never says otherwise.
+    static let routedHostUnavailableTitle = "Timeline isn't available here yet"
+
+    /// `gatewayHost` is the host Herdcats itself is SSH'd into (the gateway the
+    /// routed machine is reached through); `machineLabel` is the routed
+    /// HerdrMachine's label. Missing values fall back to wording that never
+    /// invents a name.
+    static func routedHostExplanation(gatewayHost: String?, machineLabel: String?) -> String {
+        let host = gatewayHost?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let gatewayName = !host.isEmpty && host != "unknown" ? host : "your SSH computer"
+        let label = machineLabel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let machineName = !label.isEmpty ? label : "this machine"
+        return "This machine is reached through Herdr on \(gatewayName). Timeline can read sessions only on a computer Herdcats connects to with SSH. To use Timeline here, add \(machineName) as its own connection. You can still send messages below."
     }
 
     static func explanation(
@@ -695,7 +717,9 @@ struct AgentTimelineView: View {
         agent: String?,
         installedVersion: String? = nil,
         pinnedVersion: String = HostHelperSetupPlan.version,
-        supportedAgents: Set<String> = Set(HostHelperSetupPlan.agents)
+        supportedAgents: Set<String> = Set(HostHelperSetupPlan.agents),
+        gatewayHost: String? = nil,
+        machineLabel: String? = nil
     ) -> String {
         let isCodex = agent == "codex"
         let canSupportCodex = supportedAgents.contains("codex")
@@ -728,7 +752,8 @@ struct AgentTimelineView: View {
                 }
             }
             return "Timeline is not available for this agent yet. You can still send messages below or use Terminal."
-        case "routed_host_unsupported": return "Native history is not available through saved machines yet. Messages can still be sent below."
+        case "routed_host_unsupported":
+            return routedHostExplanation(gatewayHost: gatewayHost, machineLabel: machineLabel)
         case "session_reference_unavailable", "ambiguous_session", "invalid_session_reference":
             if isCodex {
                 return "Codex reports its session after the first message. Send a message below to start. If Timeline still doesn't appear after Codex replies, this Codex is using its shared daemon. Restart it with `codex --no-daemon`."

@@ -51,6 +51,7 @@
             if ScreenshotFixtures.screen == "timeline-disconnected" { throw AgentBridgeError.closed }
             let unavailableCode: String? = switch ScreenshotFixtures.screen {
             case "timeline-unavailable": "unsupported_agent"
+            case "timeline-routed-host": "routed_host_unsupported"
             case "timeline-codex-no-session": "session_reference_unavailable"
             case "timeline-codex-helper-old" where !helperInstalled: "helper_update_required"
             case "timeline-codex-needs-upgrade" where !helperInstalled: "helper_update_required"

@@ -700,4 +700,23 @@ final class AgentTimelineUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Turn off Codex's shared daemon"].exists)
         app.terminate()
     }
+
+    func testRoutedHostTimelineExplainsGatewayAndKeepsComposerUsable() {
+        let app = XCUIApplication()
+        app.launchArguments = [
+            "-hc.screenshots", "-hc.screen", "timeline-routed-host", "-hc.agent", "codex", "-hc.light", "-paneShowComposeByDefault", "YES"
+        ]
+        launch(app)
+        XCTAssertTrue(app.staticTexts["Timeline isn't available here yet"].waitForExistence(timeout: 5))
+        let expectedExplanation = "This machine is reached through Herdr on studio-mac. Timeline can read sessions only on a computer Herdcats connects to with SSH. To use Timeline here, add Studio Mini as its own connection. You can still send messages below."
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label == %@", expectedExplanation)).firstMatch.exists)
+        XCTAssertFalse(app.staticTexts["Timeline unavailable"].exists)
+        // Retrying, installing, or daemon toggling can never change the outcome.
+        XCTAssertFalse(app.buttons["timeline-helper-retry"].exists)
+        XCTAssertFalse(app.buttons["timeline-helper-setup"].exists)
+        XCTAssertFalse(app.buttons["timeline-codex-disable-daemon"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["timeline-compose-field"].firstMatch.exists)
+        saveNamedScreenshot(app.screenshot(), name: "routed-host")
+        app.terminate()
+    }
 }

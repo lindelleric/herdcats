@@ -150,6 +150,66 @@ struct CodexTimelineGatingTests {
     }
 }
 
+@Suite("Routed host Timeline pane copy and gating")
+@MainActor struct RoutedHostTimelinePaneTests {
+    @Test func routedHostCopyUsesGatewayHostAndMachineLabel() {
+        let full = "This machine is reached through Herdr on studio-mac. Timeline can read sessions only on a computer Herdcats connects to with SSH. To use Timeline here, add Studio Mini as its own connection. You can still send messages below."
+        #expect(AgentTimelineView.routedHostUnavailableTitle == "Timeline isn't available here yet")
+        #expect(AgentTimelineView.routedHostExplanation(gatewayHost: "studio-mac", machineLabel: "Studio Mini") == full)
+        #expect(AgentTimelineView.explanation("routed_host_unsupported", agent: "claude", gatewayHost: "studio-mac", machineLabel: "Studio Mini") == full)
+        #expect(AgentTimelineView.explanation("routed_host_unsupported", agent: "codex", gatewayHost: "studio-mac", machineLabel: "Studio Mini") == full)
+    }
+
+    @Test func routedHostCopyFallsBackWithoutInventingNames() {
+        #expect(AgentTimelineView.routedHostExplanation(gatewayHost: nil, machineLabel: nil)
+            == "This machine is reached through Herdr on your SSH computer. Timeline can read sessions only on a computer Herdcats connects to with SSH. To use Timeline here, add this machine as its own connection. You can still send messages below.")
+        // Missing gateway host keeps the machine label.
+        let noHost = AgentTimelineView.routedHostExplanation(gatewayHost: nil, machineLabel: "Studio Mini")
+        #expect(noHost.contains("through Herdr on your SSH computer."))
+        #expect(noHost.contains("add Studio Mini as its own connection."))
+        // Missing machine label keeps the gateway host.
+        let noLabel = AgentTimelineView.routedHostExplanation(gatewayHost: "studio-mac", machineLabel: nil)
+        #expect(noLabel.contains("through Herdr on studio-mac."))
+        #expect(noLabel.contains("add this machine as its own connection."))
+        // Blank or placeholder hosts never render as names.
+        #expect(!AgentTimelineView.routedHostExplanation(gatewayHost: "  ", machineLabel: "  ").contains("  "))
+        #expect(!AgentTimelineView.routedHostExplanation(gatewayHost: "unknown", machineLabel: nil).contains("on unknown"))
+    }
+
+    @Test func routedHostPaneShowsNoRetrySetupOrDaemonActions() {
+        for agent in ["claude", "codex"] {
+            #expect(AgentTimelineView.unavailableTitle(code: "routed_host_unsupported", agent: agent) == "Timeline isn't available here yet")
+            #expect(!AgentTimelineView.showsPaneCheckAgain(code: "routed_host_unsupported", agent: agent))
+            #expect(!AgentTimelineView.showsInstallOrUpgrade(code: "routed_host_unsupported", agent: agent))
+            #expect(!AgentTimelineView.isNeedsUpgrade(code: "routed_host_unsupported", agent: agent))
+            #expect(!AgentTimelineView.canConfigureCodexDaemon(agent: agent, code: "routed_host_unsupported", route: nil, capabilities: AgentBridgeCapabilities(claudeTimeline: true, codexTimeline: true, codexDaemonConfig: true, recordContent: true)))
+        }
+        // Other unavailable codes keep the pane Check again button.
+        #expect(AgentTimelineView.showsPaneCheckAgain(code: "herdr_unavailable", agent: "claude"))
+    }
+
+    @Test func routedHostPaneReadsGatewayAndMachineFromRoute() {
+        let machine = HerdrMachine(id: "studio-mini", label: "Studio Mini", target: "studio-mini.local", session: "studio-mini", enabled: true)
+        let gatewayIdentity = ConnectionIdentity(host: "gateway.example.com", port: 2222, username: "demo")
+        let routed = HerdrConnection(gateway: HerdrConnection(), machine: machine, generation: ConnectionGeneration(rawValue: 1), identity: gatewayIdentity)
+        let view = AgentTimelineView(
+            paneId: "p-routed",
+            agent: "codex",
+            connection: routed,
+            timeline: AgentTimelineState(),
+            topOverlayInset: 0,
+            bottomOverlayInset: 0,
+            onOutputInteraction: {},
+            setupTarget: gatewayIdentity.scoped(to: machine),
+            onUseTerminal: {},
+            onSetupComplete: {}
+        )
+        #expect(view.title("routed_host_unsupported") == "Timeline isn't available here yet")
+        #expect(view.explanation("routed_host_unsupported")
+            == "This machine is reached through Herdr on gateway.example.com. Timeline can read sessions only on a computer Herdcats connects to with SSH. To use Timeline here, add Studio Mini as its own connection. You can still send messages below.")
+    }
+}
+
 @Suite("Codex timeline states and state transitions")
 @MainActor struct CodexTimelineStateTests {
     let owner = UUID()
