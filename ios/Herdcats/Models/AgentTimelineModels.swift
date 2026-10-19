@@ -1,5 +1,20 @@
 import Foundation
+import Observation
 import OSLog
+
+@Observable final class TimelineBridgeUpgrade {
+    var bridgeVersion: String?
+    var requested: Bool
+
+    init(bridgeVersion: String? = nil, requested: Bool = false) {
+        self.bridgeVersion = bridgeVersion
+        self.requested = requested
+    }
+
+    func requestUpgrade() {
+        requested = true
+    }
+}
 
 enum AgentBridgeError: Error, LocalizedError, Equatable, Sendable {
     case invalidFrame, frameTooLarge, incompleteFrame, protocolMismatch, sequenceGap, identityMismatch

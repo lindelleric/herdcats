@@ -10,6 +10,7 @@ struct AgentTimelineView: View {
     var agent: String? = nil
     let connection: HerdrConnection
     let timeline: AgentTimelineState
+    var bridgeUpgrade: TimelineBridgeUpgrade = TimelineBridgeUpgrade()
     let topOverlayInset: CGFloat
     let bottomOverlayInset: CGFloat
     let onOutputInteraction: () -> Void
@@ -268,9 +269,9 @@ struct AgentTimelineView: View {
         }
         .onChange(of: connectionState) { _, _ in cancelHelperInstallation() }
         .onChange(of: scenePhase) { _, phase in if phase != .active { cancelHelperInstallation() } }
-        .onChange(of: timeline.upgradeRequested) { _, requested in
+        .onChange(of: bridgeUpgrade.requested) { _, requested in
             if requested {
-                timeline.upgradeRequested = false
+                bridgeUpgrade.requested = false
                 beginSetup(reason: .updateRequired)
             }
         }
@@ -765,7 +766,7 @@ struct AgentTimelineView: View {
         isPaging = false
         bridgeCapabilities = await connection.bridgeCapabilities(for: connectionState.generation)
         bridgeVersion = await connection.bridgeVersion(for: connectionState.generation)
-        timeline.setBridgeVersion(bridgeVersion)
+        bridgeUpgrade.bridgeVersion = bridgeVersion
         codexDaemonFeedback = nil
         codexDaemonErrorOccurred = false
         guard scenePhase == .active, connectionState.isReady else {
@@ -783,7 +784,7 @@ struct AgentTimelineView: View {
                 if ScreenshotFixtures.screen == "timeline-codex-no-session" {
                     bridgeCapabilities = AgentBridgeCapabilities(claudeTimeline: true, codexTimeline: true, codexDaemonConfig: true, recordContent: true)
                 }
-                timeline.setBridgeVersion(bridgeVersion)
+                bridgeUpgrade.bridgeVersion = bridgeVersion
                 do {
                     try timeline.consume(AgentTimelineScreenshotFixture.frame(
                         paneId: paneId,

@@ -20,7 +20,7 @@ struct PaneDetailView: View {
     @State private var tabs: [TabEntry] = []
     @State private var selectedPaneID: String
     @State private var timelineModes: [String: Bool] = [:]
-    @State private var timeline = AgentTimelineState()
+    @State private var bridgeUpgrade = TimelineBridgeUpgrade()
     @State private var lastUpdatedByPaneID: [String: Date] = [:]
     /// Pane switcher shows chips instead of cards to give the output more room.
     @State private var isSwitcherCompact = false
@@ -94,7 +94,7 @@ struct PaneDetailView: View {
             pane: selectedPane,
             connectionScope: connectionScope,
             showsTimeline: timelineMode,
-            timeline: timeline,
+            bridgeUpgrade: bridgeUpgrade,
             topOutputInset: paneSwitcherHeight,
             showLiveDiagnostics: $showLiveDiagnostics,
             onMarkedSeen: {
@@ -175,9 +175,9 @@ struct PaneDetailView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    if timelineMode.wrappedValue, let version = timeline.bridgeVersion, HostHelperProbe.isOlderThanPinned(version) {
+                    if timelineMode.wrappedValue, let version = bridgeUpgrade.bridgeVersion, HostHelperProbe.isOlderThanPinned(version) {
                         Button {
-                            timeline.requestUpgrade()
+                            bridgeUpgrade.requestUpgrade()
                         } label: {
                             Label("Upgrade Herdcats Bridge", systemImage: "arrow.up.circle")
                         }
@@ -244,6 +244,9 @@ struct PaneDetailView: View {
             }
         }
         .toolbarBackground(.hidden, for: .navigationBar)
+        .onChange(of: selectedPaneID) { _, _ in
+            bridgeUpgrade.bridgeVersion = nil
+        }
         .toolbar(.hidden, for: .tabBar)
         .onDisappear {
             #if DEBUG
@@ -1001,7 +1004,8 @@ struct PaneSessionView: View {
     private let draftKey: String
     private let historyKey: String
     @Binding private var showsTimeline: Bool
-    let timeline: AgentTimelineState
+    let bridgeUpgrade: TimelineBridgeUpgrade
+    @State private var timeline = AgentTimelineState()
     @State private var isTimelineSending = false
     @State private var shouldPinToBottom = true
     @State private var bottomDockHeight: CGFloat = 58
@@ -1096,7 +1100,7 @@ struct PaneSessionView: View {
         pane: PaneEntry,
         connectionScope: ConnectionIdentity,
         showsTimeline: Binding<Bool>,
-        timeline: AgentTimelineState,
+        bridgeUpgrade: TimelineBridgeUpgrade = TimelineBridgeUpgrade(),
         topOutputInset: CGFloat = 0,
         showLiveDiagnostics: Binding<Bool>? = nil,
         onMarkedSeen: (() -> Void)? = nil,
@@ -1105,7 +1109,7 @@ struct PaneSessionView: View {
         self.pane = pane
         self.connectionScope = connectionScope
         self._showsTimeline = showsTimeline
-        self.timeline = timeline
+        self.bridgeUpgrade = bridgeUpgrade
         self.topOutputInset = topOutputInset
         self.showLiveDiagnostics = showLiveDiagnostics
         self.onMarkedSeen = onMarkedSeen
@@ -1375,6 +1379,7 @@ struct PaneSessionView: View {
                 if showsTimeline {
                     AgentTimelineView(
                         paneId: pane.paneId, agent: pane.agent, connection: appModel.connection, timeline: timeline,
+                        bridgeUpgrade: bridgeUpgrade,
                         topOverlayInset: topOutputInset, bottomOverlayInset: bottomDockHeight,
                         onOutputInteraction: { onOutputInteraction?() }, setupTarget: connectionScope,
                         onUseTerminal: {
