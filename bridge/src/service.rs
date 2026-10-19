@@ -37,6 +37,13 @@ struct Watch {
     source_changing_count: u32,
     delayed: bool,
     agent: Option<String>,
+    // What was last EMITTED as the unavailable state, so a change of any
+    // component re-emits: the code, the occupant agent, and the Codex daemon
+    // status. Without the agent component, a pane that swaps its occupant
+    // codex <-> claude while both fail with the same no-session code would
+    // keep the stale event (including the Codex-only codex_daemon field) and
+    // would not reset the generation for the new occupant.
+    unavailable_agent: Option<String>,
     last_daemon_status: Option<&'static str>,
 }
 pub struct Service {
@@ -269,8 +276,13 @@ impl Service {
                     None
                 };
 
+                // Emit whenever the emitted-unavailable triple changed: the
+                // code, the occupant agent, or the daemon status. An agent
+                // change goes through the same generation/reset path below as
+                // any other occupant change.
                 let should_emit = watch.unavailable != Some(code)
-                    || (is_codex_no_session && watch.last_daemon_status != current_daemon_status);
+                    || watch.unavailable_agent != watch.agent
+                    || watch.last_daemon_status != current_daemon_status;
 
                 if should_emit {
                     self.generation += 1;
@@ -282,6 +294,7 @@ impl Service {
                         Follower::default()
                     };
                     watch.unavailable = Some(code);
+                    watch.unavailable_agent = watch.agent.clone();
                     watch.last_daemon_status = current_daemon_status;
                     let mut data = json!({
                         "pane_id": watch.pane_id,
@@ -368,6 +381,7 @@ impl Service {
                 watch.identity = Some(identity);
                 watch.status = status;
                 watch.unavailable = None;
+                watch.unavailable_agent = None;
                 watch.last_daemon_status = None;
                 watch.generation = watch.follower.generation;
             }
@@ -442,6 +456,7 @@ impl Service {
                     source_changing_count: 0,
                     delayed: false,
                     agent: None,
+                    unavailable_agent: None,
                     last_daemon_status: None,
                 });
                 Self::write(out, &json!({"id":id,"result":{"watching":pane}}))?;

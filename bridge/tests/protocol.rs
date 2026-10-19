@@ -259,6 +259,71 @@ fn timeline_unavailable_carries_codex_daemon_for_codex_and_not_for_claude() {
     );
     assert_eq!(codex_missing["data"]["codex_daemon"], "not_running");
 }
+
+#[test]
+fn unavailable_agent_flip_with_same_code_reemits_and_resets_generation() {
+    let server = Server::new();
+    fs::create_dir_all(server.root.join("codex")).unwrap();
+    server.state.lock().unwrap()["panes"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("agent_session");
+    server.state.lock().unwrap()["panes"][0]["agent"] = json!("codex");
+    let mut peer = Peer::new(&server);
+    peer.initialize();
+
+    // 1. Codex occupant with a missing session reference: codex_daemon present.
+    let codex_missing = peer.watch();
+    assert_eq!(codex_missing["event"], "timeline.unavailable");
+    assert_eq!(
+        codex_missing["data"]["code"],
+        "session_reference_unavailable"
+    );
+    assert_eq!(codex_missing["data"]["codex_daemon"], "not_running");
+
+    // 2. Unchanged occupant + code + daemon status: nothing new is emitted.
+    assert!(
+        peer.frames.recv_timeout(Duration::from_millis(300)).is_err(),
+        "unchanged unavailable state must not re-emit"
+    );
+
+    // 3. Occupant flips codex -> claude with the SAME code: a fresh
+    // timeline.unavailable WITHOUT the Codex-only codex_daemon field, and a
+    // new generation for the new occupant.
+    server.state.lock().unwrap()["panes"][0]["agent"] = json!("claude");
+    let claude_missing = peer.next();
+    assert_eq!(claude_missing["event"], "timeline.unavailable");
+    assert_eq!(
+        claude_missing["data"]["code"],
+        "session_reference_unavailable"
+    );
+    assert!(claude_missing["data"].get("codex_daemon").is_none());
+    assert_ne!(
+        claude_missing["data"]["generation"],
+        codex_missing["data"]["generation"]
+    );
+
+    // 4. Occupant flips back claude -> codex: a fresh event WITH codex_daemon
+    // and another generation bump.
+    server.state.lock().unwrap()["panes"][0]["agent"] = json!("codex");
+    let codex_again = peer.next();
+    assert_eq!(codex_again["event"], "timeline.unavailable");
+    assert_eq!(
+        codex_again["data"]["code"],
+        "session_reference_unavailable"
+    );
+    assert_eq!(codex_again["data"]["codex_daemon"], "not_running");
+    assert_ne!(
+        codex_again["data"]["generation"],
+        claude_missing["data"]["generation"]
+    );
+
+    // 5. Unchanged again: silence.
+    assert!(
+        peer.frames.recv_timeout(Duration::from_millis(300)).is_err(),
+        "unchanged unavailable state must not re-emit"
+    );
+}
 #[test]
 fn history_pages_are_bounded_and_stale_cursors_are_rejected() {
     let server = Server::new();
