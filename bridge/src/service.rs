@@ -36,6 +36,8 @@ struct Watch {
     dropped_entries: usize,
     source_changing_count: u32,
     delayed: bool,
+    agent: Option<String>,
+    last_daemon_status: Option<&'static str>,
 }
 pub struct Service {
     pub client: Client,
@@ -48,6 +50,7 @@ pub struct Service {
     initialized: bool,
     include_content: bool,
     watch: Option<Watch>,
+    codex_daemon_cache: Option<(SystemTime, &'static str)>,
 }
 pub fn page(entries: &[Entry], before: usize) -> Value {
     let mut start = before.saturating_sub(100);
@@ -106,7 +109,41 @@ impl Service {
             initialized: false,
             include_content: false,
             watch: None,
+            codex_daemon_cache: None,
         }
+    }
+    pub fn invalidate_codex_daemon_cache(&mut self) {
+        self.codex_daemon_cache = None;
+    }
+    fn cached_codex_daemon_status(&mut self) -> &'static str {
+        let now = SystemTime::now();
+        if let Some((cached_at, status)) = self.codex_daemon_cache {
+            if now
+                .duration_since(cached_at)
+                .unwrap_or_default()
+                < Duration::from_secs(3)
+            {
+                return status;
+            }
+        }
+        let codex_dir = self
+            .codex_resolver
+            .as_ref()
+            .and_then(|r| r.root.parent().map(Path::to_path_buf))
+            .or_else(crate::codex_config::resolve_codex_dir);
+        let status = match codex_dir {
+            Some(dir) => {
+                let pid_file = dir.join("app-server-daemon").join("daemon.pid");
+                match crate::codex_config::check_process(&pid_file, &dir) {
+                    crate::codex_config::ProcessStatus::Running => "running",
+                    crate::codex_config::ProcessStatus::NotRunning => "not_running",
+                    crate::codex_config::ProcessStatus::Unknown => "unknown",
+                }
+            }
+            None => "not_running",
+        };
+        self.codex_daemon_cache = Some((now, status));
+        status
     }
     pub fn with_codex_root(mut self, root: PathBuf) -> Self {
         self.codex_resolver = CodexResolver::new(&root).ok();
@@ -152,6 +189,7 @@ impl Service {
             .iter()
             .find(|p| p.pane_id == watch.pane_id)
             .ok_or("pane_unavailable")?;
+        watch.agent = pane.agent.clone();
         let agent = pane.agent.as_deref().ok_or("unsupported_agent")?;
         let adapter = self.adapter_for(agent).ok_or("unsupported_agent")?;
         let (session, file) = adapter.resolve_and_open(pane)?;
@@ -218,7 +256,23 @@ impl Service {
             Err(code) => {
                 watch.source_changing_count = 0;
                 watch.delayed = false;
-                if watch.unavailable != Some(code) {
+                let is_codex_no_session = watch.agent.as_deref() == Some("codex")
+                    && matches!(
+                        code,
+                        "session_reference_unavailable"
+                            | "ambiguous_session"
+                            | "invalid_session_reference"
+                    );
+                let current_daemon_status = if is_codex_no_session {
+                    Some(self.cached_codex_daemon_status())
+                } else {
+                    None
+                };
+
+                let should_emit = watch.unavailable != Some(code)
+                    || (is_codex_no_session && watch.last_daemon_status != current_daemon_status);
+
+                if should_emit {
                     self.generation += 1;
                     watch.identity = None;
                     watch.previous.clear();
@@ -228,11 +282,16 @@ impl Service {
                         Follower::default()
                     };
                     watch.unavailable = Some(code);
-                    self.event(
-                        out,
-                        "timeline.unavailable",
-                        json!({"pane_id":watch.pane_id,"generation":self.generation,"code":code}),
-                    )?;
+                    watch.last_daemon_status = current_daemon_status;
+                    let mut data = json!({
+                        "pane_id": watch.pane_id,
+                        "generation": self.generation,
+                        "code": code
+                    });
+                    if let Some(daemon_status) = current_daemon_status {
+                        data["codex_daemon"] = json!(daemon_status);
+                    }
+                    self.event(out, "timeline.unavailable", data)?;
                 }
             }
             Ok((identity, reset, status)) => {
@@ -309,6 +368,7 @@ impl Service {
                 watch.identity = Some(identity);
                 watch.status = status;
                 watch.unavailable = None;
+                watch.last_daemon_status = None;
                 watch.generation = watch.follower.generation;
             }
         }
@@ -351,7 +411,7 @@ impl Service {
             let codex_available = self.adapter_for("codex").is_some_and(|a| a.is_available());
             return Self::write(
                 out,
-                &json!({"id":id,"result":{"protocol":1,"bridge_version":env!("CARGO_PKG_VERSION"),"epoch":self.epoch,"capabilities":{"claude_timeline":claude_available,"record_content":true,"codex_timeline":codex_available,"codex_daemon_config":true,"git":false,"prompts":false,"approvals":false,"questions":false,"routed_hosts":false}}}),
+                &json!({"id":id,"result":{"protocol":1,"bridge_version":env!("CARGO_PKG_VERSION"),"epoch":self.epoch,"capabilities":{"claude_timeline":claude_available,"record_content":true,"codex_timeline":codex_available,"codex_daemon_config":true,"codex_daemon_stop":true,"git":false,"prompts":false,"approvals":false,"questions":false,"routed_hosts":false}}}),
             );
         }
         if !self.initialized {
@@ -381,6 +441,8 @@ impl Service {
                     dropped_entries: 0,
                     source_changing_count: 0,
                     delayed: false,
+                    agent: None,
+                    last_daemon_status: None,
                 });
                 Self::write(out, &json!({"id":id,"result":{"watching":pane}}))?;
                 self.poll(out)

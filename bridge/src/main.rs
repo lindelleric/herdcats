@@ -20,12 +20,38 @@ fn run() -> std::result::Result<(), &'static str> {
         return Ok(());
     }
     if command.as_deref() == Some("codex-config") {
-        if args.next().as_deref() != Some("disable-daemon") || args.next().is_some() {
-            return Err("usage: herdcats-bridge codex-config disable-daemon");
+        let sub = args.next();
+        match sub.as_deref() {
+            Some("daemon-status") => {
+                if args.next().is_some() {
+                    return Err("usage: herdcats-bridge codex-config daemon-status");
+                }
+                let res = herdcats_bridge::codex_config::daemon_status();
+                println!("{}", res.to_json());
+                return Ok(());
+            }
+            Some("disable-daemon") => {
+                let mut stop_running = false;
+                for arg in args {
+                    if arg == "--stop-running" {
+                        stop_running = true;
+                    } else {
+                        return Err(
+                            "usage: herdcats-bridge codex-config disable-daemon [--stop-running]",
+                        );
+                    }
+                }
+                let res =
+                    herdcats_bridge::codex_config::disable_daemon_with_options(stop_running);
+                println!("{}", res.to_json());
+                return Ok(());
+            }
+            _ => {
+                return Err(
+                    "usage: herdcats-bridge codex-config <disable-daemon [--stop-running]|daemon-status>",
+                );
+            }
         }
-        let res = herdcats_bridge::codex_config::disable_daemon();
-        println!("{}", res.to_json());
-        return Ok(());
     }
     if command.as_deref() != Some("serve") || args.next().as_deref() != Some("--stdio") {
         return Err(

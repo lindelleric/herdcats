@@ -143,8 +143,9 @@ impl Peer {
         let x = self.next();
         assert_eq!(x["id"], "init");
         assert_eq!(x["result"]["capabilities"]["claude_timeline"], true);
+        assert_eq!(x["result"]["capabilities"]["codex_daemon_stop"], true);
+        assert_eq!(x["result"]["capabilities"]["codex_daemon_config"], true);
         assert_eq!(x["result"]["capabilities"]["approvals"], false);
-        assert_eq!(x["result"]["capabilities"]["codex_timeline"], false);
         for capability in ["git", "prompts", "approvals", "questions", "routed_hosts"] {
             assert_eq!(x["result"]["capabilities"][capability], false);
         }
@@ -219,9 +220,44 @@ fn missing_reference_and_unsupported_agent_never_guess_a_transcript() {
     assert_eq!(missing["event"], "timeline.unavailable");
     assert_eq!(missing["data"]["code"], "session_reference_unavailable");
     assert!(!missing.to_string().contains("secret"));
+    assert!(missing["data"].get("codex_daemon").is_none());
     server.state.lock().unwrap()["panes"][0]["agent"] = json!("codex");
     let unsupported = peer.next();
     assert_eq!(unsupported["data"]["code"], "unsupported_agent");
+}
+#[test]
+fn timeline_unavailable_carries_codex_daemon_for_codex_and_not_for_claude() {
+    let server = Server::new();
+    fs::create_dir_all(server.root.join("codex")).unwrap();
+    server.state.lock().unwrap()["panes"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("agent_session");
+    let mut peer = Peer::new(&server);
+    peer.initialize();
+
+    // 1. Claude pane with missing reference: codex_daemon NOT present
+    let claude_missing = peer.watch();
+    assert_eq!(claude_missing["event"], "timeline.unavailable");
+    assert_eq!(
+        claude_missing["data"]["code"],
+        "session_reference_unavailable"
+    );
+    assert!(claude_missing["data"].get("codex_daemon").is_none());
+
+    // 2. Switch to Codex pane with missing reference: codex_daemon IS present
+    server.state.lock().unwrap()["panes"][0]["agent"] = json!("codex");
+    peer.send(json!({"id":"unwatch","method":"unwatch","params":{}}));
+    assert_eq!(peer.next()["result"]["watching"], Value::Null);
+    peer.send(json!({"id":"watch-codex","method":"watch","params":{"pane_id":"w1:p1"}}));
+    assert_eq!(peer.next()["id"], "watch-codex");
+    let codex_missing = peer.next();
+    assert_eq!(codex_missing["event"], "timeline.unavailable");
+    assert_eq!(
+        codex_missing["data"]["code"],
+        "session_reference_unavailable"
+    );
+    assert_eq!(codex_missing["data"]["codex_daemon"], "not_running");
 }
 #[test]
 fn history_pages_are_bounded_and_stale_cursors_are_rejected() {

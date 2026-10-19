@@ -1,6 +1,10 @@
-use herdcats_bridge::codex_config::{CodexConfigResult, disable_daemon_in_dir};
+use herdcats_bridge::codex_config::{
+    CodexConfigResult, DaemonStatusResult, DaemonStopStatus, ProcessStatus, check_process,
+    current_boot_id, daemon_status_in_dir, disable_daemon_in_dir,
+    disable_daemon_in_dir_with_options, process_start_time,
+};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -47,7 +51,14 @@ fn test_missing_file() {
     let temp = TempCodex::new("missing-file");
     let config_path = temp.path.join("config.toml");
     let res = disable_daemon_in_dir(&temp.path);
-    assert_eq!(res, CodexConfigResult::Changed { backup: None });
+    assert_eq!(
+        res,
+        CodexConfigResult::Changed {
+            backup: None,
+            daemon: None,
+            updater: None
+        }
+    );
     assert_eq!(res.to_json(), r#"{"status":"changed"}"#);
     assert!(config_path.is_file());
     let content = fs::read_to_string(&config_path).unwrap();
@@ -84,7 +95,9 @@ fast_mode = true\n";
     fs::write(&config_path, orig).unwrap();
     let res = disable_daemon_in_dir(&temp.path);
     match &res {
-        CodexConfigResult::Changed { backup: Some(b) } => {
+        CodexConfigResult::Changed {
+            backup: Some(b), ..
+        } => {
             assert!(b.starts_with("config.toml.bak.herdcats-"));
             let backup_file = temp.path.join(b);
             assert!(backup_file.is_file());
@@ -201,6 +214,7 @@ fn test_true_to_false_and_already_false() {
     match res {
         CodexConfigResult::Changed {
             backup: Some(ref b),
+            ..
         } => {
             assert!(b.starts_with("config.toml.bak.herdcats-"));
         }
@@ -213,7 +227,13 @@ fn test_true_to_false_and_already_false() {
         .map(|e| e.unwrap().file_name())
         .collect();
     let res2 = disable_daemon_in_dir(&temp.path);
-    assert_eq!(res2, CodexConfigResult::AlreadyDisabled);
+    assert_eq!(
+        res2,
+        CodexConfigResult::AlreadyDisabled {
+            daemon: None,
+            updater: None
+        }
+    );
     assert_eq!(res2.to_json(), r#"{"status":"already_disabled"}"#);
     let entries_after: Vec<_> = fs::read_dir(&temp.path)
         .unwrap()
@@ -308,6 +328,7 @@ fn test_backup_created_and_mode_preserved() {
     match res {
         CodexConfigResult::Changed {
             backup: Some(ref b),
+            ..
         } => {
             let backup_path = temp.path.join(b);
             assert!(backup_path.is_file());
@@ -486,4 +507,416 @@ fn test_cli_empty_and_relative_codex_home_falls_back_to_home() {
     let stdout = String::from_utf8(output_both_rel.stdout).unwrap();
     let val: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(val["status"], "codex_not_installed");
+}
+
+struct ChildGuard(std::process::Child);
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn write_pid_file(
+    path: &Path,
+    pid: u32,
+    boot_id: Option<&str>,
+    start_sec: i64,
+    start_usec: Option<i64>,
+) {
+    let mut identity = serde_json::Map::new();
+    if let Some(b) = boot_id {
+        identity.insert("bootId".into(), serde_json::Value::String(b.to_string()));
+    }
+    identity.insert("startSeconds".into(), serde_json::json!(start_sec));
+    if let Some(u) = start_usec {
+        identity.insert("startMicroseconds".into(), serde_json::json!(u));
+    }
+    let data = serde_json::json!({
+        "pid": pid,
+        "processStartTime": "test",
+        "processIdentity": identity
+    });
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, serde_json::to_string(&data).unwrap()).unwrap();
+}
+
+fn spawn_dummy_in_packages(codex_dir: &Path, name: &str) -> (ChildGuard, i64, Option<i64>) {
+    let packages_dir = codex_dir
+        .join("packages")
+        .join("app-server-daemon")
+        .join("bin");
+    fs::create_dir_all(&packages_dir).unwrap();
+    let script_path = packages_dir.join(name);
+    fs::write(
+        &script_path,
+        "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do sleep 0.05; done\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let child = std::process::Command::new("/bin/sh")
+        .arg(&script_path)
+        .spawn()
+        .unwrap();
+    let pid = child.id() as libc::pid_t;
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    let (start_sec, start_usec) = process_start_time(pid).expect("read start time");
+    (ChildGuard(child), start_sec, start_usec)
+}
+
+fn spawn_dummy_outside_packages(codex_dir: &Path, name: &str) -> (ChildGuard, i64, Option<i64>) {
+    let outside_dir = codex_dir.join("outside");
+    fs::create_dir_all(&outside_dir).unwrap();
+    let script_path = outside_dir.join(name);
+    fs::write(
+        &script_path,
+        "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do sleep 0.05; done\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let child = std::process::Command::new("/bin/sh")
+        .arg(&script_path)
+        .spawn()
+        .unwrap();
+    let pid = child.id() as libc::pid_t;
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    let (start_sec, start_usec) = process_start_time(pid).expect("read start time");
+    (ChildGuard(child), start_sec, start_usec)
+}
+
+#[test]
+fn test_daemon_status_missing_files() {
+    let temp = TempCodex::new("daemon-status-missing");
+    let status = daemon_status_in_dir(&temp.path);
+    assert_eq!(
+        status,
+        DaemonStatusResult {
+            daemon: ProcessStatus::NotRunning,
+            updater: ProcessStatus::NotRunning,
+            auto_start: None,
+        }
+    );
+    assert_eq!(
+        status.to_json(),
+        r#"{"daemon":"not_running","updater":"not_running","auto_start":null}"#
+    );
+}
+
+#[test]
+fn test_daemon_status_running() {
+    let temp = TempCodex::new("daemon-status-running");
+    let config_path = temp.path.join("config.toml");
+    fs::write(&config_path, "[features]\ndaemon_auto_start = true\n").unwrap();
+
+    let (daemon_guard, d_sec, d_usec) = spawn_dummy_in_packages(&temp.path, "daemon.sh");
+    let (updater_guard, u_sec, u_usec) = spawn_dummy_in_packages(&temp.path, "updater.sh");
+
+    let boot_id = current_boot_id();
+    let daemon_pid_file = temp.path.join("app-server-daemon").join("daemon.pid");
+    let updater_pid_file = temp.path.join("app-server-daemon").join("daemon-updater.pid");
+
+    write_pid_file(
+        &daemon_pid_file,
+        daemon_guard.0.id(),
+        boot_id.as_deref(),
+        d_sec,
+        d_usec,
+    );
+    write_pid_file(
+        &updater_pid_file,
+        updater_guard.0.id(),
+        boot_id.as_deref(),
+        u_sec,
+        u_usec,
+    );
+
+    let status = daemon_status_in_dir(&temp.path);
+    assert_eq!(
+        status,
+        DaemonStatusResult {
+            daemon: ProcessStatus::Running,
+            updater: ProcessStatus::Running,
+            auto_start: Some(true),
+        }
+    );
+    assert_eq!(
+        status.to_json(),
+        r#"{"daemon":"running","updater":"running","auto_start":true}"#
+    );
+}
+
+#[test]
+fn test_daemon_status_stale_pid_dead() {
+    let temp = TempCodex::new("daemon-status-dead");
+    let pid_file = temp.path.join("app-server-daemon").join("daemon.pid");
+    write_pid_file(
+        &pid_file,
+        9999999,
+        current_boot_id().as_deref(),
+        1000000,
+        Some(0),
+    );
+
+    let status = check_process(&pid_file, &temp.path);
+    assert_eq!(status, ProcessStatus::NotRunning);
+}
+
+#[test]
+fn test_daemon_status_pid_reused_start_time_mismatch() {
+    let temp = TempCodex::new("daemon-status-reuse");
+    let (guard, real_sec, _) = spawn_dummy_in_packages(&temp.path, "dummy.sh");
+    let pid_file = temp.path.join("app-server-daemon").join("daemon.pid");
+
+    write_pid_file(
+        &pid_file,
+        guard.0.id(),
+        current_boot_id().as_deref(),
+        real_sec + 1000,
+        Some(0),
+    );
+
+    let status = check_process(&pid_file, &temp.path);
+    assert_eq!(status, ProcessStatus::NotRunning);
+}
+
+#[test]
+fn test_daemon_status_wrong_owner_or_path() {
+    let temp = TempCodex::new("daemon-status-wrong-path");
+    let (guard, real_sec, real_usec) = spawn_dummy_outside_packages(&temp.path, "outside.sh");
+    let pid_file = temp.path.join("app-server-daemon").join("daemon.pid");
+
+    write_pid_file(
+        &pid_file,
+        guard.0.id(),
+        current_boot_id().as_deref(),
+        real_sec,
+        real_usec,
+    );
+
+    let status = check_process(&pid_file, &temp.path);
+    assert_eq!(status, ProcessStatus::NotRunning);
+}
+
+#[test]
+fn test_daemon_status_malformed_json() {
+    let temp = TempCodex::new("daemon-status-malformed");
+    let pid_file = temp.path.join("app-server-daemon").join("daemon.pid");
+    fs::create_dir_all(pid_file.parent().unwrap()).unwrap();
+
+    fs::write(&pid_file, "not json content").unwrap();
+    assert_eq!(check_process(&pid_file, &temp.path), ProcessStatus::Unknown);
+
+    fs::write(&pid_file, r#"{"processStartTime":"now"}"#).unwrap();
+    assert_eq!(check_process(&pid_file, &temp.path), ProcessStatus::Unknown);
+
+    fs::write(&pid_file, r#"{"pid":"123"}"#).unwrap();
+    assert_eq!(check_process(&pid_file, &temp.path), ProcessStatus::Unknown);
+
+    fs::write(&pid_file, r#"{"pid":123}"#).unwrap();
+    assert_eq!(check_process(&pid_file, &temp.path), ProcessStatus::Unknown);
+}
+
+#[test]
+fn test_stop_running_successful_stop() {
+    let temp = TempCodex::new("stop-running-success");
+    let config_path = temp.path.join("config.toml");
+    fs::write(&config_path, "[features]\ndaemon_auto_start = true\n").unwrap();
+
+    let stop_bin_dir = temp
+        .path
+        .join("packages")
+        .join("app-server-daemon")
+        .join("current")
+        .join("bin");
+    fs::create_dir_all(&stop_bin_dir).unwrap();
+    let stop_bin = stop_bin_dir.join("codex");
+    let stop_script = r#"#!/bin/sh
+if [ "$1" = "app-server" ] && [ "$2" = "daemon" ] && [ "$3" = "stop" ]; then
+    echo "called" > "$CODEX_HOME/codex_stop_called"
+    if [ -f "$CODEX_HOME/app-server-daemon/daemon.pid" ]; then
+        rm -f "$CODEX_HOME/app-server-daemon/daemon.pid"
+    fi
+    exit 0
+fi
+exit 1
+"#;
+    fs::write(&stop_bin, stop_script).unwrap();
+    #[cfg(unix)]
+    {
+        fs::set_permissions(&stop_bin, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let (mut updater_guard, u_sec, u_usec) = spawn_dummy_in_packages(&temp.path, "updater.sh");
+    let updater_pid_file = temp.path.join("app-server-daemon").join("daemon-updater.pid");
+    let boot_id = current_boot_id();
+    write_pid_file(
+        &updater_pid_file,
+        updater_guard.0.id(),
+        boot_id.as_deref(),
+        u_sec,
+        u_usec,
+    );
+
+    let (daemon_guard, d_sec, d_usec) = spawn_dummy_in_packages(&temp.path, "daemon.sh");
+    let daemon_pid_file = temp.path.join("app-server-daemon").join("daemon.pid");
+    write_pid_file(
+        &daemon_pid_file,
+        daemon_guard.0.id(),
+        boot_id.as_deref(),
+        d_sec,
+        d_usec,
+    );
+
+    let res = disable_daemon_in_dir_with_options(&temp.path, true);
+    match &res {
+        CodexConfigResult::Changed {
+            backup: Some(_),
+            daemon: Some(DaemonStopStatus::Stopped),
+            updater: Some(DaemonStopStatus::Stopped),
+        } => {}
+        _ => panic!(
+            "Expected Changed with Stopped daemon and updater, got: {:?}",
+            res
+        ),
+    }
+
+    assert!(temp.path.join("codex_stop_called").is_file());
+
+    let mut dead = false;
+    for _ in 0..20 {
+        if let Ok(Some(_)) = updater_guard.0.try_wait() {
+            dead = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(dead, "Updater process should have been terminated by SIGTERM");
+}
+
+#[test]
+fn test_stop_running_mismatched_identity_left_alone() {
+    let temp = TempCodex::new("stop-running-mismatched");
+    let config_path = temp.path.join("config.toml");
+    fs::write(&config_path, "[features]\ndaemon_auto_start = true\n").unwrap();
+
+    let (updater_guard, u_sec, _) = spawn_dummy_in_packages(&temp.path, "updater.sh");
+    let updater_pid = updater_guard.0.id() as libc::pid_t;
+    let updater_pid_file = temp.path.join("app-server-daemon").join("daemon-updater.pid");
+
+    write_pid_file(
+        &updater_pid_file,
+        updater_guard.0.id(),
+        current_boot_id().as_deref(),
+        u_sec + 5000,
+        Some(0),
+    );
+
+    let res = disable_daemon_in_dir_with_options(&temp.path, true);
+    match &res {
+        CodexConfigResult::Changed {
+            backup: Some(_),
+            daemon: Some(DaemonStopStatus::NotRunning),
+            updater: Some(DaemonStopStatus::NotRunning),
+        } => {}
+        _ => panic!("Expected NotRunning, got: {:?}", res),
+    }
+
+    assert_eq!(unsafe { libc::kill(updater_pid, 0) }, 0);
+}
+
+#[test]
+fn test_stop_running_config_error_no_stop_attempted() {
+    let temp = TempCodex::new("stop-running-config-error");
+    let config_path = temp.path.join("config.toml");
+    let target_path = temp.path.join("target.toml");
+    fs::write(&target_path, "[features]\ndaemon_auto_start = true\n").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&target_path, &config_path).unwrap();
+
+    let stop_bin_dir = temp
+        .path
+        .join("packages")
+        .join("app-server-daemon")
+        .join("current")
+        .join("bin");
+    fs::create_dir_all(&stop_bin_dir).unwrap();
+    let stop_bin = stop_bin_dir.join("codex");
+    fs::write(
+        &stop_bin,
+        "#!/bin/sh\necho called > \"$CODEX_HOME/codex_stop_called\"\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        fs::set_permissions(&stop_bin, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let (updater_guard, u_sec, u_usec) = spawn_dummy_in_packages(&temp.path, "updater.sh");
+    let updater_pid = updater_guard.0.id() as libc::pid_t;
+    let updater_pid_file = temp.path.join("app-server-daemon").join("daemon-updater.pid");
+    write_pid_file(
+        &updater_pid_file,
+        updater_guard.0.id(),
+        current_boot_id().as_deref(),
+        u_sec,
+        u_usec,
+    );
+
+    let res = disable_daemon_in_dir_with_options(&temp.path, true);
+    assert_eq!(res, CodexConfigResult::Error("config_symlink"));
+
+    assert!(!temp.path.join("codex_stop_called").exists());
+    assert_eq!(unsafe { libc::kill(updater_pid, 0) }, 0);
+}
+
+#[test]
+fn test_cli_daemon_status_and_stop_running() {
+    let temp = TempCodex::new("cli-daemon-status");
+    let codex_home = temp.path.join(".codex");
+    fs::create_dir_all(&codex_home).unwrap();
+    let config_path = codex_home.join("config.toml");
+    fs::write(&config_path, "[features]\ndaemon_auto_start = true\n").unwrap();
+
+    let binary = env!("CARGO_BIN_EXE_herdcats-bridge");
+
+    let output_status = std::process::Command::new(binary)
+        .args(["codex-config", "daemon-status"])
+        .env("CODEX_HOME", &codex_home)
+        .output()
+        .unwrap();
+    assert_eq!(output_status.status.code(), Some(0));
+    let stdout = String::from_utf8(output_status.stdout).unwrap();
+    let val: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(val["daemon"], "not_running");
+    assert_eq!(val["updater"], "not_running");
+    assert_eq!(val["auto_start"], true);
+
+    let output_stop = std::process::Command::new(binary)
+        .args(["codex-config", "disable-daemon", "--stop-running"])
+        .env("CODEX_HOME", &codex_home)
+        .output()
+        .unwrap();
+    assert_eq!(output_stop.status.code(), Some(0));
+    let stdout = String::from_utf8(output_stop.stdout).unwrap();
+    let val: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(val["status"], "changed");
+    assert_eq!(val["daemon"], "not_running");
+    assert_eq!(val["updater"], "not_running");
+
+    let output_status2 = std::process::Command::new(binary)
+        .args(["codex-config", "daemon-status"])
+        .env("CODEX_HOME", &codex_home)
+        .output()
+        .unwrap();
+    assert_eq!(output_status2.status.code(), Some(0));
+    let stdout2 = String::from_utf8(output_status2.stdout).unwrap();
+    let val2: serde_json::Value = serde_json::from_str(stdout2.trim()).unwrap();
+    assert_eq!(val2["auto_start"], false);
 }
