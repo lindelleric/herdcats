@@ -225,14 +225,14 @@ struct HostHelperSetupPolicyTests {
     }
 
     @Test func helperSetupLabelAndFeedbackLogic() throws {
-        // update reason idle -> "Upgrade to 0.2.0"
+        // update reason idle -> "Upgrade to 0.2.1"
         #expect(
             HostHelperSetupPlan.installLabel(stage: .idle, reason: .updateRequired)
-            == "Upgrade to 0.2.0"
+            == "Upgrade to 0.2.1"
         )
         #expect(
-            HostHelperSetupPlan.installLabel(stage: .idle, reason: .updateRequired, pinnedVersion: "0.2.0")
-            == "Upgrade to 0.2.0"
+            HostHelperSetupPlan.installLabel(stage: .idle, reason: .updateRequired, pinnedVersion: "0.2.1")
+            == "Upgrade to 0.2.1"
         )
 
         // busy labels
@@ -263,11 +263,15 @@ struct HostHelperSetupPolicyTests {
             == "Install Herdcats Bridge"
         )
 
-        // managed 0.1.4 replacementRequired -> "Replace Herdcats Bridge with 0.2.0" + found-version feedback
+        // managed 0.1.4 replacementRequired -> "Replace Herdcats Bridge with 0.2.1" + found-version feedback
         let managed014 = HostHelperProbe.present(version: "0.1.4", managed: true, compatible: false)
         #expect(
-            HostHelperSetupPlan.installLabel(stage: .replacementRequired(managed014), pinnedVersion: "0.2.0")
-            == "Replace Herdcats Bridge with 0.2.0"
+            HostHelperSetupPlan.installLabel(stage: .replacementRequired(managed014), pinnedVersion: "0.2.1")
+            == "Replace Herdcats Bridge with 0.2.1"
+        )
+        #expect(
+            HostHelperSetupPlan.installLabel(stage: .replacementRequired(managed014))
+            == "Replace Herdcats Bridge with 0.2.1"
         )
         #expect(
             HostHelperSetupPlan.replacementFeedback(probe: managed014)
@@ -302,10 +306,13 @@ struct HostHelperSetupPolicyTests {
 
     @Test func oneTapUpgradeDecisionPath() {
         let managed014 = HostHelperProbe.present(version: "0.1.4", managed: true, compatible: false)
+        let managed020 = HostHelperProbe.present(version: "0.2.0", managed: true, compatible: true)
+        let managed021 = HostHelperProbe.present(version: "0.2.1", managed: true, compatible: true)
+        let managed030Compatible = HostHelperProbe.present(version: "0.3.0", managed: true, compatible: true)
         let managed030Incompatible = HostHelperProbe.present(version: "0.3.0", managed: true, compatible: false)
         let managedUnknown = HostHelperProbe.present(version: nil, managed: true, compatible: false)
         let external014 = HostHelperProbe.present(version: "0.1.4", managed: false, compatible: false)
-        let compatible020 = HostHelperProbe.present(version: "0.2.0", managed: true, compatible: true)
+        let external020 = HostHelperProbe.present(version: "0.2.0", managed: false, compatible: true)
 
         // 1. managed 0.1.4 + updateRequired -> install(replace: true)
         #expect(
@@ -317,7 +324,29 @@ struct HostHelperSetupPolicyTests {
             == .install(replace: true)
         )
 
-        // 2. managed 0.3.0 incompatible + updateRequired -> replacementRequired
+        // 1b. managed 0.2.0 + updateRequired -> install(replace: true) (one-tap upgrade to 0.2.1)
+        #expect(
+            HostHelperSetupPlan.decision(probe: managed020, replace: false, checkOnly: false, agent: "codex", reason: .updateRequired)
+            == .install(replace: true)
+        )
+        // managed 0.2.0 + missing -> ready (compatible with minimumVersion, no drawer)
+        #expect(
+            HostHelperSetupPlan.decision(probe: managed020, replace: false, checkOnly: false, agent: "codex", reason: .missing)
+            == .ready
+        )
+
+        // 1c. managed 0.2.1 + updateRequired -> ready (already pinned version)
+        #expect(
+            HostHelperSetupPlan.decision(probe: managed021, replace: false, checkOnly: false, agent: "codex", reason: .updateRequired)
+            == .ready
+        )
+
+        // 2. managed 0.3.0 compatible -> ready (no downgrade offer)
+        #expect(
+            HostHelperSetupPlan.decision(probe: managed030Compatible, replace: false, checkOnly: false, agent: "codex", reason: .updateRequired)
+            == .ready
+        )
+        // managed 0.3.0 incompatible + updateRequired -> replacementRequired (explicit replace required)
         #expect(
             HostHelperSetupPlan.decision(probe: managed030Incompatible, replace: false, checkOnly: false, agent: "codex", reason: .updateRequired)
             == .replacementRequired(managed030Incompatible)
@@ -333,6 +362,11 @@ struct HostHelperSetupPolicyTests {
         #expect(
             HostHelperSetupPlan.decision(probe: external014, replace: false, checkOnly: false, agent: "codex", reason: .updateRequired)
             == .replacementRequired(external014)
+        )
+        // external 0.2.0 + updateRequired -> replacementRequired (explicit confirmation required for unmanaged)
+        #expect(
+            HostHelperSetupPlan.decision(probe: external020, replace: false, checkOnly: false, agent: "codex", reason: .updateRequired)
+            == .replacementRequired(external020)
         )
         // when confirmed with replace (managed: false -> replace: false)
         #expect(
@@ -357,18 +391,31 @@ struct HostHelperSetupPolicyTests {
             == .replacementRequired(managed014)
         )
 
-        // 7. already compatible -> ready (no install)
-        #expect(
-            HostHelperSetupPlan.decision(probe: compatible020, replace: false, checkOnly: false, agent: "codex", reason: .updateRequired)
-            == .ready
-        )
-
-        // 8. HostHelperProbe.isOlderThanPinned helper verification
+        // 7. HostHelperProbe helper verifications
         #expect(HostHelperProbe.isOlderThanPinned("0.1.4"))
-        #expect(!HostHelperProbe.isOlderThanPinned("0.2.0"))
+        #expect(HostHelperProbe.isOlderThanPinned("0.2.0"))
+        #expect(!HostHelperProbe.isOlderThanPinned("0.2.1"))
         #expect(!HostHelperProbe.isOlderThanPinned("0.3.0"))
         #expect(!HostHelperProbe.isOlderThanPinned(nil))
         #expect(!HostHelperProbe.isOlderThanPinned("invalid"))
+
+        #expect(HostHelperProbe.isAtLeastPinned("0.2.1"))
+        #expect(HostHelperProbe.isAtLeastPinned("0.3.0"))
+        #expect(!HostHelperProbe.isAtLeastPinned("0.2.0"))
+        #expect(!HostHelperProbe.isAtLeastPinned("0.1.4"))
+        #expect(!HostHelperProbe.isAtLeastPinned(nil))
+
+        #expect(HostHelperProbe.isAtLeastMinimum("0.2.0"))
+        #expect(HostHelperProbe.isAtLeastMinimum("0.2.1"))
+        #expect(HostHelperProbe.isAtLeastMinimum("0.3.0"))
+        #expect(!HostHelperProbe.isAtLeastMinimum("0.1.4"))
+        #expect(!HostHelperProbe.isAtLeastMinimum(nil))
+
+        #expect(HostHelperProbe.isOlderThanMinimum("0.1.4"))
+        #expect(!HostHelperProbe.isOlderThanMinimum("0.2.0"))
+        #expect(!HostHelperProbe.isOlderThanMinimum("0.2.1"))
+        #expect(!HostHelperProbe.isOlderThanMinimum("0.3.0"))
+        #expect(!HostHelperProbe.isOlderThanMinimum(nil))
     }
 }
 

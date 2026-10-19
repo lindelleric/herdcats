@@ -10,6 +10,7 @@ struct AgentTimelineView: View {
     var agent: String? = nil
     let connection: HerdrConnection
     let timeline: AgentTimelineState
+    var bridgeUpgrade: TimelineBridgeUpgrade = TimelineBridgeUpgrade()
     let topOverlayInset: CGFloat
     let bottomOverlayInset: CGFloat
     let onOutputInteraction: () -> Void
@@ -268,6 +269,14 @@ struct AgentTimelineView: View {
         }
         .onChange(of: connectionState) { _, _ in cancelHelperInstallation() }
         .onChange(of: scenePhase) { _, phase in if phase != .active { cancelHelperInstallation() } }
+        .onChange(of: bridgeUpgrade.requested) { _, requested in
+            if requested {
+                bridgeUpgrade.requested = false
+                // The menu item is offered while Timeline is working; dismissing
+                // the optional upgrade must not dump a working Timeline.
+                beginSetup(reason: .updateRequired, shouldUseTerminalOnDismiss: timeline.phase != .ready)
+            }
+        }
         .onChange(of: contentScope) { _, _ in
             historyLoader.cancel()
             entryFrames = [:]
@@ -346,7 +355,7 @@ struct AgentTimelineView: View {
         }
     }
 
-    private func beginSetup(reason: HostHelperSetupReason? = nil) {
+    private func beginSetup(reason: HostHelperSetupReason? = nil, shouldUseTerminalOnDismiss: Bool = true) {
         let isNeedsUpgrade: Bool
         if case .unavailable(let code) = timeline.phase {
             isNeedsUpgrade = Self.isNeedsUpgrade(code: code, agent: agent, bridgeVersion: bridgeVersion)
@@ -355,7 +364,7 @@ struct AgentTimelineView: View {
         }
         let resolvedReason = reason ?? (isNeedsUpgrade ? .updateRequired : .missing)
         setupReason = resolvedReason
-        setupShouldUseTerminal = true
+        setupShouldUseTerminal = shouldUseTerminalOnDismiss
         setupFeedback = nil
         showsSetup = true
     }
@@ -519,13 +528,7 @@ struct AgentTimelineView: View {
             )
 
             ContentUnavailableView {
-                Label(
-                    isNeedsUpgrade ? "Upgrade Herdcats Bridge" :
-                    isCodex && isNoSession ? "Codex session not identified" :
-                    isCodex && isCwdMismatch ? "This pane’s Codex session could not be confirmed" :
-                    (isMissing ? "Set up Timeline" : "Timeline unavailable"),
-                    systemImage: "text.bubble"
-                )
+                Label(title(code), systemImage: "text.bubble")
             } description: {
                 if isCodex && isNoSession, let feedback = codexDaemonFeedback {
                     Text(feedback)
@@ -576,7 +579,7 @@ struct AgentTimelineView: View {
                         }
                     }
                 }
-                if !showsInstallOrUpgrade {
+                if Self.showsPaneCheckAgain(code: code, agent: agent, bridgeVersion: bridgeVersion) {
                     Button("Check again") { retry += 1 }.buttonStyle(.herdrSecondary)
                         .accessibilityIdentifier("timeline-helper-retry")
                 }
@@ -590,6 +593,17 @@ struct AgentTimelineView: View {
             agent: agent,
             installedVersion: bridgeVersion,
             pinnedVersion: HostHelperSetupPlan.version,
+            supportedAgents: Set(HostHelperSetupPlan.agents),
+            gatewayHost: setupTarget.host,
+            machineLabel: connection.route?.machine.label
+        )
+    }
+
+    func title(_ code: String) -> String {
+        Self.unavailableTitle(
+            code: code,
+            agent: agent,
+            bridgeVersion: bridgeVersion,
             supportedAgents: Set(HostHelperSetupPlan.agents)
         )
     }
@@ -603,7 +617,23 @@ struct AgentTimelineView: View {
         let isSupported = canPinnedInstallerSupport(agent: agent, supportedAgents: supportedAgents)
         guard isSupported else { return false }
         let isCodex = agent == "codex"
-        return code == "helper_update_required" || (HostHelperProbe.isOlderThanPinned(bridgeVersion) && (code == "record_too_large" || (isCodex && code == "unsupported_agent")))
+        return code == "helper_update_required" || (HostHelperProbe.isOlderThanMinimum(bridgeVersion) && (code == "record_too_large" || (isCodex && code == "unsupported_agent")))
+    }
+
+    static func upgradePitch(
+        agent: String?,
+        installedVersion: String?,
+        pinnedVersion: String = HostHelperSetupPlan.version
+    ) -> String {
+        let isCodex = agent == "codex"
+        let installedBelowMinimum = !HostHelperProbe.isAtLeastMinimum(installedVersion)
+        if installedBelowMinimum {
+            let feature = isCodex ? "Codex conversations" : "session images"
+            return "Version \(pinnedVersion) adds \(feature). Your agent keeps running while you upgrade."
+        } else {
+            let feature = isCodex ? "fixes for Codex conversations" : "fixes for session history"
+            return "Version \(pinnedVersion) includes \(feature). Your agent keeps running while you upgrade."
+        }
     }
 
     static func showsInstallOrUpgrade(
@@ -623,7 +653,10 @@ struct AgentTimelineView: View {
         bridgeVersion: String? = nil,
         supportedAgents: Set<String> = Set(HostHelperSetupPlan.agents)
     ) -> Bool {
-        !showsInstallOrUpgrade(code: code, agent: agent, bridgeVersion: bridgeVersion, supportedAgents: supportedAgents)
+        // Retrying can never help a routed host: the pane is reached through
+        // Herdr on the SSH-connected gateway, not a computer Herdcats dialed.
+        guard code != "routed_host_unsupported" else { return false }
+        return !showsInstallOrUpgrade(code: code, agent: agent, bridgeVersion: bridgeVersion, supportedAgents: supportedAgents)
     }
 
     static func canConfigureCodexDaemon(
@@ -642,8 +675,55 @@ struct AgentTimelineView: View {
     static let codexManualConfigLine = "daemon_auto_start = false"
     static let codexDaemonStopCommand = "codex app-server daemon stop"
 
+    /// The pane options menu's optional upgrade item reads `bridgeUpgrade`,
+    /// which outlives this view's runs. Every refresh of the handshake-derived
+    /// Bridge version must reach it, but only while `owner` still owns the run
+    /// — a superseded run must not clobber a newer handshake's version.
+    @MainActor
+    static func publishBridgeVersion(
+        _ version: String?, to upgrade: TimelineBridgeUpgrade, owner: UUID, activeOwner: UUID?
+    ) {
+        guard activeOwner == owner else { return }
+        upgrade.bridgeVersion = version
+    }
+
     static func codexManualFallbackText() -> String {
         "Add `daemon_auto_start = false` under `[features]` in `~/.codex/config.toml`, or start Codex with `codex --no-daemon`."
+    }
+
+    static func unavailableTitle(
+        code: String,
+        agent: String?,
+        bridgeVersion: String? = nil,
+        supportedAgents: Set<String> = Set(HostHelperSetupPlan.agents)
+    ) -> String {
+        let isNeedsUpgrade = isNeedsUpgrade(code: code, agent: agent, bridgeVersion: bridgeVersion, supportedAgents: supportedAgents)
+        let isCodex = agent == "codex"
+        let isNoSession = ["session_reference_unavailable", "ambiguous_session", "invalid_session_reference"].contains(code)
+        let isCwdMismatch = code == "session_cwd_mismatch"
+        let isMissing = code == "helper_missing"
+        if isNeedsUpgrade { return "Upgrade Herdcats Bridge" }
+        if isCodex && isNoSession { return "Waiting for Codex session" }
+        if isCodex && isCwdMismatch { return "This pane’s Codex session could not be confirmed" }
+        if isMissing { return "Set up Timeline" }
+        if code == "routed_host_unsupported" { return routedHostUnavailableTitle }
+        return "Timeline unavailable"
+    }
+
+    /// A saved machine is reached through the Herdr running on the SSH-connected
+    /// gateway computer; the user is connected, so the copy never says otherwise.
+    static let routedHostUnavailableTitle = "Timeline isn't available here yet"
+
+    /// `gatewayHost` is the host Herdcats itself is SSH'd into (the gateway the
+    /// routed machine is reached through); `machineLabel` is the routed
+    /// HerdrMachine's label. Missing values fall back to wording that never
+    /// invents a name.
+    static func routedHostExplanation(gatewayHost: String?, machineLabel: String?) -> String {
+        let host = gatewayHost?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let gatewayName = !host.isEmpty && host != "unknown" ? host : "your SSH computer"
+        let label = machineLabel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let machineName = !label.isEmpty ? label : "this machine"
+        return "This machine is reached through Herdr on \(gatewayName). Timeline can read sessions only on a computer Herdcats connects to with SSH. To use Timeline here, add \(machineName) as its own connection. You can still send messages below."
     }
 
     static func explanation(
@@ -651,7 +731,9 @@ struct AgentTimelineView: View {
         agent: String?,
         installedVersion: String? = nil,
         pinnedVersion: String = HostHelperSetupPlan.version,
-        supportedAgents: Set<String> = Set(HostHelperSetupPlan.agents)
+        supportedAgents: Set<String> = Set(HostHelperSetupPlan.agents),
+        gatewayHost: String? = nil,
+        machineLabel: String? = nil
     ) -> String {
         let isCodex = agent == "codex"
         let canSupportCodex = supportedAgents.contains("codex")
@@ -684,10 +766,11 @@ struct AgentTimelineView: View {
                 }
             }
             return "Timeline is not available for this agent yet. You can still send messages below or use Terminal."
-        case "routed_host_unsupported": return "Native history is not available through saved machines yet. Messages can still be sent below."
+        case "routed_host_unsupported":
+            return routedHostExplanation(gatewayHost: gatewayHost, machineLabel: machineLabel)
         case "session_reference_unavailable", "ambiguous_session", "invalid_session_reference":
             if isCodex {
-                return "Codex's shared daemon hides which terminal a session belongs to. Fix with `codex --no-daemon` or turn off the shared daemon."
+                return "Codex reports its session after the first message. Send a message below to start. If Timeline still doesn't appear after Codex replies, this Codex is using its shared daemon. Restart it with `codex --no-daemon`."
             }
             return "This pane has no verified session history. Compose and Terminal remain available."
         case "session_cwd_mismatch":
@@ -722,6 +805,7 @@ struct AgentTimelineView: View {
         isPaging = false
         bridgeCapabilities = await connection.bridgeCapabilities(for: connectionState.generation)
         bridgeVersion = await connection.bridgeVersion(for: connectionState.generation)
+        Self.publishBridgeVersion(bridgeVersion, to: bridgeUpgrade, owner: owner, activeOwner: activeOwner)
         codexDaemonFeedback = nil
         codexDaemonErrorOccurred = false
         guard scenePhase == .active, connectionState.isReady else {
@@ -733,7 +817,13 @@ struct AgentTimelineView: View {
                 if ScreenshotFixtures.screen == "timeline-history-position" { following = false }
                 if ScreenshotFixtures.screen.contains("helper-old") || ScreenshotFixtures.screen.contains("needs-upgrade") {
                     bridgeVersion = "0.1.4"
+                } else if ScreenshotFixtures.screen == "optional-upgrade-menu" {
+                    bridgeVersion = "0.2.0"
                 }
+                if ScreenshotFixtures.screen == "timeline-codex-no-session" {
+                    bridgeCapabilities = AgentBridgeCapabilities(claudeTimeline: true, codexTimeline: true, codexDaemonConfig: true, recordContent: true)
+                }
+                Self.publishBridgeVersion(bridgeVersion, to: bridgeUpgrade, owner: owner, activeOwner: activeOwner)
                 do {
                     try timeline.consume(AgentTimelineScreenshotFixture.frame(
                         paneId: paneId,
@@ -755,12 +845,14 @@ struct AgentTimelineView: View {
                 activeClient = client
                 bridgeCapabilities = await connection.bridgeCapabilities(for: ownedConnection.generation)
                 bridgeVersion = await connection.bridgeVersion(for: ownedConnection.generation)
+                Self.publishBridgeVersion(bridgeVersion, to: bridgeUpgrade, owner: owner, activeOwner: activeOwner)
             }
             try await client.waitUntilClosed()
         } catch {
             if activeOwner == owner {
                 bridgeCapabilities = await connection.bridgeCapabilities(for: ownedConnection.generation)
                 bridgeVersion = await connection.bridgeVersion(for: ownedConnection.generation)
+                Self.publishBridgeVersion(bridgeVersion, to: bridgeUpgrade, owner: owner, activeOwner: activeOwner)
             }
             timeline.end(owner: owner, error: (error as? AgentBridgeError) ?? .closed)
         }
@@ -802,6 +894,7 @@ struct AgentTimelineView: View {
         try owned.requireCurrent(connectionState)
         guard activeOwner == owner else { return }
         bridgeVersion = version
+        Self.publishBridgeVersion(version, to: bridgeUpgrade, owner: owner, activeOwner: activeOwner)
         try timeline.consume(frame, owner: owner)
     }
     @MainActor private func mergeHistoryPreservingPosition(
@@ -1126,6 +1219,7 @@ private struct AgentTimelineEntryView: View {
     @State private var previewURL: URL?
     @State private var imageLink: URL?
     @State private var imageError: String?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if entry.kind == "image" {
@@ -1138,6 +1232,10 @@ private struct AgentTimelineEntryView: View {
                         .textSelection(.enabled).lineLimit(8)
                         .accessibilityIdentifier("timeline-record-\(entry.id)")
                 }
+            } else if entry.isTurnInterrupted {
+                Label(entry.text, systemImage: "stop.circle")
+                    .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
+                    .accessibilityIdentifier("timeline-interrupted-\(entry.id)")
             } else {
                 Text(markdown).font(.jost(.body)).textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1149,7 +1247,7 @@ private struct AgentTimelineEntryView: View {
         }
         .foregroundStyle(Theme.text).frame(maxWidth: .infinity, alignment: .leading)
         .padding(entry.role == "user" ? 16 : 0)
-        .padding(.vertical, entry.role == "user" ? 0 : 8)
+        .padding(.vertical, entry.role == "user" ? 0 : (entry.isTurnInterrupted ? 4 : 8))
         .background {
             if entry.role == "user" {
                 RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.lg)
@@ -1238,8 +1336,7 @@ private struct AgentBridgeSetupView: View {
                         Text("A newer Herdcats Bridge is available")
                             .font(.jost(.title, weight: .semibold))
                             .accessibilityAddTraits(.isHeader)
-                        let feature = agent == "codex" ? "Codex conversations" : "session images"
-                        Text("Version \(pinnedVersion) adds \(feature). Your agent keeps running while you upgrade.")
+                        Text(AgentTimelineView.upgradePitch(agent: agent, installedVersion: installedVersion, pinnedVersion: pinnedVersion))
                             .font(.jost(.body)).foregroundStyle(Theme.textMuted)
                         VStack(alignment: .leading, spacing: 6) {
                             Text("\(target.username)@\(target.host)")

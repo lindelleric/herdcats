@@ -204,7 +204,7 @@ final class AgentTimelineUITests: XCTestCase {
             XCTAssertTrue(feedback.waitForExistence(timeout: 5))
             XCTAssertFalse(app.buttons["timeline-tool-tool:read"].exists)
             if scenario == "replacement" {
-                XCTAssertEqual(install.label, "Replace Herdcats Bridge with 0.2.0")
+                XCTAssertEqual(install.label, "Replace Herdcats Bridge with 0.2.1")
                 install.tap()
                 XCTAssertTrue(app.buttons["timeline-tool-tool:read"].waitForExistence(timeout: 5))
             } else if scenario == "uncertain" {
@@ -298,7 +298,7 @@ final class AgentTimelineUITests: XCTestCase {
         launch(app)
         let install = app.buttons["timeline-helper-install"]
         XCTAssertTrue(install.waitForExistence(timeout: 5))
-        XCTAssertEqual(install.label, "Upgrade to 0.2.0")
+        XCTAssertEqual(install.label, "Upgrade to 0.2.1")
         XCTAssertTrue(app.staticTexts["A newer Herdcats Bridge is available"].exists)
         install.tap()
         XCTAssertTrue(app.buttons["timeline-tool-tool:read"].waitForExistence(timeout: 5))
@@ -310,7 +310,7 @@ final class AgentTimelineUITests: XCTestCase {
         launch(appExternal)
         let installExt = appExternal.buttons["timeline-helper-install"]
         XCTAssertTrue(installExt.waitForExistence(timeout: 5))
-        XCTAssertEqual(installExt.label, "Upgrade to 0.2.0")
+        XCTAssertEqual(installExt.label, "Upgrade to 0.2.1")
         installExt.tap()
         let feedback = appExternal.staticTexts["timeline-setup-feedback"]
         XCTAssertTrue(feedback.waitForExistence(timeout: 5))
@@ -602,7 +602,7 @@ final class AgentTimelineUITests: XCTestCase {
         let upgradeButton = appUpgradePane.buttons["timeline-helper-setup"]
         XCTAssertTrue(upgradeButton.waitForExistence(timeout: 5))
         XCTAssertEqual(upgradeButton.label, "Upgrade Herdcats Bridge")
-        XCTAssertTrue(appUpgradePane.staticTexts["Herdcats Bridge 0.1.4 on this computer can't show Codex conversations. Upgrade to 0.2.0."].exists)
+        XCTAssertTrue(appUpgradePane.staticTexts["Herdcats Bridge 0.1.4 on this computer can't show Codex conversations. Upgrade to 0.2.1."].exists)
         XCTAssertFalse(appUpgradePane.buttons["timeline-helper-retry"].exists)
         saveNamedScreenshot(appUpgradePane.screenshot(), name: "codex-pane-needs-upgrade")
 
@@ -613,7 +613,7 @@ final class AgentTimelineUITests: XCTestCase {
         XCTAssertTrue(appUpgradePane.navigationBars["Upgrade Herdcats Bridge"].exists)
         XCTAssertTrue(appUpgradePane.staticTexts["A newer Herdcats Bridge is available"].exists)
         XCTAssertTrue(appUpgradePane.buttons["timeline-helper-install"].exists)
-        XCTAssertEqual(appUpgradePane.buttons["timeline-helper-install"].label, "Upgrade to 0.2.0")
+        XCTAssertEqual(appUpgradePane.buttons["timeline-helper-install"].label, "Upgrade to 0.2.1")
         saveNamedScreenshot(appUpgradePane.screenshot(), name: "upgrade-drawer")
         appUpgradePane.terminate()
 
@@ -659,5 +659,87 @@ final class AgentTimelineUITests: XCTestCase {
         XCTAssertTrue(appMissingDrawer.buttons["timeline-helper-copy-command"].exists)
         saveNamedScreenshot(appMissingDrawer.screenshot(), name: "manual-setup-expanded")
         appMissingDrawer.terminate()
+    }
+
+    func testTurnInterruptedAndOptionalUpgradeScreenshots() {
+        // 1. turn-interrupted.png
+        let appTurn = XCUIApplication()
+        appTurn.launchArguments = [
+            "-hc.screenshots", "-hc.screen", "turn-interrupted", "-hc.light", "-paneShowComposeByDefault", "NO"
+        ]
+        launch(appTurn)
+        XCTAssertTrue(appTurn.staticTexts["Turn interrupted"].waitForExistence(timeout: 5))
+        saveNamedScreenshot(appTurn.screenshot(), name: "turn-interrupted")
+        appTurn.terminate()
+
+        // 2. optional-upgrade-menu.png
+        let appMenu = XCUIApplication()
+        appMenu.launchArguments = [
+            "-hc.screenshots", "-hc.screen", "optional-upgrade-menu", "-hc.light", "-paneShowComposeByDefault", "NO"
+        ]
+        launch(appMenu)
+        let menuButton = appMenu.buttons["pane-options-menu"]
+        XCTAssertTrue(menuButton.waitForExistence(timeout: 5))
+        menuButton.tap()
+        let upgradeOption = appMenu.buttons["timeline-upgrade-menu-button"]
+        XCTAssertTrue(upgradeOption.waitForExistence(timeout: 5))
+        saveNamedScreenshot(appMenu.screenshot(), name: "optional-upgrade-menu")
+        appMenu.terminate()
+    }
+
+    func testWaitingForCodexSessionDisplaysNewCopyAndKeepsComposerUsable() {
+        let app = XCUIApplication()
+        app.launchArguments = [
+            "-hc.screenshots", "-hc.screen", "timeline-codex-no-session", "-hc.agent", "codex", "-hc.light", "-paneShowComposeByDefault", "YES"
+        ]
+        launch(app)
+        XCTAssertTrue(app.staticTexts["Waiting for Codex session"].waitForExistence(timeout: 5))
+        let expectedExplanation = "Codex reports its session after the first message. Send a message below to start. If Timeline still doesn't appear after Codex replies, this Codex is using its shared daemon. Restart it with `codex --no-daemon`."
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label == %@", expectedExplanation)).firstMatch.exists)
+        XCTAssertTrue(app.descendants(matching: .any)["timeline-compose-field"].firstMatch.exists)
+        XCTAssertTrue(app.buttons["Turn off Codex's shared daemon"].exists)
+        app.terminate()
+    }
+
+    func testRoutedHostTimelineExplainsGatewayAndKeepsComposerUsable() {
+        let app = XCUIApplication()
+        app.launchArguments = [
+            "-hc.screenshots", "-hc.screen", "timeline-routed-host", "-hc.agent", "codex", "-hc.light", "-paneShowComposeByDefault", "YES"
+        ]
+        launch(app)
+        XCTAssertTrue(app.staticTexts["Timeline isn't available here yet"].waitForExistence(timeout: 5))
+        let expectedExplanation = "This machine is reached through Herdr on studio-mac. Timeline can read sessions only on a computer Herdcats connects to with SSH. To use Timeline here, add Studio Mini as its own connection. You can still send messages below."
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label == %@", expectedExplanation)).firstMatch.exists)
+        XCTAssertFalse(app.staticTexts["Timeline unavailable"].exists)
+        // Retrying, installing, or daemon toggling can never change the outcome.
+        XCTAssertFalse(app.buttons["timeline-helper-retry"].exists)
+        XCTAssertFalse(app.buttons["timeline-helper-setup"].exists)
+        XCTAssertFalse(app.buttons["timeline-codex-disable-daemon"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["timeline-compose-field"].firstMatch.exists)
+        saveNamedScreenshot(app.screenshot(), name: "routed-host")
+        app.terminate()
+    }
+
+    func testDismissingMenuOpenedUpgradeKeepsTimelineSelected() {
+        let app = XCUIApplication()
+        app.launchArguments = [
+            "-hc.screenshots", "-hc.screen", "optional-upgrade-menu", "-hc.light", "-paneShowComposeByDefault", "NO"
+        ]
+        launch(app)
+        XCTAssertTrue(app.buttons["timeline-tool-tool:read"].waitForExistence(timeout: 5))
+        app.buttons["pane-options-menu"].tap()
+        let upgradeOption = app.buttons["timeline-upgrade-menu-button"]
+        XCTAssertTrue(upgradeOption.waitForExistence(timeout: 5))
+        upgradeOption.tap()
+        XCTAssertTrue(app.navigationBars["Upgrade Herdcats Bridge"].waitForExistence(timeout: 5))
+        // Dismiss the optional upgrade without acting on it.
+        let top = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.07))
+        let bottom = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9))
+        top.press(forDuration: 0.1, thenDragTo: bottom)
+        XCTAssertTrue(app.buttons["timeline-tool-tool:read"].waitForExistence(timeout: 5),
+                      "Dismissing a menu-opened upgrade must keep the working Timeline")
+        XCTAssertTrue(app.buttons["timeline-open-terminal"].exists)
+        XCTAssertFalse(app.scrollViews["pane-output-scroll-view"].exists)
+        app.terminate()
     }
 }
