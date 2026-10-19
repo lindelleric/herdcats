@@ -441,9 +441,16 @@ struct CodexTimelineGatingTests {
             onUseTerminal: {},
             onSetupComplete: {}
         )
+        #expect(view.title("session_reference_unavailable") == "Waiting for Codex session")
+        #expect(view.title("ambiguous_session") == "Waiting for Codex session")
+        #expect(view.title("invalid_session_reference") == "Waiting for Codex session")
         let explanation = view.explanation("session_reference_unavailable")
-        #expect(explanation.contains("Codex’s shared daemon") || explanation.contains("Codex's shared daemon"))
-        #expect(explanation.contains("codex --no-daemon"))
+        #expect(
+            explanation
+            == "Codex reports its session after the first message. Send a message below to start. If Timeline still doesn't appear after Codex replies, this Codex is using its shared daemon. Restart it with `codex --no-daemon`."
+        )
+        // Composer remains usable when session reference is unavailable (identity is nil before first message)
+        #expect(TimelineComposePolicy.canCompose(identity: nil, paneId: "p-codex", status: nil, connected: true))
     }
 
     @Test func codexPaneDisplaysCwdMismatchState() {

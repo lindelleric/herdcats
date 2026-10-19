@@ -525,13 +525,7 @@ struct AgentTimelineView: View {
             )
 
             ContentUnavailableView {
-                Label(
-                    isNeedsUpgrade ? "Upgrade Herdcats Bridge" :
-                    isCodex && isNoSession ? "Codex session not identified" :
-                    isCodex && isCwdMismatch ? "This pane’s Codex session could not be confirmed" :
-                    (isMissing ? "Set up Timeline" : "Timeline unavailable"),
-                    systemImage: "text.bubble"
-                )
+                Label(title(code), systemImage: "text.bubble")
             } description: {
                 if isCodex && isNoSession, let feedback = codexDaemonFeedback {
                     Text(feedback)
@@ -596,6 +590,15 @@ struct AgentTimelineView: View {
             agent: agent,
             installedVersion: bridgeVersion,
             pinnedVersion: HostHelperSetupPlan.version,
+            supportedAgents: Set(HostHelperSetupPlan.agents)
+        )
+    }
+
+    func title(_ code: String) -> String {
+        Self.unavailableTitle(
+            code: code,
+            agent: agent,
+            bridgeVersion: bridgeVersion,
             supportedAgents: Set(HostHelperSetupPlan.agents)
         )
     }
@@ -668,6 +671,24 @@ struct AgentTimelineView: View {
         "Add `daemon_auto_start = false` under `[features]` in `~/.codex/config.toml`, or start Codex with `codex --no-daemon`."
     }
 
+    static func unavailableTitle(
+        code: String,
+        agent: String?,
+        bridgeVersion: String? = nil,
+        supportedAgents: Set<String> = Set(HostHelperSetupPlan.agents)
+    ) -> String {
+        let isNeedsUpgrade = isNeedsUpgrade(code: code, agent: agent, bridgeVersion: bridgeVersion, supportedAgents: supportedAgents)
+        let isCodex = agent == "codex"
+        let isNoSession = ["session_reference_unavailable", "ambiguous_session", "invalid_session_reference"].contains(code)
+        let isCwdMismatch = code == "session_cwd_mismatch"
+        let isMissing = code == "helper_missing"
+        if isNeedsUpgrade { return "Upgrade Herdcats Bridge" }
+        if isCodex && isNoSession { return "Waiting for Codex session" }
+        if isCodex && isCwdMismatch { return "This pane’s Codex session could not be confirmed" }
+        if isMissing { return "Set up Timeline" }
+        return "Timeline unavailable"
+    }
+
     static func explanation(
         _ code: String,
         agent: String?,
@@ -709,7 +730,7 @@ struct AgentTimelineView: View {
         case "routed_host_unsupported": return "Native history is not available through saved machines yet. Messages can still be sent below."
         case "session_reference_unavailable", "ambiguous_session", "invalid_session_reference":
             if isCodex {
-                return "Codex's shared daemon hides which terminal a session belongs to. Fix with `codex --no-daemon` or turn off the shared daemon."
+                return "Codex reports its session after the first message. Send a message below to start. If Timeline still doesn't appear after Codex replies, this Codex is using its shared daemon. Restart it with `codex --no-daemon`."
             }
             return "This pane has no verified session history. Compose and Terminal remain available."
         case "session_cwd_mismatch":
@@ -758,6 +779,9 @@ struct AgentTimelineView: View {
                     bridgeVersion = "0.1.4"
                 } else if ScreenshotFixtures.screen == "optional-upgrade-menu" {
                     bridgeVersion = "0.2.0"
+                }
+                if ScreenshotFixtures.screen == "timeline-codex-no-session" {
+                    bridgeCapabilities = AgentBridgeCapabilities(claudeTimeline: true, codexTimeline: true, codexDaemonConfig: true, recordContent: true)
                 }
                 timeline.setBridgeVersion(bridgeVersion)
                 do {

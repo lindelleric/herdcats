@@ -686,4 +686,18 @@ final class AgentTimelineUITests: XCTestCase {
         saveNamedScreenshot(appMenu.screenshot(), name: "optional-upgrade-menu")
         appMenu.terminate()
     }
+
+    func testWaitingForCodexSessionDisplaysNewCopyAndKeepsComposerUsable() {
+        let app = XCUIApplication()
+        app.launchArguments = [
+            "-hc.screenshots", "-hc.screen", "timeline-codex-no-session", "-hc.agent", "codex", "-hc.light", "-paneShowComposeByDefault", "YES"
+        ]
+        launch(app)
+        XCTAssertTrue(app.staticTexts["Waiting for Codex session"].waitForExistence(timeout: 5))
+        let expectedExplanation = "Codex reports its session after the first message. Send a message below to start. If Timeline still doesn't appear after Codex replies, this Codex is using its shared daemon. Restart it with `codex --no-daemon`."
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label == %@", expectedExplanation)).firstMatch.exists)
+        XCTAssertTrue(app.descendants(matching: .any)["timeline-compose-field"].firstMatch.exists)
+        XCTAssertTrue(app.buttons["Turn off Codex's shared daemon"].exists)
+        app.terminate()
+    }
 }
