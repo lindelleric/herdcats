@@ -95,6 +95,14 @@
                         "truncated": false,
                     ],
                 ]
+            if ScreenshotFixtures.screen == "turn-interrupted" || ScreenshotFixtures.screen == "timeline-turn-interrupted" {
+                entries = [
+                    ["id": "message:user", "kind": "message", "role": "user", "text": "Run the integration test suite and prepare the deployment checklist.", "truncated": false],
+                    ["id": "turn_aborted:1", "kind": "message", "role": "assistant", "status": "failed", "text": "Turn interrupted", "truncated": false],
+                    ["id": "message:user-followup", "kind": "message", "role": "user", "text": "Focus on the connection tests first.", "truncated": false],
+                    ["id": "message:assistant-followup", "kind": "message", "role": "assistant", "text": "Running connection tests now. 24 passed.", "truncated": false],
+                ]
+            }
             if ScreenshotFixtures.screen == "timeline-large-write" {
                 entries = [
                     ["id": "message:user", "kind": "message", "role": "user", "text": "Create the paywall view.", "truncated": false],

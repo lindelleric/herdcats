@@ -20,6 +20,7 @@ struct PaneDetailView: View {
     @State private var tabs: [TabEntry] = []
     @State private var selectedPaneID: String
     @State private var timelineModes: [String: Bool] = [:]
+    @State private var timeline = AgentTimelineState()
     @State private var lastUpdatedByPaneID: [String: Date] = [:]
     /// Pane switcher shows chips instead of cards to give the output more room.
     @State private var isSwitcherCompact = false
@@ -93,6 +94,7 @@ struct PaneDetailView: View {
             pane: selectedPane,
             connectionScope: connectionScope,
             showsTimeline: timelineMode,
+            timeline: timeline,
             topOutputInset: paneSwitcherHeight,
             showLiveDiagnostics: $showLiveDiagnostics,
             onMarkedSeen: {
@@ -173,6 +175,15 @@ struct PaneDetailView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
+                    if timelineMode.wrappedValue, let version = timeline.bridgeVersion, HostHelperProbe.isOlderThanPinned(version) {
+                        Button {
+                            timeline.requestUpgrade()
+                        } label: {
+                            Label("Upgrade Herdcats Bridge", systemImage: "arrow.up.circle")
+                        }
+                        .accessibilityIdentifier("timeline-upgrade-menu-button")
+                        Divider()
+                    }
                     Toggle("Show Compose by Default", isOn: $showComposeByDefault)
                         .accessibilityIdentifier("pane-show-compose-toggle")
                     Divider()
@@ -990,7 +1001,7 @@ struct PaneSessionView: View {
     private let draftKey: String
     private let historyKey: String
     @Binding private var showsTimeline: Bool
-    @State private var timeline = AgentTimelineState()
+    let timeline: AgentTimelineState
     @State private var isTimelineSending = false
     @State private var shouldPinToBottom = true
     @State private var bottomDockHeight: CGFloat = 58
@@ -1085,6 +1096,7 @@ struct PaneSessionView: View {
         pane: PaneEntry,
         connectionScope: ConnectionIdentity,
         showsTimeline: Binding<Bool>,
+        timeline: AgentTimelineState,
         topOutputInset: CGFloat = 0,
         showLiveDiagnostics: Binding<Bool>? = nil,
         onMarkedSeen: (() -> Void)? = nil,
@@ -1093,6 +1105,7 @@ struct PaneSessionView: View {
         self.pane = pane
         self.connectionScope = connectionScope
         self._showsTimeline = showsTimeline
+        self.timeline = timeline
         self.topOutputInset = topOutputInset
         self.showLiveDiagnostics = showLiveDiagnostics
         self.onMarkedSeen = onMarkedSeen
@@ -1105,7 +1118,7 @@ struct PaneSessionView: View {
 #if DEBUG && targetEnvironment(simulator)
         if ScreenshotFixtures.enabled {
             let surface = PaneInputSurfaceModel()
-            if ["compose", "timeline-helper-missing", "timeline-unavailable", "timeline-pending", "timeline-disconnected"].contains(ScreenshotFixtures.screen) {
+            if ["compose", "timeline-helper-missing", "timeline-unavailable", "timeline-pending", "timeline-disconnected", "optional-upgrade-menu", "turn-interrupted"].contains(ScreenshotFixtures.screen) {
                 surface.requestComposeDraft()
                 _draft = State(initialValue: "Looks good. Add a test for reconnecting, then open a pull request.")
             } else if ScreenshotFixtures.screen == "voice" {

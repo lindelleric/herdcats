@@ -20,7 +20,16 @@ import Observation
     private(set) var droppedEntries = 0
     private(set) var delayed = false
     private(set) var revision: UInt64 = 0
+    private(set) var bridgeVersion: String?
+    var upgradeRequested = false
     private var owner: UUID?
+
+    func setBridgeVersion(_ version: String?) {
+        bridgeVersion = version
+    }
+    func requestUpgrade() {
+        upgradeRequested = true
+    }
     private var paneId = ""
     private var epoch: String?
     private var sequence: UInt64 = 0

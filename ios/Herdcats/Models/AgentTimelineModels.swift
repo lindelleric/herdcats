@@ -233,7 +233,7 @@ enum HostHelperProbe: Equatable, Sendable {
         let targetAgent = agent ?? "claude"
         let compatible = report.map {
             $0.name == "herdcats-bridge" && $0.protocol == 1 && $0.herdrProtocol == 22
-                && $0.agents.contains(targetAgent) && Self.isAtLeastPinned($0.version)
+                && $0.agents.contains(targetAgent) && Self.isAtLeastMinimum($0.version)
         } ?? false
         self = .present(version: version, managed: marker == "HC_HELPER_MANAGED", compatible: compatible)
     }
@@ -244,9 +244,26 @@ enum HostHelperProbe: Equatable, Sendable {
         let numbers = parts.compactMap { Int($0) }
         return numbers.count == 3 ? numbers : nil
     }
-    static func isAtLeastPinned(_ version: String) -> Bool {
-        guard let current = versionNumbers(version), let minimum = versionNumbers(HostHelperSetupPlan.version) else { return false }
+    static func isAtLeastMinimum(_ version: String?) -> Bool {
+        guard let version,
+              let current = versionNumbers(version),
+              let minimum = versionNumbers(HostHelperSetupPlan.minimumVersion)
+        else { return false }
         return current == minimum || minimum.lexicographicallyPrecedes(current)
+    }
+    static func isOlderThanMinimum(_ version: String?) -> Bool {
+        guard let version,
+              let current = versionNumbers(version),
+              let minimum = versionNumbers(HostHelperSetupPlan.minimumVersion)
+        else { return false }
+        return current.lexicographicallyPrecedes(minimum)
+    }
+    static func isAtLeastPinned(_ version: String?) -> Bool {
+        guard let version,
+              let current = versionNumbers(version),
+              let pinned = versionNumbers(HostHelperSetupPlan.version)
+        else { return false }
+        return current == pinned || pinned.lexicographicallyPrecedes(current)
     }
     static func isOlderThanPinned(_ version: String?) -> Bool {
         guard let version,

@@ -268,6 +268,12 @@ struct AgentTimelineView: View {
         }
         .onChange(of: connectionState) { _, _ in cancelHelperInstallation() }
         .onChange(of: scenePhase) { _, phase in if phase != .active { cancelHelperInstallation() } }
+        .onChange(of: timeline.upgradeRequested) { _, requested in
+            if requested {
+                timeline.upgradeRequested = false
+                beginSetup(reason: .updateRequired)
+            }
+        }
         .onChange(of: contentScope) { _, _ in
             historyLoader.cancel()
             entryFrames = [:]
@@ -603,7 +609,23 @@ struct AgentTimelineView: View {
         let isSupported = canPinnedInstallerSupport(agent: agent, supportedAgents: supportedAgents)
         guard isSupported else { return false }
         let isCodex = agent == "codex"
-        return code == "helper_update_required" || (HostHelperProbe.isOlderThanPinned(bridgeVersion) && (code == "record_too_large" || (isCodex && code == "unsupported_agent")))
+        return code == "helper_update_required" || (HostHelperProbe.isOlderThanMinimum(bridgeVersion) && (code == "record_too_large" || (isCodex && code == "unsupported_agent")))
+    }
+
+    static func upgradePitch(
+        agent: String?,
+        installedVersion: String?,
+        pinnedVersion: String = HostHelperSetupPlan.version
+    ) -> String {
+        let isCodex = agent == "codex"
+        let installedBelowMinimum = !HostHelperProbe.isAtLeastMinimum(installedVersion)
+        if installedBelowMinimum {
+            let feature = isCodex ? "Codex conversations" : "session images"
+            return "Version \(pinnedVersion) adds \(feature). Your agent keeps running while you upgrade."
+        } else {
+            let feature = isCodex ? "fixes for Codex conversations" : "fixes for session history"
+            return "Version \(pinnedVersion) includes \(feature). Your agent keeps running while you upgrade."
+        }
     }
 
     static func showsInstallOrUpgrade(
@@ -722,6 +744,7 @@ struct AgentTimelineView: View {
         isPaging = false
         bridgeCapabilities = await connection.bridgeCapabilities(for: connectionState.generation)
         bridgeVersion = await connection.bridgeVersion(for: connectionState.generation)
+        timeline.setBridgeVersion(bridgeVersion)
         codexDaemonFeedback = nil
         codexDaemonErrorOccurred = false
         guard scenePhase == .active, connectionState.isReady else {
@@ -733,7 +756,10 @@ struct AgentTimelineView: View {
                 if ScreenshotFixtures.screen == "timeline-history-position" { following = false }
                 if ScreenshotFixtures.screen.contains("helper-old") || ScreenshotFixtures.screen.contains("needs-upgrade") {
                     bridgeVersion = "0.1.4"
+                } else if ScreenshotFixtures.screen == "optional-upgrade-menu" {
+                    bridgeVersion = "0.2.0"
                 }
+                timeline.setBridgeVersion(bridgeVersion)
                 do {
                     try timeline.consume(AgentTimelineScreenshotFixture.frame(
                         paneId: paneId,
@@ -1126,6 +1152,11 @@ private struct AgentTimelineEntryView: View {
     @State private var previewURL: URL?
     @State private var imageLink: URL?
     @State private var imageError: String?
+
+    private var isTurnInterrupted: Bool {
+        entry.role == "assistant" && entry.status == "failed"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if entry.kind == "image" {
@@ -1138,6 +1169,10 @@ private struct AgentTimelineEntryView: View {
                         .textSelection(.enabled).lineLimit(8)
                         .accessibilityIdentifier("timeline-record-\(entry.id)")
                 }
+            } else if isTurnInterrupted {
+                Label(entry.text, systemImage: "stop.circle")
+                    .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
+                    .accessibilityIdentifier("timeline-interrupted-\(entry.id)")
             } else {
                 Text(markdown).font(.jost(.body)).textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1149,7 +1184,7 @@ private struct AgentTimelineEntryView: View {
         }
         .foregroundStyle(Theme.text).frame(maxWidth: .infinity, alignment: .leading)
         .padding(entry.role == "user" ? 16 : 0)
-        .padding(.vertical, entry.role == "user" ? 0 : 8)
+        .padding(.vertical, entry.role == "user" ? 0 : (isTurnInterrupted ? 4 : 8))
         .background {
             if entry.role == "user" {
                 RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.lg)
@@ -1238,8 +1273,7 @@ private struct AgentBridgeSetupView: View {
                         Text("A newer Herdcats Bridge is available")
                             .font(.jost(.title, weight: .semibold))
                             .accessibilityAddTraits(.isHeader)
-                        let feature = agent == "codex" ? "Codex conversations" : "session images"
-                        Text("Version \(pinnedVersion) adds \(feature). Your agent keeps running while you upgrade.")
+                        Text(AgentTimelineView.upgradePitch(agent: agent, installedVersion: installedVersion, pinnedVersion: pinnedVersion))
                             .font(.jost(.body)).foregroundStyle(Theme.textMuted)
                         VStack(alignment: .leading, spacing: 6) {
                             Text("\(target.username)@\(target.host)")
