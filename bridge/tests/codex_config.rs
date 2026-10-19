@@ -895,9 +895,9 @@ fn test_stop_running_mismatched_identity_left_alone() {
         CodexConfigResult::Changed {
             backup: Some(_),
             daemon: Some(DaemonStopStatus::NotRunning),
-            updater: Some(DaemonStopStatus::NotRunning),
+            updater: Some(DaemonStopStatus::Unknown),
         } => {}
-        _ => panic!("Expected NotRunning, got: {:?}", res),
+        _ => panic!("Expected daemon NotRunning and updater Unknown, got: {:?}", res),
     }
 
     assert_eq!(unsafe { libc::kill(updater_pid, 0) }, 0);
@@ -991,6 +991,67 @@ fn test_cli_daemon_status_and_stop_running() {
     let stdout2 = String::from_utf8(output_status2.stdout).unwrap();
     let val2: serde_json::Value = serde_json::from_str(stdout2.trim()).unwrap();
     assert_eq!(val2["auto_start"], false);
+}
+
+#[test]
+fn test_stop_running_mismatched_daemon_reports_unknown_and_no_stop() {
+    let temp = TempCodex::new("cli-stop-mismatched-daemon");
+    let codex_home = temp.path.join(".codex");
+    fs::create_dir_all(&codex_home).unwrap();
+    let config_path = codex_home.join("config.toml");
+    fs::write(&config_path, "[features]\ndaemon_auto_start = true\n").unwrap();
+
+    // Fake `codex app-server daemon stop` that records being invoked. It must
+    // NOT run: the daemon pid file's start time does not match the live
+    // process, so the daemon's identity is Unknown and it is never stopped.
+    let stop_bin_dir = codex_home
+        .join("packages")
+        .join("app-server-daemon")
+        .join("current")
+        .join("bin");
+    fs::create_dir_all(&stop_bin_dir).unwrap();
+    let stop_bin = stop_bin_dir.join("codex");
+    fs::write(
+        &stop_bin,
+        "#!/bin/sh\necho called > \"$CODEX_HOME/codex_stop_called\"\nexit 0\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        fs::set_permissions(&stop_bin, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let (daemon_guard, d_sec, _) = spawn_dummy_in_packages(&codex_home, "daemon.sh");
+    let daemon_pid = daemon_guard.0.id() as libc::pid_t;
+    let daemon_pid_file = codex_home.join("app-server-daemon").join("daemon.pid");
+    write_pid_file(
+        &daemon_pid_file,
+        daemon_guard.0.id(),
+        current_boot_id().as_deref(),
+        d_sec + 1000,
+        Some(0),
+    );
+    assert_eq!(
+        check_process(&daemon_pid_file, &codex_home),
+        ProcessStatus::Unknown
+    );
+
+    let binary = env!("CARGO_BIN_EXE_herdcats-bridge");
+    let output = std::process::Command::new(binary)
+        .args(["codex-config", "disable-daemon", "--stop-running"])
+        .env("CODEX_HOME", &codex_home)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let val: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(val["status"], "changed");
+    assert_eq!(val["daemon"], "unknown");
+    assert_eq!(val["updater"], "not_running");
+
+    // The fake `daemon stop` was never invoked and the process was not signalled.
+    assert!(!codex_home.join("codex_stop_called").exists());
+    assert_eq!(unsafe { libc::kill(daemon_pid, 0) }, 0);
 }
 
 #[test]

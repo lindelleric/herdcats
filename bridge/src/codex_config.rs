@@ -18,6 +18,10 @@ pub enum DaemonStopStatus {
     Stopped,
     NotRunning,
     StopFailed,
+    /// A process that may be the daemon/updater is alive but its identity could
+    /// not be verified (e.g. pid-file start-time mismatch). It is never
+    /// signalled or stopped, and the result must not claim "not_running".
+    Unknown,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -686,10 +690,12 @@ fn stop_status(
             }
         }
         // Unknown (e.g. alive, owned by us, under the packages dir, but with a
-        // mismatching pid-file start time) is never signalled or stopped; report
-        // it as not running rather than claiming a stop failure for a process we
-        // could not verify.
-        ProcessStatus::NotRunning | ProcessStatus::Unknown => DaemonStopStatus::NotRunning,
+        // mismatching pid-file start time) is never signalled or stopped, and
+        // the result must not claim not_running — a daemon may really be
+        // running. Report Unknown so the app does not tell the user that
+        // nothing was running.
+        ProcessStatus::Unknown => DaemonStopStatus::Unknown,
+        ProcessStatus::NotRunning => DaemonStopStatus::NotRunning,
     }
 }
 
