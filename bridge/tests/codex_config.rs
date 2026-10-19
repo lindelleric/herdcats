@@ -9,6 +9,9 @@ use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+use std::process::Stdio;
 
 struct TempCodex {
     path: PathBuf,
@@ -514,19 +517,53 @@ struct ChildGuard(std::process::Child);
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        kill_tree(&mut self.0);
     }
 }
 
-struct PidGuard(libc::pid_t);
+// A detached dummy (spawned via a shell double-fork) plus the outer shell
+// child, so the whole tree can be killed and the outer child reaped even if
+// an assertion fails.
+struct OrphanGuard {
+    outer: std::process::Child,
+    pid: libc::pid_t,
+    pgid: libc::pid_t,
+}
 
-impl Drop for PidGuard {
+impl Drop for OrphanGuard {
     fn drop(&mut self) {
         unsafe {
-            libc::kill(self.0, libc::SIGKILL);
+            libc::kill(-self.pgid, libc::SIGKILL);
+            libc::kill(self.pid, libc::SIGKILL);
         }
+        let _ = self.outer.wait();
     }
+}
+
+// Spawns a dummy script detached from the test runner's stdio (so it can
+// never hold cargo's output pipe open) and in its own process group (so it
+// and anything it forks can be killed wholesale).
+fn spawn_script(exe: &Path, script: &Path) -> std::process::Child {
+    std::process::Command::new(exe)
+        .arg(script)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .unwrap()
+}
+
+// SIGKILL the child's whole process group (dummies are spawned with
+// process_group(0), covering e.g. forked `sleep`s), then the child itself as
+// a fallback, then reap it.
+fn kill_tree(child: &mut std::process::Child) {
+    let pgid = child.id() as libc::pid_t;
+    unsafe {
+        libc::kill(-pgid, libc::SIGKILL);
+        libc::kill(pgid, libc::SIGKILL);
+    }
+    let _ = child.wait();
 }
 
 fn write_pid_file(
@@ -553,7 +590,37 @@ fn write_pid_file(
     fs::write(path, serde_json::to_string(&data).unwrap()).unwrap();
 }
 
-fn spawn_dummy_in_packages(codex_dir: &Path, name: &str) -> (ChildGuard, i64, Option<i64>) {
+// Copies nothing: dummies run under /bin/sh and are identified via argv
+// (KERN_PROCARGS2), which can be briefly unavailable right after spawn, so
+// tests call wait_for_check_status to let the classification settle instead
+// of racing process startup.
+fn wait_for_check_status(
+    pid_file: &Path,
+    codex_dir: &Path,
+    expected: ProcessStatus,
+    what: &str,
+) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if check_process(pid_file, codex_dir) == expected {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "dummy never became {what} ({expected:?})"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+// Spawns a dummy whose TERM trap removes its pid file, so its death is
+// observed through the missing pid file instead of introspecting a possibly
+// unreaped zombie (whose cached argv can make a dead process look alive).
+fn spawn_dummy_in_packages(
+    codex_dir: &Path,
+    name: &str,
+    pid_file: &Path,
+) -> (ChildGuard, i64, Option<i64>) {
     let packages_dir = codex_dir
         .join("packages")
         .join("app-server-daemon")
@@ -562,17 +629,17 @@ fn spawn_dummy_in_packages(codex_dir: &Path, name: &str) -> (ChildGuard, i64, Op
     let script_path = packages_dir.join(name);
     fs::write(
         &script_path,
-        "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do sleep 0.05; done\n",
+        format!(
+            "#!/bin/sh\ntrap \"rm -f '{}'; exit 0\" TERM\nwhile true; do sleep 0.05; done\n",
+            pid_file.display()
+        ),
     )
     .unwrap();
     #[cfg(unix)]
     {
         fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let child = std::process::Command::new("/bin/sh")
-        .arg(&script_path)
-        .spawn()
-        .unwrap();
+    let child = spawn_script(Path::new("/bin/sh"), &script_path);
     let pid = child.id() as libc::pid_t;
     std::thread::sleep(std::time::Duration::from_millis(10));
     let (start_sec, start_usec) = process_start_time(pid).expect("read start time");
@@ -592,10 +659,7 @@ fn spawn_dummy_outside_packages(codex_dir: &Path, name: &str) -> (ChildGuard, i6
     {
         fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let child = std::process::Command::new("/bin/sh")
-        .arg(&script_path)
-        .spawn()
-        .unwrap();
+    let child = spawn_script(Path::new("/bin/sh"), &script_path);
     let pid = child.id() as libc::pid_t;
     std::thread::sleep(Duration::from_millis(10));
     let (start_sec, start_usec) = process_start_time(pid).expect("read start time");
@@ -604,13 +668,15 @@ fn spawn_dummy_outside_packages(codex_dir: &Path, name: &str) -> (ChildGuard, i6
 
 // Spawns a dummy under the packages dir that is NOT a direct child of this test
 // process (shell double-fork), so the system reaps it once it exits and
-// `kill(pid, 0)` becomes a reliable "process is gone" signal.
+// `kill(pid, 0)` becomes a reliable "process is gone" signal. The outer shell
+// is spawned detached from the test runner's stdio and in its own process
+// group (inherited by the dummy), so the guard can kill the whole tree.
 fn spawn_orphan_in_packages(
     codex_dir: &Path,
     name: &str,
     pid_record: &Path,
     term_handler: &str,
-) -> PidGuard {
+) -> OrphanGuard {
     let packages_dir = codex_dir
         .join("packages")
         .join("app-server-daemon")
@@ -630,8 +696,13 @@ fn spawn_orphan_in_packages(
     let mut outer = std::process::Command::new("/bin/sh")
         .arg("-c")
         .arg(format!("'{}' &", script_path.display()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
         .spawn()
         .unwrap();
+    let pgid = outer.id() as libc::pid_t;
     let _ = outer.wait();
     let deadline = Instant::now() + Duration::from_secs(5);
     while !pid_record.is_file() {
@@ -643,7 +714,7 @@ fn spawn_orphan_in_packages(
     }
     let content = fs::read_to_string(pid_record).unwrap();
     let pid: libc::pid_t = content.trim().parse().unwrap();
-    PidGuard(pid)
+    OrphanGuard { outer, pid, pgid }
 }
 
 #[test]
@@ -670,12 +741,12 @@ fn test_daemon_status_running() {
     let config_path = temp.path.join("config.toml");
     fs::write(&config_path, "[features]\ndaemon_auto_start = true\n").unwrap();
 
-    let (daemon_guard, d_sec, d_usec) = spawn_dummy_in_packages(&temp.path, "daemon.sh");
-    let (updater_guard, u_sec, u_usec) = spawn_dummy_in_packages(&temp.path, "updater.sh");
-
     let boot_id = current_boot_id();
     let daemon_pid_file = temp.path.join("app-server-daemon").join("daemon.pid");
     let updater_pid_file = temp.path.join("app-server-daemon").join("daemon-updater.pid");
+    let (daemon_guard, d_sec, d_usec) = spawn_dummy_in_packages(&temp.path, "daemon.sh", &daemon_pid_file);
+    let (updater_guard, u_sec, u_usec) =
+        spawn_dummy_in_packages(&temp.path, "updater.sh", &updater_pid_file);
 
     write_pid_file(
         &daemon_pid_file,
@@ -691,6 +762,8 @@ fn test_daemon_status_running() {
         u_sec,
         u_usec,
     );
+    wait_for_check_status(&daemon_pid_file, &temp.path, ProcessStatus::Running, "running");
+    wait_for_check_status(&updater_pid_file, &temp.path, ProcessStatus::Running, "running");
 
     let status = daemon_status_in_dir(&temp.path);
     assert_eq!(
@@ -726,8 +799,8 @@ fn test_daemon_status_stale_pid_dead() {
 #[test]
 fn test_daemon_status_pid_reused_start_time_mismatch() {
     let temp = TempCodex::new("daemon-status-reuse");
-    let (guard, real_sec, _) = spawn_dummy_in_packages(&temp.path, "dummy.sh");
     let pid_file = temp.path.join("app-server-daemon").join("daemon.pid");
+    let (guard, real_sec, _) = spawn_dummy_in_packages(&temp.path, "dummy.sh", &pid_file);
 
     write_pid_file(
         &pid_file,
@@ -818,8 +891,10 @@ exit 1
         fs::set_permissions(&stop_bin, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    let (mut updater_guard, u_sec, u_usec) = spawn_dummy_in_packages(&temp.path, "updater.sh");
     let updater_pid_file = temp.path.join("app-server-daemon").join("daemon-updater.pid");
+    let daemon_pid_file = temp.path.join("app-server-daemon").join("daemon.pid");
+    let (mut updater_guard, u_sec, u_usec) =
+        spawn_dummy_in_packages(&temp.path, "updater.sh", &updater_pid_file);
     let boot_id = current_boot_id();
     write_pid_file(
         &updater_pid_file,
@@ -829,8 +904,8 @@ exit 1
         u_usec,
     );
 
-    let (daemon_guard, d_sec, d_usec) = spawn_dummy_in_packages(&temp.path, "daemon.sh");
-    let daemon_pid_file = temp.path.join("app-server-daemon").join("daemon.pid");
+    let (daemon_guard, d_sec, d_usec) =
+        spawn_dummy_in_packages(&temp.path, "daemon.sh", &daemon_pid_file);
     write_pid_file(
         &daemon_pid_file,
         daemon_guard.0.id(),
@@ -838,6 +913,8 @@ exit 1
         d_sec,
         d_usec,
     );
+    wait_for_check_status(&updater_pid_file, &temp.path, ProcessStatus::Running, "running");
+    wait_for_check_status(&daemon_pid_file, &temp.path, ProcessStatus::Running, "running");
 
     let res = disable_daemon_in_dir_with_options(&temp.path, true);
     match &res {
@@ -871,9 +948,10 @@ fn test_stop_running_mismatched_identity_left_alone() {
     let config_path = temp.path.join("config.toml");
     fs::write(&config_path, "[features]\ndaemon_auto_start = true\n").unwrap();
 
-    let (updater_guard, u_sec, _) = spawn_dummy_in_packages(&temp.path, "updater.sh");
-    let updater_pid = updater_guard.0.id() as libc::pid_t;
     let updater_pid_file = temp.path.join("app-server-daemon").join("daemon-updater.pid");
+    let (updater_guard, u_sec, _) =
+        spawn_dummy_in_packages(&temp.path, "updater.sh", &updater_pid_file);
+    let updater_pid = updater_guard.0.id() as libc::pid_t;
 
     write_pid_file(
         &updater_pid_file,
@@ -885,6 +963,12 @@ fn test_stop_running_mismatched_identity_left_alone() {
 
     // Path is under the packages dir but the start time does not match:
     // Unknown, and it must never be signalled.
+    wait_for_check_status(
+        &updater_pid_file,
+        &temp.path,
+        ProcessStatus::Unknown,
+        "identity-unknown",
+    );
     assert_eq!(
         check_process(&updater_pid_file, &temp.path),
         ProcessStatus::Unknown
@@ -930,15 +1014,22 @@ fn test_stop_running_config_error_no_stop_attempted() {
         fs::set_permissions(&stop_bin, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    let (updater_guard, u_sec, u_usec) = spawn_dummy_in_packages(&temp.path, "updater.sh");
-    let updater_pid = updater_guard.0.id() as libc::pid_t;
     let updater_pid_file = temp.path.join("app-server-daemon").join("daemon-updater.pid");
+    let (updater_guard, u_sec, u_usec) =
+        spawn_dummy_in_packages(&temp.path, "updater.sh", &updater_pid_file);
+    let updater_pid = updater_guard.0.id() as libc::pid_t;
     write_pid_file(
         &updater_pid_file,
         updater_guard.0.id(),
         current_boot_id().as_deref(),
         u_sec,
         u_usec,
+    );
+    wait_for_check_status(
+        &updater_pid_file,
+        &temp.path,
+        ProcessStatus::Running,
+        "running",
     );
 
     let res = disable_daemon_in_dir_with_options(&temp.path, true);
@@ -1021,15 +1112,22 @@ fn test_stop_running_mismatched_daemon_reports_unknown_and_no_stop() {
         fs::set_permissions(&stop_bin, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    let (daemon_guard, d_sec, _) = spawn_dummy_in_packages(&codex_home, "daemon.sh");
-    let daemon_pid = daemon_guard.0.id() as libc::pid_t;
     let daemon_pid_file = codex_home.join("app-server-daemon").join("daemon.pid");
+    let (daemon_guard, d_sec, _) =
+        spawn_dummy_in_packages(&codex_home, "daemon.sh", &daemon_pid_file);
+    let daemon_pid = daemon_guard.0.id() as libc::pid_t;
     write_pid_file(
         &daemon_pid_file,
         daemon_guard.0.id(),
         current_boot_id().as_deref(),
         d_sec + 1000,
         Some(0),
+    );
+    wait_for_check_status(
+        &daemon_pid_file,
+        &codex_home,
+        ProcessStatus::Unknown,
+        "identity-unknown",
     );
     assert_eq!(
         check_process(&daemon_pid_file, &codex_home),
@@ -1093,24 +1191,37 @@ exit 1
     // system reaps it and the fake `daemon stop` can observe it as gone.
     let pid_record = temp.path.join("updater_pid_record");
     let updater = spawn_orphan_in_packages(&temp.path, "updater.sh", &pid_record, "exit 0");
-    let (u_sec, u_usec) = process_start_time(updater.0).expect("read start time");
+    let (u_sec, u_usec) = process_start_time(updater.pid).expect("read start time");
     let updater_pid_file = temp.path.join("app-server-daemon").join("daemon-updater.pid");
     write_pid_file(
         &updater_pid_file,
-        updater.0 as u32,
+        updater.pid as u32,
         current_boot_id().as_deref(),
         u_sec,
         u_usec,
     );
+    wait_for_check_status(
+        &updater_pid_file,
+        &temp.path,
+        ProcessStatus::Running,
+        "running",
+    );
 
-    let (daemon_guard, d_sec, d_usec) = spawn_dummy_in_packages(&temp.path, "daemon.sh");
     let daemon_pid_file = temp.path.join("app-server-daemon").join("daemon.pid");
+    let (daemon_guard, d_sec, d_usec) =
+        spawn_dummy_in_packages(&temp.path, "daemon.sh", &daemon_pid_file);
     write_pid_file(
         &daemon_pid_file,
         daemon_guard.0.id(),
         current_boot_id().as_deref(),
         d_sec,
         d_usec,
+    );
+    wait_for_check_status(
+        &daemon_pid_file,
+        &temp.path,
+        ProcessStatus::Running,
+        "running",
     );
 
     let res = disable_daemon_in_dir_with_options(&temp.path, true);
@@ -1156,14 +1267,21 @@ exit 1
         fs::set_permissions(&stop_bin, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    let (daemon_guard, d_sec, d_usec) = spawn_dummy_in_packages(&temp.path, "daemon.sh");
     let daemon_pid_file = temp.path.join("app-server-daemon").join("daemon.pid");
+    let (daemon_guard, d_sec, d_usec) =
+        spawn_dummy_in_packages(&temp.path, "daemon.sh", &daemon_pid_file);
     write_pid_file(
         &daemon_pid_file,
         daemon_guard.0.id(),
         current_boot_id().as_deref(),
         d_sec,
         d_usec,
+    );
+    wait_for_check_status(
+        &daemon_pid_file,
+        &temp.path,
+        ProcessStatus::Running,
+        "running",
     );
 
     // Short timeout so the test runs fast; production uses 15 s.
@@ -1208,38 +1326,57 @@ fn test_stop_running_slow_exiting_updater_still_stopped() {
     let config_path = temp.path.join("config.toml");
     fs::write(&config_path, "[features]\ndaemon_auto_start = true\n").unwrap();
 
-    // Updater traps TERM but only exits after ~1 s, longer than the old
-    // 500 ms re-check window.
+    // Updater traps TERM but only exits after a delay: 0.8 s is always slower
+    // than the old 20 x 25 ms = 500 ms re-check window (so a regression to
+    // that window deterministically fails this test) while leaving a wide
+    // margin to the bridge's 5 s + 5 s exit budget under load. The trap
+    // removes the pid file when it finally exits, so death is detected via
+    // the missing pid file instead of introspecting an unreaped zombie.
     let packages_bin = temp
         .path
         .join("packages")
         .join("app-server-daemon")
         .join("bin");
     fs::create_dir_all(&packages_bin).unwrap();
+    let updater_pid_file = temp
+        .path
+        .join("app-server-daemon")
+        .join("daemon-updater.pid");
     let script_path = packages_bin.join("slow_updater.sh");
     fs::write(
         &script_path,
-        "#!/bin/sh\ntrap 'sleep 1; exit 0' TERM\nwhile true; do sleep 0.05; done\n",
+        format!(
+            "#!/bin/sh\ntrap \"sleep 0.8; rm -f '{}'; exit 0\" TERM\nwhile true; do sleep 0.05; done\n",
+            updater_pid_file.display()
+        ),
     )
     .unwrap();
     #[cfg(unix)]
     {
         fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let mut updater = std::process::Command::new("/bin/sh")
-        .arg(&script_path)
-        .spawn()
-        .unwrap();
-    let updater_pid = updater.id() as libc::pid_t;
-    std::thread::sleep(Duration::from_millis(10));
-    let (u_sec, u_usec) = process_start_time(updater_pid).expect("read start time");
-    let updater_pid_file = temp.path.join("app-server-daemon").join("daemon-updater.pid");
-    write_pid_file(
+    let mut updater = ChildGuard(spawn_script(Path::new("/bin/sh"), &script_path));
+    let updater_pid = updater.0.id() as libc::pid_t;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some((u_sec, u_usec)) = process_start_time(updater_pid) {
+            write_pid_file(
+                &updater_pid_file,
+                updater.0.id(),
+                current_boot_id().as_deref(),
+                u_sec,
+                u_usec,
+            );
+            break;
+        }
+        assert!(Instant::now() < deadline, "could not read updater start time");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    wait_for_check_status(
         &updater_pid_file,
-        updater.id(),
-        current_boot_id().as_deref(),
-        u_sec,
-        u_usec,
+        &temp.path,
+        ProcessStatus::Running,
+        "running",
     );
 
     let res = disable_daemon_in_dir_with_options(&temp.path, true);
@@ -1252,13 +1389,17 @@ fn test_stop_running_slow_exiting_updater_still_stopped() {
         _ => panic!("Expected slow updater to be Stopped, got: {:?}", res),
     }
 
-    let mut dead = false;
-    for _ in 0..40 {
-        if let Ok(Some(_)) = updater.try_wait() {
-            dead = true;
+    // Reap the exited updater within its own generous deadline instead of a
+    // fixed iteration count, so heavy load cannot fail this assertion.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Ok(Some(_)) = updater.0.try_wait() {
             break;
         }
+        assert!(
+            Instant::now() < deadline,
+            "slow updater should have exited after SIGTERM"
+        );
         std::thread::sleep(Duration::from_millis(25));
     }
-    assert!(dead, "slow updater should have exited after SIGTERM");
 }

@@ -878,6 +878,22 @@ fn macos_boot_id() -> Option<String> {
 
 #[cfg(target_os = "macos")]
 fn macos_proc_args(pid: libc::pid_t) -> Option<(Option<String>, Vec<String>)> {
+    // KERN_PROCARGS2 can transiently fail for a live process (observed right
+    // after spawn and while the process forks children, e.g. `sleep`):
+    // sysctl may return an error or no size on one call and succeed on the
+    // next. Retry briefly so a live process we own is not misclassified as
+    // NotRunning (which would make the app claim nothing is running).
+    for _ in 0..5 {
+        if let Some(parsed) = macos_proc_args_once(pid) {
+            return Some(parsed);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn macos_proc_args_once(pid: libc::pid_t) -> Option<(Option<String>, Vec<String>)> {
     let mut mib = [libc::CTL_KERN, 49, pid]; // 49 = KERN_PROCARGS2
     let mut size: libc::size_t = 0;
     unsafe {
