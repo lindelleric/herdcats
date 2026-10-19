@@ -1,10 +1,11 @@
 use herdcats_bridge::codex_config::{
     CodexConfigResult, DaemonStatusResult, DaemonStopStatus, ProcessStatus, check_process,
     current_boot_id, daemon_status_in_dir, disable_daemon_in_dir,
-    disable_daemon_in_dir_with_options, process_start_time,
+    disable_daemon_in_dir_with_options, process_start_time, stop_daemon_and_updater_with_timeout,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -518,6 +519,16 @@ impl Drop for ChildGuard {
     }
 }
 
+struct PidGuard(libc::pid_t);
+
+impl Drop for PidGuard {
+    fn drop(&mut self) {
+        unsafe {
+            libc::kill(self.0, libc::SIGKILL);
+        }
+    }
+}
+
 fn write_pid_file(
     path: &Path,
     pid: u32,
@@ -586,9 +597,53 @@ fn spawn_dummy_outside_packages(codex_dir: &Path, name: &str) -> (ChildGuard, i6
         .spawn()
         .unwrap();
     let pid = child.id() as libc::pid_t;
-    std::thread::sleep(std::time::Duration::from_millis(10));
+    std::thread::sleep(Duration::from_millis(10));
     let (start_sec, start_usec) = process_start_time(pid).expect("read start time");
     (ChildGuard(child), start_sec, start_usec)
+}
+
+// Spawns a dummy under the packages dir that is NOT a direct child of this test
+// process (shell double-fork), so the system reaps it once it exits and
+// `kill(pid, 0)` becomes a reliable "process is gone" signal.
+fn spawn_orphan_in_packages(
+    codex_dir: &Path,
+    name: &str,
+    pid_record: &Path,
+    term_handler: &str,
+) -> PidGuard {
+    let packages_dir = codex_dir
+        .join("packages")
+        .join("app-server-daemon")
+        .join("bin");
+    fs::create_dir_all(&packages_dir).unwrap();
+    let script_path = packages_dir.join(name);
+    let script = format!(
+        "#!/bin/sh\ntrap '{term_handler}' TERM\necho $$ > '{record}'\nwhile true; do sleep 0.05; done\n",
+        term_handler = term_handler,
+        record = pid_record.display()
+    );
+    fs::write(&script_path, script).unwrap();
+    #[cfg(unix)]
+    {
+        fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut outer = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!("'{}' &", script_path.display()))
+        .spawn()
+        .unwrap();
+    let _ = outer.wait();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !pid_record.is_file() {
+        assert!(
+            Instant::now() < deadline,
+            "orphan dummy did not record its pid"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let content = fs::read_to_string(pid_record).unwrap();
+    let pid: libc::pid_t = content.trim().parse().unwrap();
+    PidGuard(pid)
 }
 
 #[test]
@@ -682,8 +737,18 @@ fn test_daemon_status_pid_reused_start_time_mismatch() {
         Some(0),
     );
 
+    // Alive, owned by us, executable under the packages dir, but the pid-file
+    // start time does not match: identity is inconclusive => Unknown. It must
+    // not be reported as not_running (Linux pid-file startSeconds semantics
+    // are unverified), otherwise the app would claim no daemon is running.
     let status = check_process(&pid_file, &temp.path);
-    assert_eq!(status, ProcessStatus::NotRunning);
+    assert_eq!(status, ProcessStatus::Unknown);
+    let full = daemon_status_in_dir(&temp.path);
+    assert_eq!(full.daemon, ProcessStatus::Unknown);
+    assert_eq!(
+        full.to_json(),
+        r#"{"daemon":"unknown","updater":"not_running","auto_start":null}"#
+    );
 }
 
 #[test]
@@ -818,6 +883,13 @@ fn test_stop_running_mismatched_identity_left_alone() {
         Some(0),
     );
 
+    // Path is under the packages dir but the start time does not match:
+    // Unknown, and it must never be signalled.
+    assert_eq!(
+        check_process(&updater_pid_file, &temp.path),
+        ProcessStatus::Unknown
+    );
+
     let res = disable_daemon_in_dir_with_options(&temp.path, true);
     match &res {
         CodexConfigResult::Changed {
@@ -919,4 +991,213 @@ fn test_cli_daemon_status_and_stop_running() {
     let stdout2 = String::from_utf8(output_status2.stdout).unwrap();
     let val2: serde_json::Value = serde_json::from_str(stdout2.trim()).unwrap();
     assert_eq!(val2["auto_start"], false);
+}
+
+#[test]
+fn test_stop_running_updater_stopped_before_daemon_stop() {
+    let temp = TempCodex::new("stop-order");
+    let config_path = temp.path.join("config.toml");
+    fs::write(&config_path, "[features]\ndaemon_auto_start = true\n").unwrap();
+
+    // Fake `codex app-server daemon stop`: records whether the updater process
+    // was already gone when it runs, then "stops" the daemon.
+    let stop_bin_dir = temp
+        .path
+        .join("packages")
+        .join("app-server-daemon")
+        .join("current")
+        .join("bin");
+    fs::create_dir_all(&stop_bin_dir).unwrap();
+    let stop_bin = stop_bin_dir.join("codex");
+    let stop_script = r#"#!/bin/sh
+if [ "$1" = "app-server" ] && [ "$2" = "daemon" ] && [ "$3" = "stop" ]; then
+    updater_pid=$(cat "$CODEX_HOME/updater_pid_record" 2>/dev/null)
+    if [ -n "$updater_pid" ] && kill -0 "$updater_pid" 2>/dev/null; then
+        echo "updater-alive" > "$CODEX_HOME/stop_order"
+    else
+        echo "updater-gone" > "$CODEX_HOME/stop_order"
+    fi
+    rm -f "$CODEX_HOME/app-server-daemon/daemon.pid"
+    exit 0
+fi
+exit 1
+"#;
+    fs::write(&stop_bin, stop_script).unwrap();
+    #[cfg(unix)]
+    {
+        fs::set_permissions(&stop_bin, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    // The updater exits promptly on SIGTERM. It is spawned detached so the
+    // system reaps it and the fake `daemon stop` can observe it as gone.
+    let pid_record = temp.path.join("updater_pid_record");
+    let updater = spawn_orphan_in_packages(&temp.path, "updater.sh", &pid_record, "exit 0");
+    let (u_sec, u_usec) = process_start_time(updater.0).expect("read start time");
+    let updater_pid_file = temp.path.join("app-server-daemon").join("daemon-updater.pid");
+    write_pid_file(
+        &updater_pid_file,
+        updater.0 as u32,
+        current_boot_id().as_deref(),
+        u_sec,
+        u_usec,
+    );
+
+    let (daemon_guard, d_sec, d_usec) = spawn_dummy_in_packages(&temp.path, "daemon.sh");
+    let daemon_pid_file = temp.path.join("app-server-daemon").join("daemon.pid");
+    write_pid_file(
+        &daemon_pid_file,
+        daemon_guard.0.id(),
+        current_boot_id().as_deref(),
+        d_sec,
+        d_usec,
+    );
+
+    let res = disable_daemon_in_dir_with_options(&temp.path, true);
+    match &res {
+        CodexConfigResult::Changed {
+            backup: Some(_),
+            daemon: Some(DaemonStopStatus::Stopped),
+            updater: Some(DaemonStopStatus::Stopped),
+        } => {}
+        _ => panic!("Expected Changed with both stopped, got: {:?}", res),
+    }
+
+    // The fake `daemon stop` must have observed that the updater was already gone.
+    let order = fs::read_to_string(temp.path.join("stop_order")).unwrap();
+    assert_eq!(order.trim(), "updater-gone");
+    // And it still "stopped" the daemon afterwards.
+    assert!(!daemon_pid_file.exists());
+}
+
+#[test]
+fn test_stop_running_hanging_daemon_stop_is_killed_and_fails() {
+    let temp = TempCodex::new("stop-hanging");
+
+    // Fake `codex` that records its pid and then hangs for a long time.
+    let stop_bin_dir = temp
+        .path
+        .join("packages")
+        .join("app-server-daemon")
+        .join("current")
+        .join("bin");
+    fs::create_dir_all(&stop_bin_dir).unwrap();
+    let stop_bin = stop_bin_dir.join("codex");
+    let stop_script = r#"#!/bin/sh
+if [ "$1" = "app-server" ] && [ "$2" = "daemon" ] && [ "$3" = "stop" ]; then
+    echo $$ > "$CODEX_HOME/hanging_stop_pid"
+    exec sleep 60
+fi
+exit 1
+"#;
+    fs::write(&stop_bin, stop_script).unwrap();
+    #[cfg(unix)]
+    {
+        fs::set_permissions(&stop_bin, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let (daemon_guard, d_sec, d_usec) = spawn_dummy_in_packages(&temp.path, "daemon.sh");
+    let daemon_pid_file = temp.path.join("app-server-daemon").join("daemon.pid");
+    write_pid_file(
+        &daemon_pid_file,
+        daemon_guard.0.id(),
+        current_boot_id().as_deref(),
+        d_sec,
+        d_usec,
+    );
+
+    // Short timeout so the test runs fast; production uses 15 s.
+    let timeout = Duration::from_millis(400);
+    let start = Instant::now();
+    let (daemon, updater) = stop_daemon_and_updater_with_timeout(&temp.path, timeout);
+    let elapsed = start.elapsed();
+
+    assert_eq!(daemon, DaemonStopStatus::StopFailed);
+    assert_eq!(updater, DaemonStopStatus::NotRunning);
+    assert!(
+        elapsed >= timeout,
+        "returned before the timeout expired: {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "daemon stop was not bounded by the timeout: {elapsed:?}"
+    );
+
+    // The hung child must have been killed and reaped by the bridge.
+    let hang_pid: libc::pid_t = fs::read_to_string(temp.path.join("hanging_stop_pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let mut gone = false;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        let res = unsafe { libc::kill(hang_pid, 0) };
+        if res != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+            gone = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(gone, "hung daemon stop child was not killed");
+}
+
+#[test]
+fn test_stop_running_slow_exiting_updater_still_stopped() {
+    let temp = TempCodex::new("stop-slow-updater");
+    let config_path = temp.path.join("config.toml");
+    fs::write(&config_path, "[features]\ndaemon_auto_start = true\n").unwrap();
+
+    // Updater traps TERM but only exits after ~1 s, longer than the old
+    // 500 ms re-check window.
+    let packages_bin = temp
+        .path
+        .join("packages")
+        .join("app-server-daemon")
+        .join("bin");
+    fs::create_dir_all(&packages_bin).unwrap();
+    let script_path = packages_bin.join("slow_updater.sh");
+    fs::write(
+        &script_path,
+        "#!/bin/sh\ntrap 'sleep 1; exit 0' TERM\nwhile true; do sleep 0.05; done\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut updater = std::process::Command::new("/bin/sh")
+        .arg(&script_path)
+        .spawn()
+        .unwrap();
+    let updater_pid = updater.id() as libc::pid_t;
+    std::thread::sleep(Duration::from_millis(10));
+    let (u_sec, u_usec) = process_start_time(updater_pid).expect("read start time");
+    let updater_pid_file = temp.path.join("app-server-daemon").join("daemon-updater.pid");
+    write_pid_file(
+        &updater_pid_file,
+        updater.id(),
+        current_boot_id().as_deref(),
+        u_sec,
+        u_usec,
+    );
+
+    let res = disable_daemon_in_dir_with_options(&temp.path, true);
+    match &res {
+        CodexConfigResult::Changed {
+            backup: Some(_),
+            daemon: Some(DaemonStopStatus::NotRunning),
+            updater: Some(DaemonStopStatus::Stopped),
+        } => {}
+        _ => panic!("Expected slow updater to be Stopped, got: {:?}", res),
+    }
+
+    let mut dead = false;
+    for _ in 0..40 {
+        if let Ok(Some(_)) = updater.try_wait() {
+            dead = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(dead, "slow updater should have exited after SIGTERM");
 }

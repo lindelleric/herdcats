@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 use toml_edit::{DocumentMut, Item, TableLike, Value};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
@@ -530,6 +531,18 @@ pub fn read_auto_start(codex_dir: &Path) -> Option<bool> {
     features.get("daemon_auto_start")?.as_bool()
 }
 
+/// Classify the process recorded in `pid_file`:
+/// - `Running`: alive, owned by us, executable under
+///   `$CODEX_HOME/packages/app-server-daemon/`, and the pid-file start time
+///   matches.
+/// - `NotRunning`: no pid file, no such process, another user's process, or an
+///   executable outside the packages dir.
+/// - `Unknown`: alive and plausibly ours, but identity is inconclusive (e.g. the
+///   pid-file start time does not match). Codex's pid-file `startSeconds`
+///   semantics are verified on macOS only; on Linux they are unverified, so a
+///   start-time mismatch there must NOT be reported as `NotRunning` — a daemon
+///   could really be running while the app tells the user to "send a message"
+///   forever.
 pub fn check_process(pid_file: &Path, codex_dir: &Path) -> ProcessStatus {
     if !pid_file.exists() {
         return ProcessStatus::NotRunning;
@@ -591,14 +604,37 @@ pub fn check_process(pid_file: &Path, codex_dir: &Path) -> ProcessStatus {
     }
 }
 
+/// How long `codex app-server daemon stop` may run before it is killed.
+const DAEMON_STOP_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long to wait for a signalled process to disappear before declaring failure.
+const PROCESS_EXIT_WAIT: Duration = Duration::from_secs(5);
+const PROCESS_EXIT_POLL_STEP: Duration = Duration::from_millis(100);
+
 fn stop_daemon_and_updater(codex_dir: &Path) -> (DaemonStopStatus, DaemonStopStatus) {
+    stop_daemon_and_updater_with_timeout(codex_dir, DAEMON_STOP_COMMAND_TIMEOUT)
+}
+
+// Exposed so integration tests can shorten the `daemon stop` timeout.
+#[doc(hidden)]
+pub fn stop_daemon_and_updater_with_timeout(
+    codex_dir: &Path,
+    stop_command_timeout: Duration,
+) -> (DaemonStopStatus, DaemonStopStatus) {
     let daemon_pid_file = codex_dir.join("app-server-daemon").join("daemon.pid");
     let updater_pid_file = codex_dir.join("app-server-daemon").join("daemon-updater.pid");
 
     let initial_daemon = check_process(&daemon_pid_file, codex_dir);
     let initial_updater = check_process(&updater_pid_file, codex_dir);
 
-    // Stop daemon if running via official binary
+    // Stop the updater FIRST: SIGTERM it (after re-checking its identity) and wait
+    // for it to disappear before running `daemon stop`, so it cannot restart the
+    // daemon in between. A process whose identity is only Unknown is never signalled.
+    if initial_updater == ProcessStatus::Running && term_updater(&updater_pid_file, codex_dir) {
+        wait_for_process_exit(&updater_pid_file, codex_dir);
+    }
+
+    // Then ask the official binary to stop the daemon, bounded by a hard timeout.
+    let mut daemon_stop_failed = false;
     if initial_daemon == ProcessStatus::Running {
         let stop_bin = codex_dir
             .join("packages")
@@ -607,69 +643,125 @@ fn stop_daemon_and_updater(codex_dir: &Path) -> (DaemonStopStatus, DaemonStopSta
             .join("bin")
             .join("codex");
         if stop_bin.is_file() {
-            let _ = std::process::Command::new(&stop_bin)
-                .args(["app-server", "daemon", "stop"])
-                .env("CODEX_HOME", codex_dir)
-                .output();
+            daemon_stop_failed = run_daemon_stop_command(&stop_bin, codex_dir, stop_command_timeout);
         }
     }
 
-    // Stop updater if running via SIGTERM after identity check
-    if initial_updater == ProcessStatus::Running {
-        if let Ok(content) = fs::read_to_string(&updater_pid_file) {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
-                if let Some(pid_i64) = val.get("pid").and_then(|p| p.as_i64()) {
-                    if let Ok(pid) = libc::pid_t::try_from(pid_i64) {
-                        if check_process(&updater_pid_file, codex_dir) == ProcessStatus::Running {
-                            unsafe {
-                                libc::kill(pid, libc::SIGTERM);
-                            }
+    // Re-check both. The updater may need a while to exit after SIGTERM, so poll
+    // for up to 5 s total before reporting stop_failed.
+    let mut final_daemon = check_process(&daemon_pid_file, codex_dir);
+    let mut final_updater = check_process(&updater_pid_file, codex_dir);
+    let deadline = Instant::now() + PROCESS_EXIT_WAIT;
+    while Instant::now() < deadline {
+        let daemon_done = initial_daemon != ProcessStatus::Running
+            || daemon_stop_failed
+            || final_daemon == ProcessStatus::NotRunning;
+        let updater_done =
+            initial_updater != ProcessStatus::Running || final_updater == ProcessStatus::NotRunning;
+        if daemon_done && updater_done {
+            break;
+        }
+        std::thread::sleep(PROCESS_EXIT_POLL_STEP);
+        final_daemon = check_process(&daemon_pid_file, codex_dir);
+        final_updater = check_process(&updater_pid_file, codex_dir);
+    }
+
+    (
+        stop_status(initial_daemon, final_daemon, daemon_stop_failed),
+        stop_status(initial_updater, final_updater, false),
+    )
+}
+
+fn stop_status(
+    initial: ProcessStatus,
+    final_status: ProcessStatus,
+    stop_failed: bool,
+) -> DaemonStopStatus {
+    match initial {
+        ProcessStatus::Running => {
+            if stop_failed || final_status != ProcessStatus::NotRunning {
+                DaemonStopStatus::StopFailed
+            } else {
+                DaemonStopStatus::Stopped
+            }
+        }
+        // Unknown (e.g. alive, owned by us, under the packages dir, but with a
+        // mismatching pid-file start time) is never signalled or stopped; report
+        // it as not running rather than claiming a stop failure for a process we
+        // could not verify.
+        ProcessStatus::NotRunning | ProcessStatus::Unknown => DaemonStopStatus::NotRunning,
+    }
+}
+
+// SIGTERM the updater recorded in `updater_pid_file` after re-verifying its
+// identity right before signalling, so a reused pid is never signalled.
+// Returns true iff the signal was sent.
+fn term_updater(updater_pid_file: &Path, codex_dir: &Path) -> bool {
+    if let Ok(content) = fs::read_to_string(updater_pid_file) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(pid_i64) = val.get("pid").and_then(|p| p.as_i64()) {
+                if let Ok(pid) = libc::pid_t::try_from(pid_i64) {
+                    if check_process(updater_pid_file, codex_dir) == ProcessStatus::Running {
+                        unsafe {
+                            libc::kill(pid, libc::SIGTERM);
                         }
+                        return true;
                     }
                 }
             }
         }
     }
+    false
+}
 
-    // Wait briefly and re-check
-    let mut final_daemon = check_process(&daemon_pid_file, codex_dir);
-    let mut final_updater = check_process(&updater_pid_file, codex_dir);
-    for _ in 0..20 {
-        let daemon_done = initial_daemon != ProcessStatus::Running
-            || final_daemon == ProcessStatus::NotRunning;
-        let updater_done = initial_updater != ProcessStatus::Running
-            || final_updater == ProcessStatus::NotRunning;
-        if daemon_done && updater_done {
-            break;
+fn wait_for_process_exit(pid_file: &Path, codex_dir: &Path) {
+    let deadline = Instant::now() + PROCESS_EXIT_WAIT;
+    while Instant::now() < deadline {
+        if check_process(pid_file, codex_dir) != ProcessStatus::Running {
+            return;
         }
-        std::thread::sleep(std::time::Duration::from_millis(25));
-        final_daemon = check_process(&daemon_pid_file, codex_dir);
-        final_updater = check_process(&updater_pid_file, codex_dir);
+        std::thread::sleep(PROCESS_EXIT_POLL_STEP);
     }
+}
 
-    let daemon_status = match initial_daemon {
-        ProcessStatus::NotRunning => DaemonStopStatus::NotRunning,
-        _ => {
-            if final_daemon == ProcessStatus::NotRunning {
-                DaemonStopStatus::Stopped
-            } else {
-                DaemonStopStatus::StopFailed
+// Runs `<codex> app-server daemon stop` with stdin/stdout/stderr tied to /dev/null
+// (the bridge speaks NDJSON on its own stdout and must not inherit stdio into the
+// child, nor block on its output) and polls try_wait for up to `timeout`. On
+// timeout the child is killed and the stop is reported as failed.
+fn run_daemon_stop_command(stop_bin: &Path, codex_dir: &Path, timeout: Duration) -> bool {
+    use std::process::Stdio;
+    let child = std::process::Command::new(stop_bin)
+        .args(["app-server", "daemon", "stop"])
+        .env("CODEX_HOME", codex_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    let mut child = match child {
+        Ok(c) => c,
+        // Could not even start the command; whether the daemon stopped is left
+        // to the final re-check.
+        Err(_) => return false,
+    };
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return false,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return true;
             }
         }
-    };
-
-    let updater_status = match initial_updater {
-        ProcessStatus::NotRunning => DaemonStopStatus::NotRunning,
-        _ => {
-            if final_updater == ProcessStatus::NotRunning {
-                DaemonStopStatus::Stopped
-            } else {
-                DaemonStopStatus::StopFailed
-            }
-        }
-    };
-
-    (daemon_status, updater_status)
+    }
 }
 
 fn path_is_under(path: &Path, packages_dir: &Path, canon_packages_dir: &Path) -> bool {
@@ -875,22 +967,15 @@ fn verify_process_identity(
         return Ok(false);
     }
 
-    let proc_start_sec = bsd_info.pbi_start_tvsec as i64;
-    let proc_start_usec = bsd_info.pbi_start_tvusec as i64;
-    if proc_start_sec != expected_start_sec {
-        return Ok(false);
-    }
-    if let Some(usec) = expected_start_usec {
-        if proc_start_usec != usec {
-            return Ok(false);
-        }
-    }
-
     let packages_dir = codex_dir.join("packages").join("app-server-daemon");
     let canon_packages_dir = packages_dir
         .canonicalize()
         .unwrap_or_else(|_| packages_dir.clone());
 
+    // Check the executable (and argv) BEFORE the start time: only a process
+    // that is not ours (executable outside the packages dir) may be reported
+    // as definitely NotRunning on the basis of a mismatch.
+    let mut path_ok = false;
     let mut path_buf = [0u8; 4096];
     let path_len = unsafe {
         libc::proc_pidpath(
@@ -903,25 +988,52 @@ fn verify_process_identity(
         if let Ok(path_str) = std::str::from_utf8(&path_buf[..path_len as usize]) {
             let p = Path::new(path_str);
             if path_is_under(p, &packages_dir, &canon_packages_dir) {
-                return Ok(true);
+                path_ok = true;
             }
         }
     }
 
-    if let Some((exec_path, args)) = macos_proc_args(pid) {
-        if let Some(ref ep) = exec_path {
-            if path_is_under(Path::new(ep), &packages_dir, &canon_packages_dir) {
-                return Ok(true);
+    if !path_ok {
+        if let Some((exec_path, args)) = macos_proc_args(pid) {
+            if let Some(ref ep) = exec_path {
+                if path_is_under(Path::new(ep), &packages_dir, &canon_packages_dir) {
+                    path_ok = true;
+                }
             }
-        }
-        for arg in &args {
-            if path_is_under(Path::new(arg), &packages_dir, &canon_packages_dir) {
-                return Ok(true);
+            if !path_ok {
+                for arg in &args {
+                    if path_is_under(Path::new(arg), &packages_dir, &canon_packages_dir) {
+                        path_ok = true;
+                        break;
+                    }
+                }
             }
         }
     }
 
-    Ok(false)
+    if !path_ok {
+        return Ok(false);
+    }
+
+    // Alive, owned by us, and running from under the packages dir. On macOS a
+    // full start-time match means Running; a mismatch is inconclusive (pid
+    // reuse is the likely cause, but the pid file may also be wrong), so it is
+    // reported as Unknown rather than NotRunning. See the note on
+    // `check_process`: Codex's pid-file `startSeconds` semantics are only
+    // verified on macOS and unverified on Linux, so a mismatch must never be
+    // read as "no daemon is running".
+    let proc_start_sec = bsd_info.pbi_start_tvsec as i64;
+    let proc_start_usec = bsd_info.pbi_start_tvusec as i64;
+    if proc_start_sec != expected_start_sec {
+        return Err("start_time_mismatch");
+    }
+    if let Some(usec) = expected_start_usec {
+        if proc_start_usec != usec {
+            return Err("start_time_mismatch");
+        }
+    }
+
+    Ok(true)
 }
 
 #[cfg(target_os = "linux")]
@@ -987,35 +1099,52 @@ fn verify_process_identity(
     } else {
         100
     };
-    let start_sec = btime + (starttime_ticks / ticks_per_sec);
-    if (start_sec as i64 - expected_start_sec).abs() > 2 {
-        return Ok(false);
-    }
 
     let packages_dir = codex_dir.join("packages").join("app-server-daemon");
     let canon_packages_dir = packages_dir
         .canonicalize()
         .unwrap_or_else(|_| packages_dir.clone());
 
+    // Check the executable (and argv) BEFORE the start time: only a process
+    // that is not ours (executable outside the packages dir) may be reported
+    // as definitely NotRunning on the basis of a mismatch.
+    let mut path_ok = false;
     if let Ok(exe_link) = fs::read_link(format!("/proc/{pid}/exe")) {
         if path_is_under(&exe_link, &packages_dir, &canon_packages_dir) {
-            return Ok(true);
+            path_ok = true;
         }
     }
-
-    if let Ok(cmdline_bytes) = fs::read(format!("/proc/{pid}/cmdline")) {
-        for arg in cmdline_bytes.split(|&b| b == 0) {
-            if let Ok(arg_str) = std::str::from_utf8(arg) {
-                if !arg_str.is_empty()
-                    && path_is_under(Path::new(arg_str), &packages_dir, &canon_packages_dir)
-                {
-                    return Ok(true);
+    if !path_ok {
+        if let Ok(cmdline_bytes) = fs::read(format!("/proc/{pid}/cmdline")) {
+            for arg in cmdline_bytes.split(|&b| b == 0) {
+                if let Ok(arg_str) = std::str::from_utf8(arg) {
+                    if !arg_str.is_empty()
+                        && path_is_under(Path::new(arg_str), &packages_dir, &canon_packages_dir)
+                    {
+                        path_ok = true;
+                        break;
+                    }
                 }
             }
         }
     }
+    if !path_ok {
+        return Ok(false);
+    }
 
-    Ok(false)
+    // Alive, owned by us, and running from under the packages dir. NOTE:
+    // Codex's pid-file `startSeconds` semantics have NOT been verified on
+    // Linux, so a start-time mismatch here is inconclusive (pid reuse is the
+    // likely cause, but our reading of the pid file or of /proc could also be
+    // wrong) and is reported as Unknown, never as NotRunning — reporting
+    // NotRunning while a daemon is really running would make the app tell the
+    // user to "send a message" forever.
+    let start_sec = btime + (starttime_ticks / ticks_per_sec);
+    if (start_sec as i64 - expected_start_sec).abs() > 2 {
+        return Err("start_time_mismatch");
+    }
+
+    Ok(true)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
