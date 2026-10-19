@@ -552,3 +552,115 @@ fn content_reads_are_lossless_generation_bound_and_revalidated_against_live_occu
         }
     }
 }
+
+#[test]
+fn daemon_status_resolves_from_configured_codex_home_not_symlink_target() {
+    use herdcats_bridge::codex_config::{ProcessStatus, check_process, current_boot_id, process_start_time};
+    use herdcats_bridge::service::Service;
+    use std::os::unix::fs::PermissionsExt;
+
+    let server = Server::new();
+    // Codex occupant with no session reference: the pane reports unavailable
+    // and the event carries the cached codex_daemon status.
+    {
+        let mut state = server.state.lock().unwrap();
+        let pane = &mut state["panes"][0];
+        pane.as_object_mut().unwrap().remove("agent_session");
+        pane["agent"] = json!("codex");
+    }
+
+    // Configured home A whose `sessions` is a symlink to a dir elsewhere; the
+    // daemon pid file and the daemon itself live under A, not the target.
+    static N: AtomicU64 = AtomicU64::new(0);
+    let base = std::env::temp_dir().join(format!(
+        "hcb-symlink-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::SeqCst)
+    ));
+    let home = base.join("codex-home");
+    let target = base.join("other-volume");
+    let packages_bin = home.join("packages").join("app-server-daemon").join("bin");
+    fs::create_dir_all(&packages_bin).unwrap();
+    fs::create_dir_all(target.join("sessions-real")).unwrap();
+    std::os::unix::fs::symlink(target.join("sessions-real"), home.join("sessions")).unwrap();
+
+    // A live, verified managed daemon recorded under the CONFIGURED home.
+    let script = packages_bin.join("daemon.sh");
+    fs::write(&script, "#!/bin/sh\nwhile true; do sleep 0.05; done\n").unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut dummy = Command::new("/bin/sh")
+        .arg(&script)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let cleanup = |dummy: &mut Child| {
+        let _ = dummy.kill();
+        let _ = dummy.wait();
+        let _ = fs::remove_dir_all(&base);
+    };
+    let (sec, usec) = match process_start_time(dummy.id() as libc::pid_t) {
+        Some(times) => times,
+        None => {
+            cleanup(&mut dummy);
+            panic!("could not read dummy start time");
+        }
+    };
+    let pid_file = home.join("app-server-daemon").join("daemon.pid");
+    fs::create_dir_all(pid_file.parent().unwrap()).unwrap();
+    let mut identity = json!({"startSeconds": sec});
+    if let Some(u) = usec {
+        identity["startMicroseconds"] = json!(u);
+    }
+    if let Some(b) = current_boot_id() {
+        identity["bootId"] = json!(b);
+    }
+    fs::write(
+        &pid_file,
+        json!({"pid": dummy.id(), "processIdentity": identity}).to_string(),
+    )
+    .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while check_process(&pid_file, &home) != ProcessStatus::Running {
+        if std::time::Instant::now() >= deadline {
+            cleanup(&mut dummy);
+            panic!("dummy never classified running");
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+
+    // The resolver canonicalizes home/sessions to the symlink target; the
+    // daemon lookup must still use the configured home.
+    let mut service = Service::new(server.socket.clone(), server.root.join("projects"))
+        .with_codex_root(home.join("sessions"));
+    let mut output = Vec::new();
+    service
+        .request(
+            br#"{"id":"i","method":"initialize","params":{"protocol":1}}"#,
+            &mut output,
+        )
+        .unwrap();
+    output.clear();
+    service
+        .request(
+            br#"{"id":"w","method":"watch","params":{"pane_id":"w1:p1"}}"#,
+            &mut output,
+        )
+        .unwrap();
+    let frames: Vec<Value> = String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|s| serde_json::from_str(s).unwrap())
+        .collect();
+    cleanup(&mut dummy);
+    let unavailable = frames
+        .iter()
+        .find(|f| f["event"] == "timeline.unavailable")
+        .expect("no timeline.unavailable emitted");
+    assert_eq!(unavailable["data"]["code"], "session_reference_unavailable");
+    assert_eq!(
+        unavailable["data"]["codex_daemon"], "running",
+        "daemon status must come from the configured home, not the symlink target"
+    );
+}

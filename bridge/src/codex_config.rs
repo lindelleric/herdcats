@@ -625,92 +625,170 @@ pub fn check_process_snapshot(
 
 /// How long `codex app-server daemon stop` may run before it is killed.
 const DAEMON_STOP_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
-/// How long to wait for a signalled process to disappear before declaring failure.
+/// How long to wait for a signalled process to disappear, and how long to
+/// re-check for still-running processes after each stop pass, before
+/// declaring failure.
 const PROCESS_EXIT_WAIT: Duration = Duration::from_secs(5);
 const PROCESS_EXIT_POLL_STEP: Duration = Duration::from_millis(100);
 
 fn stop_daemon_and_updater(codex_dir: &Path) -> (DaemonStopStatus, DaemonStopStatus) {
-    stop_daemon_and_updater_with_timeout(codex_dir, DAEMON_STOP_COMMAND_TIMEOUT)
-}
-
-// Exposed so integration tests can shorten the `daemon stop` timeout.
-#[doc(hidden)]
-pub fn stop_daemon_and_updater_with_timeout(
-    codex_dir: &Path,
-    stop_command_timeout: Duration,
-) -> (DaemonStopStatus, DaemonStopStatus) {
-    let daemon_pid_file = codex_dir.join("app-server-daemon").join("daemon.pid");
-    let updater_pid_file = codex_dir.join("app-server-daemon").join("daemon-updater.pid");
-
-    let initial_daemon = check_process(&daemon_pid_file, codex_dir);
-    let initial_updater = check_process(&updater_pid_file, codex_dir);
-
-    // Stop the updater FIRST: SIGTERM it (after re-checking its identity) and wait
-    // for it to disappear before running `daemon stop`, so it cannot restart the
-    // daemon in between. A process whose identity is only Unknown is never signalled.
-    if initial_updater == ProcessStatus::Running && term_updater(&updater_pid_file, codex_dir) {
-        wait_for_process_exit(&updater_pid_file, codex_dir);
-    }
-
-    // Then ask the official binary to stop the daemon, bounded by a hard timeout.
-    let mut daemon_stop_failed = false;
-    if initial_daemon == ProcessStatus::Running {
-        let stop_bin = codex_dir
-            .join("packages")
-            .join("app-server-daemon")
-            .join("current")
-            .join("bin")
-            .join("codex");
-        if stop_bin.is_file() {
-            daemon_stop_failed = run_daemon_stop_command(&stop_bin, codex_dir, stop_command_timeout);
-        }
-    }
-
-    // Re-check both. The updater may need a while to exit after SIGTERM, so poll
-    // for up to 5 s total before reporting stop_failed.
-    let mut final_daemon = check_process(&daemon_pid_file, codex_dir);
-    let mut final_updater = check_process(&updater_pid_file, codex_dir);
-    let deadline = Instant::now() + PROCESS_EXIT_WAIT;
-    while Instant::now() < deadline {
-        let daemon_done = initial_daemon != ProcessStatus::Running
-            || daemon_stop_failed
-            || final_daemon == ProcessStatus::NotRunning;
-        let updater_done =
-            initial_updater != ProcessStatus::Running || final_updater == ProcessStatus::NotRunning;
-        if daemon_done && updater_done {
-            break;
-        }
-        std::thread::sleep(PROCESS_EXIT_POLL_STEP);
-        final_daemon = check_process(&daemon_pid_file, codex_dir);
-        final_updater = check_process(&updater_pid_file, codex_dir);
-    }
-
-    (
-        stop_status(initial_daemon, final_daemon, daemon_stop_failed),
-        stop_status(initial_updater, final_updater, false),
+    stop_daemon_and_updater_with_timeouts(
+        codex_dir,
+        DAEMON_STOP_COMMAND_TIMEOUT,
+        PROCESS_EXIT_WAIT,
     )
 }
 
-fn stop_status(
-    initial: ProcessStatus,
+// Exposed so integration tests can shorten the `daemon stop` timeout and the
+// re-check poll.
+#[doc(hidden)]
+pub fn stop_daemon_and_updater_with_timeouts(
+    codex_dir: &Path,
+    stop_command_timeout: Duration,
+    poll_wait: Duration,
+) -> (DaemonStopStatus, DaemonStopStatus) {
+    let daemon_pid_file = codex_dir.join("app-server-daemon").join("daemon.pid");
+    let updater_pid_file = codex_dir.join("app-server-daemon").join("daemon-updater.pid");
+    let stop_bin = codex_dir
+        .join("packages")
+        .join("app-server-daemon")
+        .join("current")
+        .join("bin")
+        .join("codex");
+
+    let mut daemon_stopped_by_us = false;
+    let mut updater_stopped_by_us = false;
+    // Whether the most recent `daemon stop` attempt failed or timed out.
+    let mut daemon_stop_failed = false;
+    let mut daemon_status = check_process(&daemon_pid_file, codex_dir);
+    let mut updater_status = check_process(&updater_pid_file, codex_dir);
+
+    // At most two passes. A managed process that (re)appears during a pass —
+    // e.g. a concurrent restart writing a fresh pid file while we are
+    // stopping — must not be reported as not_running while it is actually
+    // running: it gets one more stop pass, and if it is still running at the
+    // end that is stop_failed.
+    for _pass in 0..2 {
+        // Stop the updater FIRST: SIGTERM it (after re-checking its identity)
+        // and wait for it to disappear before running `daemon stop`, so it
+        // cannot restart the daemon in between. Only a process that is
+        // Running with a verified pid is ever signalled; Unknown is untouched.
+        if updater_status == ProcessStatus::Running && term_updater(&updater_pid_file, codex_dir)
+        {
+            updater_stopped_by_us = true;
+            wait_for_process_exit(&updater_pid_file, codex_dir, poll_wait);
+        }
+
+        // Then ask the official binary to stop the daemon, bounded by a hard
+        // timeout.
+        daemon_stop_failed = false;
+        if daemon_status == ProcessStatus::Running && stop_bin.is_file() {
+            daemon_stopped_by_us = true;
+            daemon_stop_failed =
+                run_daemon_stop_command(&stop_bin, codex_dir, stop_command_timeout);
+        }
+
+        // Re-check both with the poll: a signalled updater may need a while to
+        // exit, and a process may (re)appear mid-pass. Done means not Running,
+        // whatever the earlier state was, CONFIRMED by two consecutive
+        // observations; a failed daemon stop needs no wait.
+        let mut daemon_poll = StatusPoll::new(&daemon_pid_file, codex_dir);
+        let mut updater_poll = StatusPoll::new(&updater_pid_file, codex_dir);
+        let deadline = Instant::now() + poll_wait;
+        loop {
+            let daemon_done = daemon_poll.done() || daemon_stop_failed;
+            let updater_done = updater_poll.done();
+            if daemon_done && updater_done {
+                break;
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(PROCESS_EXIT_POLL_STEP);
+            daemon_poll.observe(&daemon_pid_file, codex_dir);
+            updater_poll.observe(&updater_pid_file, codex_dir);
+        }
+        daemon_status = daemon_poll.confirmed();
+        updater_status = updater_poll.confirmed();
+
+        if daemon_status != ProcessStatus::Running && updater_status != ProcessStatus::Running {
+            break; // nothing is running; no second pass needed
+        }
+    }
+
+    (
+        final_stop_status(daemon_status, daemon_stopped_by_us, daemon_stop_failed),
+        final_stop_status(updater_status, updater_stopped_by_us, false),
+    )
+}
+
+// Polls a pid file's status, requiring CONFIRMATION before a non-Running
+// observation is believed: a live process identified only via its argv can
+// transiently misclassify as NotRunning/Unknown for a single check (the argv
+// introspection sysctl flaps under load), which must not end a stop pass
+// early nor leak into the final result. Two consecutive identical
+// non-Running observations confirm; an unconfirmed stray observation of a
+// process previously seen Running is conservatively reported as Running.
+struct StatusPoll {
+    status: ProcessStatus,
+    streak: usize,
+}
+
+impl StatusPoll {
+    fn new(pid_file: &Path, codex_dir: &Path) -> Self {
+        Self {
+            status: check_process(pid_file, codex_dir),
+            streak: 0,
+        }
+    }
+
+    fn observe(&mut self, pid_file: &Path, codex_dir: &Path) {
+        let status = check_process(pid_file, codex_dir);
+        self.streak = if status != ProcessStatus::Running && status == self.status {
+            self.streak + 1
+        } else {
+            usize::from(status != ProcessStatus::Running)
+        };
+        self.status = status;
+    }
+
+    fn done(&self) -> bool {
+        self.status != ProcessStatus::Running && self.streak >= 2
+    }
+
+    fn confirmed(&self) -> ProcessStatus {
+        if self.status != ProcessStatus::Running && self.streak < 2 {
+            ProcessStatus::Running
+        } else {
+            self.status
+        }
+    }
+}
+
+// Final per-process result for the whole stop operation:
+// - still Running at the end -> stop_failed, even for a process that only
+//   (re)appeared mid-operation and was never absent-then-stopped.
+// - the last `daemon stop` attempt failed or timed out -> stop_failed.
+// - stopped by one of our passes and not running now -> stopped.
+// - otherwise, the conservative last-status mapping: Unknown -> unknown
+//   (never signalled; identity unverifiable), NotRunning -> not_running.
+fn final_stop_status(
     final_status: ProcessStatus,
+    stopped_by_us: bool,
     stop_failed: bool,
 ) -> DaemonStopStatus {
-    match initial {
-        ProcessStatus::Running => {
-            if stop_failed || final_status != ProcessStatus::NotRunning {
+    match final_status {
+        ProcessStatus::Running => DaemonStopStatus::StopFailed,
+        ProcessStatus::NotRunning => {
+            if stop_failed {
                 DaemonStopStatus::StopFailed
-            } else {
+            } else if stopped_by_us {
                 DaemonStopStatus::Stopped
+            } else {
+                DaemonStopStatus::NotRunning
             }
         }
-        // Unknown (e.g. alive, owned by us, under the packages dir, but with a
-        // mismatching pid-file start time) is never signalled or stopped, and
-        // the result must not claim not_running — a daemon may really be
-        // running. Report Unknown so the app does not tell the user that
-        // nothing was running.
         ProcessStatus::Unknown => DaemonStopStatus::Unknown,
-        ProcessStatus::NotRunning => DaemonStopStatus::NotRunning,
     }
 }
 
@@ -733,8 +811,8 @@ pub fn term_updater(updater_pid_file: &Path, codex_dir: &Path) -> bool {
     }
 }
 
-fn wait_for_process_exit(pid_file: &Path, codex_dir: &Path) {
-    let deadline = Instant::now() + PROCESS_EXIT_WAIT;
+fn wait_for_process_exit(pid_file: &Path, codex_dir: &Path, poll_wait: Duration) {
+    let deadline = Instant::now() + poll_wait;
     while Instant::now() < deadline {
         if check_process(pid_file, codex_dir) != ProcessStatus::Running {
             return;

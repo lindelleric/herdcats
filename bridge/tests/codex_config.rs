@@ -1,8 +1,8 @@
 use herdcats_bridge::codex_config::{
     CodexConfigResult, DaemonStatusResult, DaemonStopStatus, ProcessStatus, check_process,
     check_process_snapshot, current_boot_id, daemon_status_in_dir, disable_daemon_in_dir,
-    disable_daemon_in_dir_with_options, process_start_time, stop_daemon_and_updater_with_timeout,
-    term_updater,
+    disable_daemon_in_dir_with_options, process_start_time,
+    stop_daemon_and_updater_with_timeouts, term_updater,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -617,6 +617,9 @@ fn wait_for_check_status(
 // Spawns a dummy whose TERM trap removes its pid file, so its death is
 // observed through the missing pid file instead of introspecting a possibly
 // unreaped zombie (whose cached argv can make a dead process look alive).
+// The dummy writes a ready marker AFTER installing its trap, and this helper
+// waits for it: a SIGTERM that arrives between exec and trap installation
+// would kill the dummy via the default action without running the trap.
 fn spawn_dummy_in_packages(
     codex_dir: &Path,
     name: &str,
@@ -628,11 +631,13 @@ fn spawn_dummy_in_packages(
         .join("bin");
     fs::create_dir_all(&packages_dir).unwrap();
     let script_path = packages_dir.join(name);
+    let ready_marker = packages_dir.join(format!("{name}.ready"));
     fs::write(
         &script_path,
         format!(
-            "#!/bin/sh\ntrap \"rm -f '{}'; exit 0\" TERM\nwhile true; do sleep 0.05; done\n",
-            pid_file.display()
+            "#!/bin/sh\ntrap \"rm -f '{}'; exit 0\" TERM\necho $$ > '{}'\nwhile true; do sleep 0.05; done\n",
+            pid_file.display(),
+            ready_marker.display()
         ),
     )
     .unwrap();
@@ -642,9 +647,22 @@ fn spawn_dummy_in_packages(
     }
     let child = spawn_script(Path::new("/bin/sh"), &script_path);
     let pid = child.id() as libc::pid_t;
-    std::thread::sleep(std::time::Duration::from_millis(10));
+    wait_for_ready_marker(&ready_marker);
     let (start_sec, start_usec) = process_start_time(pid).expect("read start time");
     (ChildGuard(child), start_sec, start_usec)
+}
+
+// Blocks until a dummy has installed its TERM trap and published its ready
+// marker (the marker is written after the trap statement).
+fn wait_for_ready_marker(ready_marker: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !ready_marker.is_file() {
+        assert!(
+            Instant::now() < deadline,
+            "dummy did not become ready (trap not installed)"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 fn spawn_dummy_outside_packages(codex_dir: &Path, name: &str) -> (ChildGuard, i64, Option<i64>) {
@@ -1288,7 +1306,8 @@ exit 1
     // Short timeout so the test runs fast; production uses 15 s.
     let timeout = Duration::from_millis(400);
     let start = Instant::now();
-    let (daemon, updater) = stop_daemon_and_updater_with_timeout(&temp.path, timeout);
+    let (daemon, updater) =
+        stop_daemon_and_updater_with_timeouts(&temp.path, timeout, Duration::from_secs(1));
     let elapsed = start.elapsed();
 
     assert_eq!(daemon, DaemonStopStatus::StopFailed);
@@ -1344,11 +1363,13 @@ fn test_stop_running_slow_exiting_updater_still_stopped() {
         .join("app-server-daemon")
         .join("daemon-updater.pid");
     let script_path = packages_bin.join("slow_updater.sh");
+    let ready_marker = packages_bin.join("slow_updater.ready");
     fs::write(
         &script_path,
         format!(
-            "#!/bin/sh\ntrap \"sleep 0.8; rm -f '{}'; exit 0\" TERM\nwhile true; do sleep 0.05; done\n",
-            updater_pid_file.display()
+            "#!/bin/sh\ntrap \"sleep 0.8; rm -f '{}'; exit 0\" TERM\necho $$ > '{}'\nwhile true; do sleep 0.05; done\n",
+            updater_pid_file.display(),
+            ready_marker.display()
         ),
     )
     .unwrap();
@@ -1358,6 +1379,7 @@ fn test_stop_running_slow_exiting_updater_still_stopped() {
     }
     let mut updater = ChildGuard(spawn_script(Path::new("/bin/sh"), &script_path));
     let updater_pid = updater.0.id() as libc::pid_t;
+    wait_for_ready_marker(&ready_marker);
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if let Some((u_sec, u_usec)) = process_start_time(updater_pid) {
@@ -1490,4 +1512,175 @@ fn test_term_updater_signals_only_the_verified_pid() {
         assert!(Instant::now() < deadline, "signalled updater was not reaped");
         std::thread::sleep(Duration::from_millis(25));
     }
+}
+
+// Spawns an updater dummy whose TERM trap installs `daemon_pid_record` as the
+// daemon pid file before removing its own pid file and exiting — simulating an
+// updater that restarts the daemon while it is itself being stopped.
+fn spawn_restarting_updater(
+    codex_dir: &Path,
+    updater_pid_file: &Path,
+    daemon_pid_record: &Path,
+    daemon_pid_file: &Path,
+) -> (ChildGuard, i64, Option<i64>) {
+    let packages_bin = codex_dir
+        .join("packages")
+        .join("app-server-daemon")
+        .join("bin");
+    fs::create_dir_all(&packages_bin).unwrap();
+    let script_path = packages_bin.join("restarting_updater.sh");
+    let ready_marker = packages_bin.join("restarting_updater.ready");
+    fs::write(
+        &script_path,
+        format!(
+            "#!/bin/sh\ntrap \"cp '{}' '{}'; rm -f '{}'; exit 0\" TERM\necho $$ > '{}'\nwhile true; do sleep 0.05; done\n",
+            daemon_pid_record.display(),
+            daemon_pid_file.display(),
+            updater_pid_file.display(),
+            ready_marker.display()
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let child = spawn_script(Path::new("/bin/sh"), &script_path);
+    let pid = child.id() as libc::pid_t;
+    wait_for_ready_marker(&ready_marker);
+    let (start_sec, start_usec) = process_start_time(pid).expect("read start time");
+    (ChildGuard(child), start_sec, start_usec)
+}
+
+#[test]
+fn test_stop_running_daemon_appearing_mid_stop_reports_stop_failed() {
+    let temp = TempCodex::new("stop-appearing-fails");
+    let daemon_pid_file = temp.path.join("app-server-daemon").join("daemon.pid");
+    let updater_pid_file = temp.path.join("app-server-daemon").join("daemon-updater.pid");
+    let daemon_pid_record = temp.path.join("daemon_pid_record.json");
+
+    // A live managed daemon that nothing will stop: no `codex` stop binary
+    // exists in this CODEX_HOME.
+    let (daemon_guard, d_sec, d_usec) =
+        spawn_dummy_in_packages(&temp.path, "daemon.sh", &daemon_pid_file);
+    write_pid_file(
+        &daemon_pid_record,
+        daemon_guard.0.id(),
+        current_boot_id().as_deref(),
+        d_sec,
+        d_usec,
+    );
+
+    // The daemon pid file is ABSENT at the start; the updater's TERM trap
+    // installs it (the "restart") while being stopped.
+    let (updater_guard, u_sec, u_usec) = spawn_restarting_updater(
+        &temp.path,
+        &updater_pid_file,
+        &daemon_pid_record,
+        &daemon_pid_file,
+    );
+    write_pid_file(
+        &updater_pid_file,
+        updater_guard.0.id(),
+        current_boot_id().as_deref(),
+        u_sec,
+        u_usec,
+    );
+    wait_for_check_status(
+        &updater_pid_file,
+        &temp.path,
+        ProcessStatus::Running,
+        "running",
+    );
+    assert!(!daemon_pid_file.exists());
+
+    let (daemon, updater) = stop_daemon_and_updater_with_timeouts(
+        &temp.path,
+        Duration::from_secs(15),
+        Duration::from_millis(300),
+    );
+
+    // The daemon appeared mid-operation and is running at the end: stop_failed,
+    // never not_running. The updater was signalled and stopped.
+    assert_eq!(daemon, DaemonStopStatus::StopFailed);
+    assert_eq!(updater, DaemonStopStatus::Stopped);
+    assert!(daemon_pid_file.exists());
+    // The appearing daemon was never signalled and is still alive.
+    let daemon_pid = daemon_guard.0.id() as libc::pid_t;
+    assert_eq!(unsafe { libc::kill(daemon_pid, 0) }, 0);
+}
+
+#[test]
+fn test_stop_running_daemon_appearing_mid_stop_is_stopped_by_second_pass() {
+    let temp = TempCodex::new("stop-appearing-second-pass");
+    let daemon_pid_file = temp.path.join("app-server-daemon").join("daemon.pid");
+    let updater_pid_file = temp.path.join("app-server-daemon").join("daemon-updater.pid");
+    let daemon_pid_record = temp.path.join("daemon_pid_record.json");
+
+    // A `codex` binary whose `daemon stop` records invocations and "stops" the
+    // daemon by removing its pid file.
+    let stop_bin_dir = temp
+        .path
+        .join("packages")
+        .join("app-server-daemon")
+        .join("current")
+        .join("bin");
+    fs::create_dir_all(&stop_bin_dir).unwrap();
+    let stop_bin = stop_bin_dir.join("codex");
+    let stop_script = r#"#!/bin/sh
+if [ "$1" = "app-server" ] && [ "$2" = "daemon" ] && [ "$3" = "stop" ]; then
+    echo called >> "$CODEX_HOME/stop_calls"
+    rm -f "$CODEX_HOME/app-server-daemon/daemon.pid"
+    exit 0
+fi
+exit 1
+"#;
+    fs::write(&stop_bin, stop_script).unwrap();
+    #[cfg(unix)]
+    {
+        fs::set_permissions(&stop_bin, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let (daemon_guard, d_sec, d_usec) =
+        spawn_dummy_in_packages(&temp.path, "daemon.sh", &daemon_pid_file);
+    write_pid_file(
+        &daemon_pid_record,
+        daemon_guard.0.id(),
+        current_boot_id().as_deref(),
+        d_sec,
+        d_usec,
+    );
+    let (updater_guard, u_sec, u_usec) = spawn_restarting_updater(
+        &temp.path,
+        &updater_pid_file,
+        &daemon_pid_record,
+        &daemon_pid_file,
+    );
+    write_pid_file(
+        &updater_pid_file,
+        updater_guard.0.id(),
+        current_boot_id().as_deref(),
+        u_sec,
+        u_usec,
+    );
+    wait_for_check_status(
+        &updater_pid_file,
+        &temp.path,
+        ProcessStatus::Running,
+        "running",
+    );
+    assert!(!daemon_pid_file.exists());
+
+    let (daemon, updater) = stop_daemon_and_updater_with_timeouts(
+        &temp.path,
+        Duration::from_secs(15),
+        Duration::from_millis(300),
+    );
+
+    // The daemon appeared during the first pass and the second pass stopped it.
+    assert_eq!(daemon, DaemonStopStatus::Stopped);
+    assert_eq!(updater, DaemonStopStatus::Stopped);
+    assert!(!daemon_pid_file.exists());
+    let calls = fs::read_to_string(temp.path.join("stop_calls")).unwrap();
+    assert_eq!(calls.lines().count(), 1, "daemon stop calls: {calls:?}");
 }

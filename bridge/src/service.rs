@@ -57,7 +57,14 @@ pub struct Service {
     initialized: bool,
     include_content: bool,
     watch: Option<Watch>,
-    codex_daemon_cache: Option<(SystemTime, &'static str)>,
+    codex_daemon_cache: Option<(std::time::Instant, &'static str)>,
+    // The CONFIGURED (never canonicalized) Codex home. CodexResolver::new
+    // canonicalizes the sessions root, so deriving the home from
+    // `codex_resolver.root.parent()` would follow a symlinked sessions dir
+    // (e.g. ~/.codex/sessions -> another volume) and check the WRONG
+    // app-server-daemon/daemon.pid — reporting not_running while the real
+    // daemon runs under the configured home.
+    codex_home: Option<PathBuf>,
 }
 pub fn page(entries: &[Entry], before: usize) -> Value {
     let mut start = before.saturating_sub(100);
@@ -73,9 +80,12 @@ pub fn page(entries: &[Entry], before: usize) -> Value {
 impl Service {
     pub fn new(socket: PathBuf, root: PathBuf) -> Self {
         let resolver = Resolver::new(&root).ok();
-        let codex_root = Self::codex_root_default();
+        let codex_home = crate::codex_config::resolve_codex_dir();
+        let codex_root = codex_home.clone().map(|p| p.join("sessions"));
         let codex_resolver = codex_root.and_then(|r| CodexResolver::new(&r).ok());
-        Self::with_resolvers(socket, resolver, codex_resolver)
+        let mut service = Self::with_resolvers(socket, resolver, codex_resolver);
+        service.codex_home = codex_home;
+        service
     }
 
     pub fn codex_root_default() -> Option<PathBuf> {
@@ -117,26 +127,25 @@ impl Service {
             include_content: false,
             watch: None,
             codex_daemon_cache: None,
+            codex_home: None,
         }
     }
     pub fn invalidate_codex_daemon_cache(&mut self) {
         self.codex_daemon_cache = None;
     }
     fn cached_codex_daemon_status(&mut self) -> &'static str {
-        let now = SystemTime::now();
         if let Some((cached_at, status)) = self.codex_daemon_cache {
-            if now
-                .duration_since(cached_at)
-                .unwrap_or_default()
-                < Duration::from_secs(3)
-            {
+            // Monotonic clock: wall-clock jumps must not extend or shrink the TTL.
+            if cached_at.elapsed() < Duration::from_secs(3) {
                 return status;
             }
         }
+        // Resolve from the CONFIGURED home, not the canonicalized resolver
+        // root's parent: a symlinked sessions dir must not redirect the
+        // daemon pid lookup to the symlink target's parent.
         let codex_dir = self
-            .codex_resolver
-            .as_ref()
-            .and_then(|r| r.root.parent().map(Path::to_path_buf))
+            .codex_home
+            .clone()
             .or_else(crate::codex_config::resolve_codex_dir);
         let status = match codex_dir {
             Some(dir) => {
@@ -149,10 +158,13 @@ impl Service {
             }
             None => "not_running",
         };
-        self.codex_daemon_cache = Some((now, status));
+        self.codex_daemon_cache = Some((std::time::Instant::now(), status));
         status
     }
     pub fn with_codex_root(mut self, root: PathBuf) -> Self {
+        // Remember the configured home (sessions root minus "sessions")
+        // BEFORE the resolver canonicalizes the root.
+        self.codex_home = root.parent().map(Path::to_path_buf);
         self.codex_resolver = CodexResolver::new(&root).ok();
         self.adapters = vec![
             Box::new(ClaudeAdapter::new(self.resolver.clone())),
