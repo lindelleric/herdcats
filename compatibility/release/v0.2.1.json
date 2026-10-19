@@ -24,8 +24,9 @@
     "rust_tests": 101,
     "installer_distribution_tests": 33,
     "clippy": "passed",
-    "ios_unit_tests": 446,
-    "pr_ci": "CI39180333316 passed: release build and assets verified"
+    "ios_unit_tests": 447,
+    "release_ci": "CI39180333316: four native test/Clippy/build/package jobs and draft assembly passed",
+    "published_assets_verified": "SHA256SUMS matched all four binaries; released install.sh identical to the repo at the tag; darwin-arm64 --version reported 0.2.1 with agents claude,codex"
   },
   "publication_authorization": "Tagged and published by the user",
   "minimum_compatible_version": "0.2.0",
