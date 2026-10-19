@@ -30,7 +30,7 @@ export default function AboutPage() {
         <h2 className={styles.label}>What</h2>
         <p>Herdcats is a minimal iPhone app for Herdr:</p>
         <ul className={styles.list}>
-          <li>Direct SSH to your machine, with no relay — the optional Timeline helper runs on your own computer, only while you use it</li>
+          <li>Direct SSH to your machine, with no relay — the optional Herdcats Bridge runs on your own computer, only while you use it</li>
           <li>Navigation that follows Herdr&rsquo;s own spaces, tabs, panes and agents</li>
           <li>An optional quota view, if <code>quota-axi</code> is installed on the connected machine</li>
         </ul>
