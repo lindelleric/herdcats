@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-19",
+  "status": "published_and_pinned",
+  "version": "0.2.1",
+  "tag": "herdcats-bridge-v0.2.1",
+  "source_commit": "2f82953ea6f716819d5cd2c80389a8a70d539c43",
+  "url": "https://github.com/zhiyao/herdcats/releases/tag/herdcats-bridge-v0.2.1",
+  "ci_url": "https://github.com/zhiyao/herdcats/actions/runs/39180333316",
+  "native_builds": [
+    "darwin-arm64",
+    "darwin-x86_64",
+    "linux-arm64",
+    "linux-x86_64"
+  ],
+  "native_ci_result": "All four native test/Clippy/build/package jobs and draft assembly passed",
+  "binary_sha256": {
+    "herdcats-bridge-darwin-arm64": "c1ca1797987ce549824d5456e6b05dd2710ea3b6989012e345c5b16876c0919e",
+    "herdcats-bridge-darwin-x86_64": "6814975aec1eeb489f6663455758f855021dbebad5d7359c3e311fd9d2e6a691",
+    "herdcats-bridge-linux-arm64": "a731304c9059524d45f27af2c6cfc611c24e92ce9cb4f86001c228048b1a966a",
+    "herdcats-bridge-linux-x86_64": "74bca9549b3f24f33317caa520b3b1c0e9cb3386df19b522d03e121dc54c4f97"
+  },
+  "installer_sha256": "c7ef7992befa6eacc4bd7a71774f625758777aafaab931266cec79bc977e6a7b",
+  "validation": {
+    "rust_tests": 101,
+    "installer_distribution_tests": 33,
+    "clippy": "passed",
+    "ios_unit_tests": 447,
+    "release_ci": "CI39180333316: four native test/Clippy/build/package jobs and draft assembly passed",
+    "published_assets_verified": "SHA256SUMS matched all four binaries; released install.sh identical to the repo at the tag; darwin-arm64 --version reported 0.2.1 with agents claude,codex"
+  },
+  "publication_authorization": "Tagged and published by the user",
+  "minimum_compatible_version": "0.2.0",
+  "limits": [
+    "Claude and Codex read-only timeline; question/approval responses and saved-machine routing remain unavailable",
+    "Codex requires exact session reference from Herdr (shared daemon off or codex --no-daemon)",
+    "Verified source hard limit 64MiB; retained entries 1000; references to retired entries unavailable",
+    "macOS binaries unsigned/unnotarized",
+    "App draft PR not merged; no phone deployment"
+  ]
+}

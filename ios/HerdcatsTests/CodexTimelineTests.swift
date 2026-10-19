@@ -150,6 +150,66 @@ struct CodexTimelineGatingTests {
     }
 }
 
+@Suite("Routed host Timeline pane copy and gating")
+@MainActor struct RoutedHostTimelinePaneTests {
+    @Test func routedHostCopyUsesGatewayHostAndMachineLabel() {
+        let full = "This machine is reached through Herdr on studio-mac. Timeline can read sessions only on a computer Herdcats connects to with SSH. To use Timeline here, add Studio Mini as its own connection. You can still send messages below."
+        #expect(AgentTimelineView.routedHostUnavailableTitle == "Timeline isn't available here yet")
+        #expect(AgentTimelineView.routedHostExplanation(gatewayHost: "studio-mac", machineLabel: "Studio Mini") == full)
+        #expect(AgentTimelineView.explanation("routed_host_unsupported", agent: "claude", gatewayHost: "studio-mac", machineLabel: "Studio Mini") == full)
+        #expect(AgentTimelineView.explanation("routed_host_unsupported", agent: "codex", gatewayHost: "studio-mac", machineLabel: "Studio Mini") == full)
+    }
+
+    @Test func routedHostCopyFallsBackWithoutInventingNames() {
+        #expect(AgentTimelineView.routedHostExplanation(gatewayHost: nil, machineLabel: nil)
+            == "This machine is reached through Herdr on your SSH computer. Timeline can read sessions only on a computer Herdcats connects to with SSH. To use Timeline here, add this machine as its own connection. You can still send messages below.")
+        // Missing gateway host keeps the machine label.
+        let noHost = AgentTimelineView.routedHostExplanation(gatewayHost: nil, machineLabel: "Studio Mini")
+        #expect(noHost.contains("through Herdr on your SSH computer."))
+        #expect(noHost.contains("add Studio Mini as its own connection."))
+        // Missing machine label keeps the gateway host.
+        let noLabel = AgentTimelineView.routedHostExplanation(gatewayHost: "studio-mac", machineLabel: nil)
+        #expect(noLabel.contains("through Herdr on studio-mac."))
+        #expect(noLabel.contains("add this machine as its own connection."))
+        // Blank or placeholder hosts never render as names.
+        #expect(!AgentTimelineView.routedHostExplanation(gatewayHost: "  ", machineLabel: "  ").contains("  "))
+        #expect(!AgentTimelineView.routedHostExplanation(gatewayHost: "unknown", machineLabel: nil).contains("on unknown"))
+    }
+
+    @Test func routedHostPaneShowsNoRetrySetupOrDaemonActions() {
+        for agent in ["claude", "codex"] {
+            #expect(AgentTimelineView.unavailableTitle(code: "routed_host_unsupported", agent: agent) == "Timeline isn't available here yet")
+            #expect(!AgentTimelineView.showsPaneCheckAgain(code: "routed_host_unsupported", agent: agent))
+            #expect(!AgentTimelineView.showsInstallOrUpgrade(code: "routed_host_unsupported", agent: agent))
+            #expect(!AgentTimelineView.isNeedsUpgrade(code: "routed_host_unsupported", agent: agent))
+            #expect(!AgentTimelineView.canConfigureCodexDaemon(agent: agent, code: "routed_host_unsupported", route: nil, capabilities: AgentBridgeCapabilities(claudeTimeline: true, codexTimeline: true, codexDaemonConfig: true, recordContent: true)))
+        }
+        // Other unavailable codes keep the pane Check again button.
+        #expect(AgentTimelineView.showsPaneCheckAgain(code: "herdr_unavailable", agent: "claude"))
+    }
+
+    @Test func routedHostPaneReadsGatewayAndMachineFromRoute() {
+        let machine = HerdrMachine(id: "studio-mini", label: "Studio Mini", target: "studio-mini.local", session: "studio-mini", enabled: true)
+        let gatewayIdentity = ConnectionIdentity(host: "gateway.example.com", port: 2222, username: "demo")
+        let routed = HerdrConnection(gateway: HerdrConnection(), machine: machine, generation: ConnectionGeneration(rawValue: 1), identity: gatewayIdentity)
+        let view = AgentTimelineView(
+            paneId: "p-routed",
+            agent: "codex",
+            connection: routed,
+            timeline: AgentTimelineState(),
+            topOverlayInset: 0,
+            bottomOverlayInset: 0,
+            onOutputInteraction: {},
+            setupTarget: gatewayIdentity.scoped(to: machine),
+            onUseTerminal: {},
+            onSetupComplete: {}
+        )
+        #expect(view.title("routed_host_unsupported") == "Timeline isn't available here yet")
+        #expect(view.explanation("routed_host_unsupported")
+            == "This machine is reached through Herdr on gateway.example.com. Timeline can read sessions only on a computer Herdcats connects to with SSH. To use Timeline here, add Studio Mini as its own connection. You can still send messages below.")
+    }
+}
+
 @Suite("Codex timeline states and state transitions")
 @MainActor struct CodexTimelineStateTests {
     let owner = UUID()
@@ -220,9 +280,9 @@ struct CodexTimelineGatingTests {
             onUseTerminal: {},
             onSetupComplete: {}
         )
-        // When Codex is supported by pinned installer (0.2.0 pinned release with HostHelperSetupPlan.agents == ["claude", "codex"])
+        // When Codex is supported by pinned installer (0.2.1 pinned release with HostHelperSetupPlan.agents == ["claude", "codex"])
         // Without an installedVersion recorded yet:
-        #expect(view.explanation("helper_update_required") == "The Herdcats Bridge on this computer can't show Codex conversations. Upgrade to 0.2.0.")
+        #expect(view.explanation("helper_update_required") == "The Herdcats Bridge on this computer can't show Codex conversations. Upgrade to 0.2.1.")
         #expect(view.explanation("unsupported_agent") == "Timeline is not available for this agent yet. You can still send messages below or use Terminal.")
         #expect(view.explanation("helper_missing") == "Install Herdcats Bridge to see this session as native messages. Terminal is available now.")
 
@@ -235,15 +295,15 @@ struct CodexTimelineGatingTests {
 
         // 2. With Codex in supportedAgents
         let supportedWithCodex: Set<String> = ["claude", "codex"]
-        #expect(AgentTimelineView.explanation("helper_update_required", agent: "codex", installedVersion: "0.1.4", supportedAgents: supportedWithCodex) == "Herdcats Bridge 0.1.4 on this computer can't show Codex conversations. Upgrade to 0.2.0.")
-        #expect(AgentTimelineView.explanation("helper_update_required", agent: "codex", installedVersion: nil, supportedAgents: supportedWithCodex) == "The Herdcats Bridge on this computer can't show Codex conversations. Upgrade to 0.2.0.")
-        #expect(AgentTimelineView.explanation("unsupported_agent", agent: "codex", installedVersion: "0.1.4", supportedAgents: supportedWithCodex) == "Herdcats Bridge 0.1.4 on this computer can't show Codex conversations. Upgrade to 0.2.0.")
+        #expect(AgentTimelineView.explanation("helper_update_required", agent: "codex", installedVersion: "0.1.4", supportedAgents: supportedWithCodex) == "Herdcats Bridge 0.1.4 on this computer can't show Codex conversations. Upgrade to 0.2.1.")
+        #expect(AgentTimelineView.explanation("helper_update_required", agent: "codex", installedVersion: nil, supportedAgents: supportedWithCodex) == "The Herdcats Bridge on this computer can't show Codex conversations. Upgrade to 0.2.1.")
+        #expect(AgentTimelineView.explanation("unsupported_agent", agent: "codex", installedVersion: "0.1.4", supportedAgents: supportedWithCodex) == "Herdcats Bridge 0.1.4 on this computer can't show Codex conversations. Upgrade to 0.2.1.")
         #expect(AgentTimelineView.explanation("unsupported_agent", agent: "codex", installedVersion: nil, supportedAgents: supportedWithCodex) == "Timeline is not available for this agent yet. You can still send messages below or use Terminal.")
         #expect(AgentTimelineView.explanation("helper_missing", agent: "codex", supportedAgents: supportedWithCodex) == "Install Herdcats Bridge to see this session as native messages. Terminal is available now.")
 
         // 3. Claude with and without installedVersion
-        #expect(AgentTimelineView.explanation("helper_update_required", agent: "claude", installedVersion: "0.1.4", supportedAgents: unsupportedAgents) == "Herdcats Bridge 0.1.4 on this computer can't show session images. Upgrade to 0.2.0.")
-        #expect(AgentTimelineView.explanation("helper_update_required", agent: "claude", installedVersion: nil, supportedAgents: unsupportedAgents) == "The Herdcats Bridge on this computer can't show session images. Upgrade to 0.2.0.")
+        #expect(AgentTimelineView.explanation("helper_update_required", agent: "claude", installedVersion: "0.1.4", supportedAgents: unsupportedAgents) == "Herdcats Bridge 0.1.4 on this computer can't show session images. Upgrade to 0.2.1.")
+        #expect(AgentTimelineView.explanation("helper_update_required", agent: "claude", installedVersion: nil, supportedAgents: unsupportedAgents) == "The Herdcats Bridge on this computer can't show session images. Upgrade to 0.2.1.")
         #expect(AgentTimelineView.explanation("unsupported_agent", agent: "claude", supportedAgents: unsupportedAgents) == "Timeline is not available for this agent yet. You can still send messages below or use Terminal.")
         #expect(AgentTimelineView.explanation("helper_missing", agent: "claude", supportedAgents: unsupportedAgents) == "Install Herdcats Bridge to see this session as native messages. Terminal is available now.")
 
@@ -279,9 +339,53 @@ struct CodexTimelineGatingTests {
     }
 
     @Test func manualInstallCommandReplacesOnlyForUpgrade() {
-        let install = "curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v0.2.0/install.sh | sh -s -- --version 0.2.0"
+        let install = "curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v0.2.1/install.sh | sh -s -- --version 0.2.1"
         #expect(HostHelperSetupPlan.manualInstallCommand(reason: .missing) == install)
         #expect(HostHelperSetupPlan.manualInstallCommand(reason: .updateRequired) == install + " --replace")
+    }
+
+    @Test func upgradePitchCopyVerification() {
+        // Installed below minimum (e.g. 0.1.4 or nil)
+        #expect(
+            AgentTimelineView.upgradePitch(agent: "codex", installedVersion: "0.1.4")
+            == "Version 0.2.1 adds Codex conversations. Your agent keeps running while you upgrade."
+        )
+        #expect(
+            AgentTimelineView.upgradePitch(agent: "codex", installedVersion: nil)
+            == "Version 0.2.1 adds Codex conversations. Your agent keeps running while you upgrade."
+        )
+        #expect(
+            AgentTimelineView.upgradePitch(agent: "claude", installedVersion: "0.1.4")
+            == "Version 0.2.1 adds session images. Your agent keeps running while you upgrade."
+        )
+
+        // Installed at or above minimum (e.g. 0.2.0)
+        #expect(
+            AgentTimelineView.upgradePitch(agent: "codex", installedVersion: "0.2.0")
+            == "Version 0.2.1 includes fixes for Codex conversations. Your agent keeps running while you upgrade."
+        )
+        #expect(
+            AgentTimelineView.upgradePitch(agent: "claude", installedVersion: "0.2.0")
+            == "Version 0.2.1 includes fixes for session history. Your agent keeps running while you upgrade."
+        )
+    }
+
+    @Test func turnInterruptedEntryModel() throws {
+        let json = """
+        {
+            "id": "turn_aborted:test-turn",
+            "kind": "message",
+            "role": "assistant",
+            "status": "failed",
+            "text": "Turn interrupted",
+            "truncated": false
+        }
+        """
+        let entry = try JSONDecoder().decode(AgentTimelineEntry.self, from: Data(json.utf8))
+        #expect(entry.id == "turn_aborted:test-turn")
+        #expect(entry.role == "assistant")
+        #expect(entry.status == "failed")
+        #expect(entry.text == "Turn interrupted")
     }
 
     @Test func unknownBridgeDoesNotSuggestUpgrade() {
@@ -323,14 +427,14 @@ struct CodexTimelineGatingTests {
     }
 
     @Test func helperSetupViewLabelAndFeedbackLogic() {
-        // update reason idle -> "Upgrade to 0.2.0"
+        // update reason idle -> "Upgrade to 0.2.1"
         #expect(
             AgentTimelineView.installLabel(stage: .idle, reason: .updateRequired)
-            == "Upgrade to 0.2.0"
+            == "Upgrade to 0.2.1"
         )
         #expect(
-            AgentTimelineView.installLabel(stage: .idle, reason: .updateRequired, pinnedVersion: "0.2.0")
-            == "Upgrade to 0.2.0"
+            AgentTimelineView.installLabel(stage: .idle, reason: .updateRequired, pinnedVersion: "0.2.1")
+            == "Upgrade to 0.2.1"
         )
 
         // busy labels
@@ -361,11 +465,11 @@ struct CodexTimelineGatingTests {
             == "Install Herdcats Bridge"
         )
 
-        // managed 0.1.4 replacementRequired -> "Replace Herdcats Bridge with 0.2.0" + found-version feedback
+        // managed 0.1.4 replacementRequired -> "Replace Herdcats Bridge with 0.2.1" + found-version feedback
         let managed014 = HostHelperProbe.present(version: "0.1.4", managed: true, compatible: false)
         #expect(
             AgentTimelineView.installLabel(stage: .replacementRequired(managed014))
-            == "Replace Herdcats Bridge with 0.2.0"
+            == "Replace Herdcats Bridge with 0.2.1"
         )
         #expect(
             AgentTimelineView.replacementFeedback(probe: managed014)
@@ -397,9 +501,16 @@ struct CodexTimelineGatingTests {
             onUseTerminal: {},
             onSetupComplete: {}
         )
+        #expect(view.title("session_reference_unavailable") == "Waiting for Codex session")
+        #expect(view.title("ambiguous_session") == "Waiting for Codex session")
+        #expect(view.title("invalid_session_reference") == "Waiting for Codex session")
         let explanation = view.explanation("session_reference_unavailable")
-        #expect(explanation.contains("Codex’s shared daemon") || explanation.contains("Codex's shared daemon"))
-        #expect(explanation.contains("codex --no-daemon"))
+        #expect(
+            explanation
+            == "Codex reports its session after the first message. Send a message below to start. If Timeline still doesn't appear after Codex replies, this Codex is using its shared daemon. Restart it with `codex --no-daemon`."
+        )
+        // Composer remains usable when session reference is unavailable (identity is nil before first message)
+        #expect(TimelineComposePolicy.canCompose(identity: nil, paneId: "p-codex", status: nil, connected: true))
     }
 
     @Test func codexPaneDisplaysCwdMismatchState() {
