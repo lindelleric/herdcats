@@ -1866,3 +1866,299 @@ fn rollout_with_id_less_errors_and_identified_error() {
         assert!(entry.id.len() <= 264);
     }
 }
+
+#[test]
+fn codex_injected_context_messages_are_hidden_while_real_prompts_are_shown() {
+    let temp = Temp::new();
+    let file_path = temp.0.join("rollout-context-filter.jsonl");
+
+    let records = vec![
+        json!({"type": "session_meta", "payload": {"id": THREAD_ID, "cwd": "/test/cwd"}}),
+        // 1. Injected initial context with AGENTS.md + environment_context: must be HIDDEN
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "msg-injected-agents-and-env",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "# AGENTS.md instructions\n\n<INSTRUCTIONS>\nBe helpful\n</INSTRUCTIONS>"
+                    },
+                    {
+                        "type": "input_text",
+                        "text": "<environment_context>\n  <cwd>/test/cwd</cwd>\n</environment_context>"
+                    }
+                ]
+            }
+        }),
+        // 2. Injected bare environment_context: must be HIDDEN
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "msg-injected-bare-env",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "  <environment_context>\n  <cwd>/test/cwd</cwd>\n</environment_context>"
+                    }
+                ]
+            }
+        }),
+        // 3. Real user prompt mentioning "AGENTS.md" mid-text: must be SHOWN
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "msg-real-midtext-mention",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "Please review AGENTS.md instructions for guidance on running tests."
+                    }
+                ]
+            }
+        }),
+        // 4. Message mixing a real text part with a context part: must be SHOWN
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "msg-real-mixed-context-and-prompt",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "# AGENTS.md instructions\n\nContext block"
+                    },
+                    {
+                        "type": "input_text",
+                        "text": "Here is my typed user question."
+                    }
+                ]
+            }
+        }),
+        // 5. Additional injected cases: skill and turn_aborted
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "msg-injected-skill",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "<skill>\n<name>grill-me</name>\n</skill>"
+                    }
+                ]
+            }
+        }),
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "msg-injected-abort",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "<turn_aborted>\nThe user interrupted the turn."
+                    }
+                ]
+            }
+        }),
+    ];
+
+    let mut content = String::new();
+    let mut offsets = Vec::new();
+    let mut lengths = Vec::new();
+    for r in &records {
+        let line = format!("{}\n", r);
+        offsets.push(content.len());
+        lengths.push(line.len());
+        content.push_str(&line);
+    }
+    fs::write(&file_path, &content).unwrap();
+
+    let mut follower = Follower::with_content_for_agent(AgentType::Codex);
+    assert!(follower.refresh(&file_path, THREAD_ID).unwrap());
+
+    let transcript = &follower.transcript;
+
+    // Only the two real user messages should be present
+    assert_eq!(transcript.entries.len(), 2);
+
+    let first = &transcript.entries[0];
+    assert_eq!(first.id, "message:msg-real-midtext-mention");
+    assert_eq!(first.kind, "message");
+    assert_eq!(first.role.as_deref(), Some("user"));
+    assert_eq!(
+        first.text,
+        "Please review AGENTS.md instructions for guidance on running tests."
+    );
+    assert_eq!(
+        first.record_refs,
+        vec![format!("source:{}:{}", offsets[3], lengths[3])]
+    );
+
+    let second = &transcript.entries[1];
+    assert_eq!(second.id, "message:msg-real-mixed-context-and-prompt");
+    assert_eq!(second.kind, "message");
+    assert_eq!(second.role.as_deref(), Some("user"));
+    assert!(
+        second
+            .text
+            .contains("Here is my typed user question.")
+    );
+    assert_eq!(
+        second.record_refs,
+        vec![format!("source:{}:{}", offsets[4], lengths[4])]
+    );
+
+    // No fallback record bubbles were created for skipped messages
+    let record_bubbles: Vec<_> = transcript
+        .entries
+        .iter()
+        .filter(|e| e.kind == "record")
+        .collect();
+    assert_eq!(record_bubbles.len(), 0);
+
+    // Test history pagination and cursors
+    let page_snapshot = herdcats_bridge::service::page(&transcript.entries, transcript.entries.len());
+    let snapshot_entries = page_snapshot["entries"].as_array().unwrap();
+    assert_eq!(snapshot_entries.len(), 2);
+    assert_eq!(page_snapshot["before"], "message:msg-real-midtext-mention");
+
+    let page_before_second = herdcats_bridge::service::page(&transcript.entries, 1);
+    let before_second_entries = page_before_second["entries"].as_array().unwrap();
+    assert_eq!(before_second_entries.len(), 1);
+    assert_eq!(
+        before_second_entries[0]["id"],
+        "message:msg-real-midtext-mention"
+    );
+}
+
+#[test]
+fn is_codex_injected_context_edge_cases() {
+    use herdcats_bridge::codex::{is_codex_injected_context, is_codex_injected_text};
+
+    assert!(!is_codex_injected_text(""));
+    assert!(!is_codex_injected_text("   "));
+    assert!(!is_codex_injected_text("Hello AGENTS.md"));
+    assert!(is_codex_injected_text("# AGENTS.md instructions"));
+    assert!(is_codex_injected_text("# AGENTS.md instructions for /repo"));
+    assert!(is_codex_injected_text("  \n# AGENTS.md instructions"));
+    assert!(is_codex_injected_text("<environment_context>\n..."));
+    assert!(is_codex_injected_text("<user_instructions>..."));
+    assert!(is_codex_injected_text("<user_shell_command>..."));
+    assert!(is_codex_injected_text("<turn_aborted>..."));
+    assert!(is_codex_injected_text("<skill>\n<name>x</name>"));
+    assert!(is_codex_injected_text("<skill name=\"x\">"));
+    assert!(is_codex_injected_text("<subagent>\n..."));
+    assert!(is_codex_injected_text("<subagent id=\"1\">"));
+    assert!(is_codex_injected_text(
+        "<subagent_notification>{\"agent\":\"researcher\",\"status\":\"completed\"}</subagent_notification>"
+    ));
+    assert!(!is_codex_injected_text("<subagent_notificationX"));
+    assert!(!is_codex_injected_text("<send_user_message_question_reply>"));
+    assert!(!is_codex_injected_text("<image name=[Image #1] path=\"/tmp/foo.png\">"));
+
+    // Empty content
+    assert!(!is_codex_injected_context(&json!("")));
+    assert!(!is_codex_injected_context(&json!([])));
+    assert!(!is_codex_injected_context(&json!(null)));
+
+    // String content
+    assert!(is_codex_injected_context(&json!("<environment_context>")));
+    assert!(is_codex_injected_context(&json!(
+        "<subagent_notification>{...}</subagent_notification>"
+    )));
+    assert!(!is_codex_injected_context(&json!(
+        "<subagent_notificationX{...}</subagent_notificationX>"
+    )));
+    assert!(!is_codex_injected_context(&json!("Regular prompt")));
+
+    // Non-text blocks (e.g. image) prevent message from being skipped as context
+    let image_block = json!([{"type": "input_image", "url": "https://example.com/pic.png"}]);
+    assert!(!is_codex_injected_context(&image_block));
+
+    let mixed_image_and_context = json!([
+        {"type": "input_image", "url": "https://example.com/pic.png"},
+        {"type": "input_text", "text": "<environment_context>"}
+    ]);
+    assert!(!is_codex_injected_context(&mixed_image_and_context));
+}
+
+#[test]
+fn subagent_notification_message_is_hidden_and_near_miss_is_shown() {
+    let temp = Temp::new();
+    let file_path = temp.0.join("rollout-subagent-notification.jsonl");
+
+    let records = vec![
+        json!({"type": "session_meta", "payload": {"id": THREAD_ID, "cwd": "/test/cwd"}}),
+        // 1. Injected subagent_notification: must be HIDDEN
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "msg-subagent-notif",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "<subagent_notification>{\"agent\":\"researcher\",\"status\":\"completed\"}</subagent_notification>"
+                    }
+                ]
+            }
+        }),
+        // 2. Near-miss text "<subagent_notificationX": must be SHOWN
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "msg-near-miss",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "<subagent_notificationX>Some user text</subagent_notificationX>"
+                    }
+                ]
+            }
+        }),
+    ];
+
+    let mut content = String::new();
+    let mut offsets = Vec::new();
+    let mut lengths = Vec::new();
+    for r in &records {
+        let line = format!("{}\n", r);
+        offsets.push(content.len());
+        lengths.push(line.len());
+        content.push_str(&line);
+    }
+    fs::write(&file_path, &content).unwrap();
+
+    let mut follower = Follower::with_content_for_agent(AgentType::Codex);
+    assert!(follower.refresh(&file_path, THREAD_ID).unwrap());
+
+    let transcript = &follower.transcript;
+
+    // Only the near-miss message should be present; the exact subagent_notification is hidden
+    assert_eq!(transcript.entries.len(), 1);
+    assert_eq!(transcript.entries[0].id, "message:msg-near-miss");
+    assert_eq!(transcript.entries[0].kind, "message");
+    assert_eq!(transcript.entries[0].role.as_deref(), Some("user"));
+    assert_eq!(
+        transcript.entries[0].text,
+        "<subagent_notificationX>Some user text</subagent_notificationX>"
+    );
+    assert_eq!(
+        transcript.entries[0].record_refs,
+        vec![format!("source:{}:{}", offsets[2], lengths[2])]
+    );
+}

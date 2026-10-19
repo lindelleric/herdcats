@@ -55,17 +55,23 @@ out.write_bytes(data)
 ''')
         curl.chmod(0o755)
         installer_path = ROOT / 'bridge/scripts/install.sh'
-        source = SOURCE.read_text()
         digest = re.search(r'static let installerSHA256 = "([^"]+)"', source)[1]
         if hashlib.sha256(installer_path.read_bytes()).hexdigest() != digest:
+            text = re.sub(r'^HB_VERSION=.*$', f'HB_VERSION={version}', installer_path.read_text(), flags=re.M)
+            if version.startswith('0.1.'):
+                text = re.sub(
+                    r'case "\$HB_VERSION" in\n  0\.1\.\*\) HB_CONTRACT=.*?\n  \*\) HB_CONTRACT=.*?\nesac',
+                    'HB_CONTRACT=\'{"agents":["claude"],"herdr_protocol":22,"name":"herdcats-bridge","protocol":1,"version":"\'"$HB_VERSION"\'"}\'',
+                    text,
+                )
             pinned = self.root / 'pinned_install.sh'
-            text = re.sub(
-                r'case "\$HB_VERSION" in\n  0\.1\.\*\) HB_CONTRACT=.*?\n  \*\) HB_CONTRACT=.*?\nesac',
-                'HB_CONTRACT=\'{"agents":["claude"],"herdr_protocol":22,"name":"herdcats-bridge","protocol":1,"version":"\'"$HB_VERSION"\'"}\'',
-                installer_path.read_text(),
-            )
-            text = re.sub(r'HB_VERSION=0\.2\.0', 'HB_VERSION=0.1.4', text)
             pinned.write_text(text)
+            rebuilt_digest = hashlib.sha256(pinned.read_bytes()).hexdigest()
+            self.assertEqual(
+                rebuilt_digest,
+                digest,
+                f'Rebuilt installer for pinned version {version} sha256 {rebuilt_digest} does not match pinned installerSHA256 {digest}',
+            )
             installer_path = pinned
         self.env = {**os.environ, 'HOME':str(self.home), 'PATH':str(self.fake)+':'+os.environ['PATH'], 'HC_INSTALLER':str(installer_path), 'HC_BINARY':str(self.binary), 'TMPDIR':str(self.root)}
 
