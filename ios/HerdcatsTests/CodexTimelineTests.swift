@@ -341,6 +341,36 @@ struct CodexTimelineGatingTests {
         #expect(state.codexDaemon == nil)
     }
 
+    @Test func stopResultDoesNotLeakIntoALaterNoSessionEpisode() throws {
+        func unavailable(_ seq: Int, daemon: String?) throws -> AgentBridgeFrame {
+            var data: [String: Any] = ["pane_id": "p-codex", "generation": 1, "code": "session_reference_unavailable"]
+            if let daemon { data["codex_daemon"] = daemon }
+            return try AgentBridgeFrame.decode(
+                JSONSerialization.data(withJSONObject: [
+                    "event": "timeline.unavailable", "epoch": "epoch-codex", "seq": seq, "data": data,
+                ]))
+        }
+        let state = AgentTimelineState()
+        state.begin(owner: owner, paneId: "p-codex")
+
+        // Stop offered and run while the server is running.
+        try state.consume(try unavailable(1, daemon: "running"), owner: owner)
+        // The successful stop's "restart Codex" result survives the bridge's
+        // not_running re-emission within the same episode.
+        try state.consume(try unavailable(2, daemon: "not_running"), owner: owner)
+        #expect(!AgentTimelineView.codexDaemonResultIsStale(errorOccurred: false, showsStopCommand: false, codexDaemon: state.codexDaemon))
+
+        // The user restarts Codex: the pane becomes ready, ending the episode,
+        // so a later no-session state starts without the old result.
+        try state.consume(try frame("timeline.snapshot", seq: 3), owner: owner)
+        #expect(state.phase == .ready)
+        #expect(!AgentTimelineView.codexDaemonResultIsCurrent(phase: state.phase))
+        try state.consume(try unavailable(4, daemon: "running"), owner: owner)
+        #expect(AgentTimelineView.codexDaemonResultIsCurrent(phase: state.phase))
+        // A fresh running report contradicts the recorded "server is off" result.
+        #expect(AgentTimelineView.codexDaemonResultIsStale(errorOccurred: false, showsStopCommand: false, codexDaemon: state.codexDaemon))
+    }
+
     @Test func codexPaneDisplaysHelperTooOldState() {
         let view = AgentTimelineView(
             paneId: "p-codex",
@@ -885,6 +915,33 @@ struct CodexDaemonConfigTests {
         #expect(bridgeScript.contains("IFS= read -r HB_REQUEST || exit 127"))
         #expect(bridgeScript.contains("{\"error\":{\"code\":\"helper_missing\"}}"))
         #expect(HerdrConnection.agentBridgeCommand.starts(with: "exec /bin/sh -c "))
+    }
+
+    @Test func stopResultIsRetiredAtEpisodeBoundariesAndContradictions() {
+        // The result survives only within the unavailable episode it answered.
+        #expect(AgentTimelineView.codexDaemonResultIsCurrent(phase: .unavailable("session_reference_unavailable")))
+        #expect(AgentTimelineView.codexDaemonResultIsCurrent(phase: .unavailable("ambiguous_session")))
+        #expect(!AgentTimelineView.codexDaemonResultIsCurrent(phase: .ready))
+        #expect(!AgentTimelineView.codexDaemonResultIsCurrent(phase: .loading))
+        #expect(!AgentTimelineView.codexDaemonResultIsCurrent(phase: .disconnected))
+
+        // A successful stop stays on screen through the bridge's not_running
+        // re-emission (and when no daemon value is reported)...
+        #expect(!AgentTimelineView.codexDaemonResultIsStale(errorOccurred: false, showsStopCommand: false, codexDaemon: "not_running"))
+        #expect(!AgentTimelineView.codexDaemonResultIsStale(errorOccurred: false, showsStopCommand: false, codexDaemon: nil))
+        // ...but the server coming back (or being unverifiable) retires it, so
+        // the Turn off button returns instead of stale "server is off" copy.
+        #expect(AgentTimelineView.codexDaemonResultIsStale(errorOccurred: false, showsStopCommand: false, codexDaemon: "running"))
+        #expect(AgentTimelineView.codexDaemonResultIsStale(errorOccurred: false, showsStopCommand: false, codexDaemon: "unknown"))
+
+        // "Still running" results (stop_failed, unverified, or a config/
+        // transport error) stay until a not_running report retires them.
+        for recorded in [(errorOccurred: true, showsStopCommand: false), (errorOccurred: false, showsStopCommand: true)] {
+            #expect(!AgentTimelineView.codexDaemonResultIsStale(errorOccurred: recorded.errorOccurred, showsStopCommand: recorded.showsStopCommand, codexDaemon: "running"))
+            #expect(!AgentTimelineView.codexDaemonResultIsStale(errorOccurred: recorded.errorOccurred, showsStopCommand: recorded.showsStopCommand, codexDaemon: "unknown"))
+            #expect(!AgentTimelineView.codexDaemonResultIsStale(errorOccurred: recorded.errorOccurred, showsStopCommand: recorded.showsStopCommand, codexDaemon: nil))
+            #expect(AgentTimelineView.codexDaemonResultIsStale(errorOccurred: recorded.errorOccurred, showsStopCommand: recorded.showsStopCommand, codexDaemon: "not_running"))
+        }
     }
 }
 

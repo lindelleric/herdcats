@@ -270,6 +270,21 @@ struct AgentTimelineView: View {
         }
         .onChange(of: connectionState) { _, _ in cancelHelperInstallation() }
         .onChange(of: scenePhase) { _, phase in if phase != .active { cancelHelperInstallation() } }
+        .onChange(of: timeline.phase) { _, newPhase in
+            // A stop result only describes the no-session episode it answered;
+            // a later episode (after the pane was ready again) starts fresh.
+            if !Self.codexDaemonResultIsCurrent(phase: newPhase) { clearCodexDaemonResult() }
+        }
+        .onChange(of: timeline.codexDaemon) { _, codexDaemon in
+            // A fresh daemon report that contradicts the recorded result (the
+            // server came back after "off", or was stopped despite "still
+            // running") hands the pane back to the live state.
+            if Self.codexDaemonResultIsStale(
+                errorOccurred: codexDaemonErrorOccurred,
+                showsStopCommand: codexDaemonShowsStopCommand,
+                codexDaemon: codexDaemon
+            ) { clearCodexDaemonResult() }
+        }
         .onChange(of: bridgeUpgrade.requested) { _, requested in
             if requested {
                 bridgeUpgrade.requested = false
@@ -714,6 +729,30 @@ struct AgentTimelineView: View {
         }
     }
 
+    /// A stop result survives only within the unavailable episode it answered;
+    /// once the pane is ready (or reconnecting) again, a later no-session
+    /// episode must not inherit its feedback.
+    static func codexDaemonResultIsCurrent(phase: AgentTimelineState.Phase) -> Bool {
+        if case .unavailable = phase { return true }
+        return false
+    }
+
+    /// Whether a fresh `codex_daemon` report contradicts a recorded stop
+    /// result. A result that says the server is off is superseded by a
+    /// running (or unverifiable) report; one that says it is still running —
+    /// stop_failed, unknown, or a config/transport error — is superseded by a
+    /// not_running report. Consistent reports (notably the `not_running`
+    /// re-emission after a successful stop) keep the result on screen.
+    static func codexDaemonResultIsStale(
+        errorOccurred: Bool, showsStopCommand: Bool, codexDaemon: String?
+    ) -> Bool {
+        guard let codexDaemon else { return false }
+        if errorOccurred || showsStopCommand {
+            return codexDaemon == "not_running"
+        }
+        return codexDaemon == "running" || codexDaemon == "unknown"
+    }
+
     static let codexManualConfigLine = "daemon_auto_start = false"
     static let codexDaemonStopCommand = "codex app-server daemon stop"
 
@@ -848,9 +887,7 @@ struct AgentTimelineView: View {
         bridgeCapabilities = await connection.bridgeCapabilities(for: connectionState.generation)
         bridgeVersion = await connection.bridgeVersion(for: connectionState.generation)
         Self.publishBridgeVersion(bridgeVersion, to: bridgeUpgrade, owner: owner, activeOwner: activeOwner)
-        codexDaemonFeedback = nil
-        codexDaemonErrorOccurred = false
-        codexDaemonShowsStopCommand = false
+        clearCodexDaemonResult()
         guard scenePhase == .active, connectionState.isReady else {
             timeline.end(owner: owner, error: .closed)
             return
@@ -933,6 +970,12 @@ struct AgentTimelineView: View {
         }
         .buttonStyle(.herdrPrimary)
         .accessibilityIdentifier("timeline-codex-copy-stop")
+    }
+
+    private func clearCodexDaemonResult() {
+        codexDaemonFeedback = nil
+        codexDaemonErrorOccurred = false
+        codexDaemonShowsStopCommand = false
     }
 
     private func disableCodexDaemon() {
