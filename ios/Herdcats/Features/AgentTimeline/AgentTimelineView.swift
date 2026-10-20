@@ -948,12 +948,10 @@ struct AgentTimelineView: View {
                 )
                 codexDaemonFeedback = CodexDaemonConfigResult.message(for: result)
                 codexDaemonErrorOccurred = (result.error != nil)
+                // No retry: the bridge re-emits timeline.unavailable when
+                // codex_daemon changes, and a re-run would clear this feedback,
+                // which tells the user to restart this pane's Codex.
                 codexDaemonShowsStopCommand = CodexDaemonConfigResult.showsStopCommand(for: result)
-                if !codexDaemonErrorOccurred && !codexDaemonShowsStopCommand {
-                    // The server is off: re-check so the pane picks up the new
-                    // codex_daemon state instead of offering the stop again.
-                    retry += 1
-                }
             } catch {
                 codexDaemonFeedback = "Could not turn off Codex's shared background server: \(error.localizedDescription)"
                 codexDaemonErrorOccurred = true
