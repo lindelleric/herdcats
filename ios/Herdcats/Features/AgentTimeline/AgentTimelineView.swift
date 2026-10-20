@@ -831,10 +831,11 @@ struct AgentTimelineView: View {
     /// Recovery for a surviving or unverified updater: Codex's own
     /// `daemon stop` cannot address it, and only the bridge stops the
     /// updater before the daemon. The lookup mirrors the app's helper
-    /// discovery so the command also works where ~/.local/bin is not on
-    /// the interactive shell's PATH.
-    static let codexUpdaterStopCommand =
-        "\"$(command -v herdcats-bridge || printf %s \"$HOME/.local/bin/herdcats-bridge\")\" codex-config disable-daemon --stop-running"
+    /// discovery exactly — the managed ~/.local/bin path first, then PATH,
+    /// then the remaining known locations — so it runs the same bridge
+    /// binary that advertised codex_daemon_stop instead of an older copy
+    /// left on PATH.
+    static let codexUpdaterStopCommand = "B=\"$HOME/.local/bin/herdcats-bridge\"; [ -x \"$B\" ] || B=$(command -v herdcats-bridge 2>/dev/null); [ -n \"$B\" ] || for P in \"$HOME/.cargo/bin/herdcats-bridge\" /opt/homebrew/bin/herdcats-bridge /usr/local/bin/herdcats-bridge; do [ -x \"$P\" ] && { B=\"$P\"; break; }; done; \"$B\" codex-config disable-daemon --stop-running"
 
     /// The pane options menu's optional upgrade item reads `bridgeUpgrade`,
     /// which outlives this view's runs. Every refresh of the handshake-derived

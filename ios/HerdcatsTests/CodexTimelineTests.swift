@@ -803,12 +803,19 @@ struct CodexDaemonConfigTests {
             == "Herdcats couldn't confirm the state of Codex's shared server or its updater. Copy the turn-off command below and run it on this computer, then restart Codex in this pane.")
         #expect(CodexDaemonConfigResult.showsUpdaterStopCommand(for: bothUnknown))
 
-        // The copyable updater command resolves the bridge the way the app
-        // does (PATH first, then the managed absolute path), so it works
-        // where ~/.local/bin is not on the shell's PATH.
-        #expect(AgentTimelineView.codexUpdaterStopCommand.hasSuffix("codex-config disable-daemon --stop-running"))
-        #expect(AgentTimelineView.codexUpdaterStopCommand.contains("command -v herdcats-bridge"))
-        #expect(AgentTimelineView.codexUpdaterStopCommand.contains("$HOME/.local/bin/herdcats-bridge"))
+        // The copyable updater command resolves the bridge with the app's
+        // exact discovery order: the managed ~/.local/bin path BEFORE PATH,
+        // then the remaining known locations — so an older bridge left on
+        // PATH cannot capture the recovery command the way it cannot capture
+        // the pane's own bridge.
+        let command = AgentTimelineView.codexUpdaterStopCommand
+        let managedFirst = command.range(of: "B=\"$HOME/.local/bin/herdcats-bridge\"")
+        let pathLookup = command.range(of: "command -v herdcats-bridge")
+        #expect(managedFirst!.lowerBound < pathLookup!.lowerBound)
+        for path in ["$HOME/.cargo/bin/herdcats-bridge", "/opt/homebrew/bin/herdcats-bridge", "/usr/local/bin/herdcats-bridge"] {
+            #expect(command.contains(path))
+        }
+        #expect(command.hasSuffix("\"$B\" codex-config disable-daemon --stop-running"))
         #expect(HerdrConnection.codexDisableDaemonStopScript.contains("codex-config disable-daemon --stop-running"))
 
         // Codex not installed keeps its own copy.
