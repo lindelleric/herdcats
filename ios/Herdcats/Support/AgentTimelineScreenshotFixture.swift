@@ -61,10 +61,16 @@
             default: nil
             }
             if let unavailableCode {
+                var unavailableData: [String: Any] = [
+                    "pane_id": paneId, "generation": 1, "code": unavailableCode,
+                ]
+                if ScreenshotFixtures.screen == "timeline-codex-no-session" {
+                    unavailableData["codex_daemon"] = "running"
+                }
                 return try AgentBridgeFrame.decode(
                     JSONSerialization.data(withJSONObject: [
                         "event": "timeline.unavailable", "epoch": "fixture", "seq": 1,
-                        "data": ["pane_id": paneId, "generation": 1, "code": unavailableCode],
+                        "data": unavailableData,
                     ]))
             }
             var entries: [[String: Any]] =

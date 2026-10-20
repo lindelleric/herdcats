@@ -19,6 +19,9 @@ import Observation
     private(set) var unknownRecords = 0
     private(set) var droppedEntries = 0
     private(set) var delayed = false
+    /// `codex_daemon` carried by the latest unavailable event (running /
+    /// not_running / unknown); nil otherwise, including unrecognized values.
+    private(set) var codexDaemon: String?
     private(set) var revision: UInt64 = 0
     private var owner: UUID?
     private var paneId = ""
@@ -50,6 +53,7 @@ import Observation
             }
             clear()
             generation = next
+            codexDaemon = Self.normalizedCodexDaemon(data.codexDaemon)
             phase = .unavailable(data.code ?? "timeline_unavailable")
         case "timeline.snapshot":
             guard let nextIdentity = data.identity, nextIdentity.paneId == paneId,
@@ -140,7 +144,15 @@ import Observation
         unknownRecords = 0
         droppedEntries = 0
         delayed = false
+        codexDaemon = nil
         revision += 1
+    }
+
+    /// Older bridges omit `codex_daemon`; future values the app does not know
+    /// stay nil so the pane never offers an action from an unverified state.
+    static func normalizedCodexDaemon(_ value: String?) -> String? {
+        guard ["running", "not_running", "unknown"].contains(value ?? "") else { return nil }
+        return value
     }
     private func validate(_ rows: [AgentTimelineEntry]) throws {
         guard rows.count <= 1000, Set(rows.map(\.id)).count == rows.count,

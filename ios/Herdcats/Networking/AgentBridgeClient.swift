@@ -421,10 +421,10 @@ extension AgentBridgeClient {
 
 /// Immutable release selected by this app build, not a host-supplied URL.
 enum HostHelperSetupPlan {
-    static let version = "0.2.1"
+    static let version = "0.2.2"
     /// The oldest bridge this app works with; bump only when the app needs a newer bridge feature.
     static let minimumVersion = "0.2.0"
-    static let installerSHA256 = "c7ef7992befa6eacc4bd7a71774f625758777aafaab931266cec79bc977e6a7b"
+    static let installerSHA256 = "be2ae7715ffe3ef793565e4a171fe36c47fb562bb62f595bdcca3a8f49119289"
     /// Supported agents bundled in this pinned release. Must be updated when bumping version / installerSHA256.
     static let agents: [String] = ["claude", "codex"]
     static func manualInstallCommand(reason: HostHelperSetupReason, pinnedVersion: String = version) -> String {
@@ -680,7 +680,7 @@ extension HerdrConnection {
     }
 
     func disableCodexDaemon(
-        target: ConnectionIdentity, owned: ConnectionGeneration
+        target: ConnectionIdentity, owned: ConnectionGeneration, stopRunning: Bool = false
     ) async throws -> CodexDaemonConfigResult {
         guard route == nil else { throw AgentBridgeError.routedHostUnsupported }
         try requireGeneration(owned)
@@ -694,12 +694,20 @@ extension HerdrConnection {
         try requireGeneration(owned)
         guard identity == target else { throw HerdrError.notConnected }
         let output = try await HostHelperCommand().run(
-            client: client, script: Self.codexDisableDaemonCommand, timeout: 15
+            client: client,
+            script: stopRunning ? Self.codexDisableDaemonStopScript : Self.codexDisableDaemonScript,
+            timeout: Self.codexDisableDaemonTimeout(stopRunning: stopRunning)
         )
         try Task.checkCancellation()
         try requireGeneration(owned)
         guard identity == target else { throw HerdrError.notConnected }
         return try CodexDaemonConfigResult.parse(output)
+    }
+
+    /// The bridge's stop pass can take ~60 s (updater wait, two stop passes,
+    /// recheck); keep the app-side bound above its own worst case.
+    static func codexDisableDaemonTimeout(stopRunning: Bool) -> TimeInterval {
+        stopRunning ? 90 : 15
     }
 
     static var codexDisableDaemonScript: String {
@@ -711,7 +719,20 @@ extension HerdrConnection {
         )
     }
 
+    static var codexDisableDaemonStopScript: String {
+        helperScript(
+            exec: "exec \"$B\" codex-config disable-daemon --stop-running",
+            missingPayload: "{\"error\":\"helper_missing\"}",
+            readStdinOnMissing: false,
+            missingExitCode: 0
+        )
+    }
+
     static var codexDisableDaemonCommand: String {
         "exec /bin/sh -c \(shellSafeArgument(codexDisableDaemonScript))"
+    }
+
+    static var codexDisableDaemonStopCommand: String {
+        "exec /bin/sh -c \(shellSafeArgument(codexDisableDaemonStopScript))"
     }
 }
