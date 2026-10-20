@@ -53,6 +53,7 @@ struct AgentTimelineView: View {
     @State private var codexDaemonEpisode = 0
     @State private var copiedCodexConfig = false
     @State private var copiedCodexStop = false
+    @State private var copiedCodexUpdaterStop = false
 
     private var conversationItems: [TimelineConversationItem] {
         TimelineConversationItem.group(timeline.entries, showsRecords: agent == "codex")
@@ -574,6 +575,8 @@ struct AgentTimelineView: View {
                                 codexManualFallback
                             } else if outcome.showsStopCommand {
                                 codexStopCommandFallback
+                            } else if outcome.showsUpdaterStopCommand {
+                                codexUpdaterStopFallback
                             }
                         } else {
                             Button {
@@ -757,6 +760,10 @@ struct AgentTimelineView: View {
         let message: String
         let errorOccurred: Bool
         let showsStopCommand: Bool
+        /// The daemon stopped but its updater survived or is unverified;
+        /// recovery needs the updater-aware bridge command, not Codex's own
+        /// `daemon stop`.
+        let showsUpdaterStopCommand: Bool
         /// The result reported the daemon process itself as still running
         /// (stop_failed) or alive-but-unverifiable (unknown).
         let daemonStillRunning: Bool
@@ -765,6 +772,7 @@ struct AgentTimelineView: View {
             self.message = CodexDaemonConfigResult.message(for: result)
             self.errorOccurred = result.error != nil
             self.showsStopCommand = CodexDaemonConfigResult.showsStopCommand(for: result)
+            self.showsUpdaterStopCommand = CodexDaemonConfigResult.showsUpdaterStopCommand(for: result)
             self.daemonStillRunning = result.daemon == "stop_failed" || result.daemon == "unknown"
         }
 
@@ -773,6 +781,7 @@ struct AgentTimelineView: View {
             self.message = errorDescription
             self.errorOccurred = true
             self.showsStopCommand = false
+            self.showsUpdaterStopCommand = false
             self.daemonStillRunning = false
         }
     }
@@ -819,6 +828,9 @@ struct AgentTimelineView: View {
 
     static let codexManualConfigLine = "daemon_auto_start = false"
     static let codexDaemonStopCommand = "codex app-server daemon stop"
+    /// Recovery for a surviving updater: Codex's own `daemon stop` cannot
+    /// address it, and only the bridge stops the updater before the daemon.
+    static let codexUpdaterStopCommand = "herdcats-bridge codex-config disable-daemon --stop-running"
 
     /// The pane options menu's optional upgrade item reads `bridgeUpgrade`,
     /// which outlives this view's runs. Every refresh of the handshake-derived
@@ -1034,6 +1046,17 @@ struct AgentTimelineView: View {
         }
         .buttonStyle(.herdrPrimary)
         .accessibilityIdentifier("timeline-codex-copy-stop")
+    }
+
+    @ViewBuilder private var codexUpdaterStopFallback: some View {
+        Button {
+            UIPasteboard.general.string = Self.codexUpdaterStopCommand
+            copiedCodexUpdaterStop = true
+        } label: {
+            Label(copiedCodexUpdaterStop ? "Command copied" : "Copy turn-off command", systemImage: copiedCodexUpdaterStop ? "checkmark" : "doc.on.doc")
+        }
+        .buttonStyle(.herdrPrimary)
+        .accessibilityIdentifier("timeline-codex-copy-updater-stop")
     }
 
     private func clearCodexDaemonResult() {

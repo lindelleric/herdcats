@@ -755,25 +755,41 @@ struct CodexDaemonConfigTests {
             == "Codex's shared server is off. Quit Codex in this pane and start it again so Herdcats can identify the session.")
         #expect(!CodexDaemonConfigResult.showsStopCommand(for: notRunning))
 
-        // stop_failed on either process -> still running + copy stop command.
+        // Daemon stop_failed -> still running + Codex's own stop command.
         let daemonStopFailed = CodexDaemonConfigResult(status: "changed", backup: nil, error: nil, daemon: "stop_failed", updater: "stopped")
         #expect(CodexDaemonConfigResult.message(for: daemonStopFailed)
             == "Codex's shared server is still running. Run `codex app-server daemon stop` on this computer, then restart Codex in this pane.")
         #expect(CodexDaemonConfigResult.showsStopCommand(for: daemonStopFailed))
+        #expect(!CodexDaemonConfigResult.showsUpdaterStopCommand(for: daemonStopFailed))
+
+        // Daemon stopped but the updater survived: Codex's own `daemon stop`
+        // cannot address the updater (the bridge stops the updater first so
+        // it cannot restart the daemon), so recovery points at the
+        // updater-aware bridge command instead.
         let updaterStopFailed = CodexDaemonConfigResult(status: "changed", backup: nil, error: nil, daemon: "stopped", updater: "stop_failed")
         #expect(CodexDaemonConfigResult.message(for: updaterStopFailed)
-            == "Codex's shared server is still running. Run `codex app-server daemon stop` on this computer, then restart Codex in this pane.")
-        #expect(CodexDaemonConfigResult.showsStopCommand(for: updaterStopFailed))
+            == "Codex's shared server was stopped, but its updater is still running and may restart it. Run `herdcats-bridge codex-config disable-daemon --stop-running` on this computer to stop the updater too, then restart Codex in this pane.")
+        #expect(!CodexDaemonConfigResult.showsStopCommand(for: updaterStopFailed))
+        #expect(CodexDaemonConfigResult.showsUpdaterStopCommand(for: updaterStopFailed))
 
-        // unknown on either process -> left running + copy stop command.
+        // Daemon unverified -> left running + Codex's own stop command.
         let daemonUnknown = CodexDaemonConfigResult(status: "changed", backup: nil, error: nil, daemon: "unknown", updater: "stopped")
         #expect(CodexDaemonConfigResult.message(for: daemonUnknown)
             == "Herdcats couldn't confirm the running server belongs to Codex, so it left it running. Run `codex app-server daemon stop` on this computer, then restart Codex in this pane.")
         #expect(CodexDaemonConfigResult.showsStopCommand(for: daemonUnknown))
+        #expect(!CodexDaemonConfigResult.showsUpdaterStopCommand(for: daemonUnknown))
+
+        // Daemon stopped but the updater's state is unconfirmed -> the
+        // updater-aware bridge command again.
         let updaterUnknown = CodexDaemonConfigResult(status: "changed", backup: nil, error: nil, daemon: "stopped", updater: "unknown")
         #expect(CodexDaemonConfigResult.message(for: updaterUnknown)
-            == "Herdcats couldn't confirm the running server belongs to Codex, so it left it running. Run `codex app-server daemon stop` on this computer, then restart Codex in this pane.")
-        #expect(CodexDaemonConfigResult.showsStopCommand(for: updaterUnknown))
+            == "Codex's shared server was stopped, but Herdcats couldn't confirm the state of its updater, which may restart it. Run `herdcats-bridge codex-config disable-daemon --stop-running` on this computer, then restart Codex in this pane.")
+        #expect(!CodexDaemonConfigResult.showsStopCommand(for: updaterUnknown))
+        #expect(CodexDaemonConfigResult.showsUpdaterStopCommand(for: updaterUnknown))
+
+        // The copyable updater command is the bridge operation itself.
+        #expect(AgentTimelineView.codexUpdaterStopCommand == "herdcats-bridge codex-config disable-daemon --stop-running")
+        #expect(HerdrConnection.codexDisableDaemonStopScript.contains("codex-config disable-daemon --stop-running"))
 
         // Codex not installed keeps its own copy.
         let notInstalled = CodexDaemonConfigResult(status: "codex_not_installed", backup: nil, error: nil)
@@ -967,7 +983,8 @@ struct CodexDaemonConfigTests {
         // until the daemon is reported alive again or the episode ends.
         for updater in ["stop_failed", "unknown"] {
             let updaterFailed = outcome(daemon: "stopped", updater: updater)
-            #expect(updaterFailed.showsStopCommand)
+            #expect(!updaterFailed.showsStopCommand)
+            #expect(updaterFailed.showsUpdaterStopCommand)
             #expect(!updaterFailed.daemonStillRunning)
             #expect(!AgentTimelineView.codexDaemonResultIsStale(outcome: updaterFailed, codexDaemon: "not_running"))
             #expect(!AgentTimelineView.codexDaemonResultIsStale(outcome: updaterFailed, codexDaemon: nil))
