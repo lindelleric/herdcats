@@ -130,17 +130,30 @@ struct CodexDaemonConfigResult: Decodable, Equatable, Sendable {
                 return "Could not update Codex config: \(err)."
             }
         }
+        // The updater is checked first: the bridge never runs `daemon stop`
+        // while the updater is alive (it TERM-and-waits precisely so the
+        // updater cannot restart the daemon), so an updater failure is the
+        // root cause whenever it appears — including the both-stop_failed
+        // shape — and recovery must go through the updater-aware command.
+        if result.updater == "stop_failed" || result.updater == "unknown" {
+            let updaterSurvived = result.updater == "stop_failed"
+            let daemonOff = result.daemon == "stopped" || result.daemon == "not_running"
+            switch (updaterSurvived, daemonOff) {
+            case (true, true):
+                return "Codex's shared server was stopped, but its updater is still running and may restart it. Copy the turn-off command below and run it on this computer to stop the updater too, then restart Codex in this pane."
+            case (true, false):
+                return "Codex's shared server and its updater are both still running. Copy the turn-off command below and run it on this computer to stop the updater and the server, then restart Codex in this pane."
+            case (false, true):
+                return "Codex's shared server was stopped, but Herdcats couldn't confirm the state of its updater, which may restart it. Copy the turn-off command below and run it on this computer, then restart Codex in this pane."
+            case (false, false):
+                return "Herdcats couldn't confirm the state of Codex's shared server or its updater. Copy the turn-off command below and run it on this computer, then restart Codex in this pane."
+            }
+        }
         if result.daemon == "stop_failed" {
             return "Codex's shared server is still running. Run `codex app-server daemon stop` on this computer, then restart Codex in this pane."
         }
         if result.daemon == "unknown" {
             return "Herdcats couldn't confirm the running server belongs to Codex, so it left it running. Run `codex app-server daemon stop` on this computer, then restart Codex in this pane."
-        }
-        if result.updater == "stop_failed" {
-            return "Codex's shared server was stopped, but its updater is still running and may restart it. Run `herdcats-bridge codex-config disable-daemon --stop-running` on this computer to stop the updater too, then restart Codex in this pane."
-        }
-        if result.updater == "unknown" {
-            return "Codex's shared server was stopped, but Herdcats couldn't confirm the state of its updater, which may restart it. Run `herdcats-bridge codex-config disable-daemon --stop-running` on this computer, then restart Codex in this pane."
         }
         switch result.status {
         case "codex_not_installed":
@@ -151,20 +164,22 @@ struct CodexDaemonConfigResult: Decodable, Equatable, Sendable {
         }
     }
 
-    /// The daemon itself survived the stop (or could not be verified): pair
-    /// the message with Codex's own stop command.
-    static func showsStopCommand(for result: CodexDaemonConfigResult) -> Bool {
+    /// The updater survived the stop or could not be verified — on its own or
+    /// alongside a daemon failure (the bridge refuses to stop the daemon
+    /// while the updater is alive). Codex's own `daemon stop` cannot address
+    /// the updater, so recovery always goes through the updater-aware bridge
+    /// command.
+    static func showsUpdaterStopCommand(for result: CodexDaemonConfigResult) -> Bool {
         guard result.error == nil else { return false }
-        return result.daemon == "stop_failed" || result.daemon == "unknown"
+        return result.updater == "stop_failed" || result.updater == "unknown"
     }
 
-    /// The daemon stopped but its updater survived or is unverified. Codex's
-    /// own `daemon stop` cannot address the updater — the bridge stops the
-    /// updater first precisely so it cannot restart the daemon — so the
-    /// updater-aware bridge command is the recovery path.
-    static func showsUpdaterStopCommand(for result: CodexDaemonConfigResult) -> Bool {
-        guard result.error == nil, !showsStopCommand(for: result) else { return false }
-        return result.updater == "stop_failed" || result.updater == "unknown"
+    /// The daemon itself survived the stop (or could not be verified) while
+    /// the updater was handled: pair the message with Codex's own stop
+    /// command.
+    static func showsStopCommand(for result: CodexDaemonConfigResult) -> Bool {
+        guard result.error == nil, !showsUpdaterStopCommand(for: result) else { return false }
+        return result.daemon == "stop_failed" || result.daemon == "unknown"
     }
 }
 struct AgentBridgePayload: Codable, Sendable {

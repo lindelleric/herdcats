@@ -828,9 +828,13 @@ struct AgentTimelineView: View {
 
     static let codexManualConfigLine = "daemon_auto_start = false"
     static let codexDaemonStopCommand = "codex app-server daemon stop"
-    /// Recovery for a surviving updater: Codex's own `daemon stop` cannot
-    /// address it, and only the bridge stops the updater before the daemon.
-    static let codexUpdaterStopCommand = "herdcats-bridge codex-config disable-daemon --stop-running"
+    /// Recovery for a surviving or unverified updater: Codex's own
+    /// `daemon stop` cannot address it, and only the bridge stops the
+    /// updater before the daemon. The lookup mirrors the app's helper
+    /// discovery so the command also works where ~/.local/bin is not on
+    /// the interactive shell's PATH.
+    static let codexUpdaterStopCommand =
+        "\"$(command -v herdcats-bridge || printf %s \"$HOME/.local/bin/herdcats-bridge\")\" codex-config disable-daemon --stop-running"
 
     /// The pane options menu's optional upgrade item reads `bridgeUpgrade`,
     /// which outlives this view's runs. Every refresh of the handshake-derived

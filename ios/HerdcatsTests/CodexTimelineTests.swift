@@ -768,9 +768,19 @@ struct CodexDaemonConfigTests {
         // updater-aware bridge command instead.
         let updaterStopFailed = CodexDaemonConfigResult(status: "changed", backup: nil, error: nil, daemon: "stopped", updater: "stop_failed")
         #expect(CodexDaemonConfigResult.message(for: updaterStopFailed)
-            == "Codex's shared server was stopped, but its updater is still running and may restart it. Run `herdcats-bridge codex-config disable-daemon --stop-running` on this computer to stop the updater too, then restart Codex in this pane.")
+            == "Codex's shared server was stopped, but its updater is still running and may restart it. Copy the turn-off command below and run it on this computer to stop the updater too, then restart Codex in this pane.")
         #expect(!CodexDaemonConfigResult.showsStopCommand(for: updaterStopFailed))
         #expect(CodexDaemonConfigResult.showsUpdaterStopCommand(for: updaterStopFailed))
+
+        // Both processes failed — a real shape: the bridge refuses to stop
+        // the daemon while the updater is alive, so a TERM-ignoring updater
+        // yields stop_failed for both. The updater-aware recovery must not be
+        // hidden by the earlier daemon branch.
+        let bothStopFailed = CodexDaemonConfigResult(status: "changed", backup: nil, error: nil, daemon: "stop_failed", updater: "stop_failed")
+        #expect(CodexDaemonConfigResult.message(for: bothStopFailed)
+            == "Codex's shared server and its updater are both still running. Copy the turn-off command below and run it on this computer to stop the updater and the server, then restart Codex in this pane.")
+        #expect(!CodexDaemonConfigResult.showsStopCommand(for: bothStopFailed))
+        #expect(CodexDaemonConfigResult.showsUpdaterStopCommand(for: bothStopFailed))
 
         // Daemon unverified -> left running + Codex's own stop command.
         let daemonUnknown = CodexDaemonConfigResult(status: "changed", backup: nil, error: nil, daemon: "unknown", updater: "stopped")
@@ -783,12 +793,22 @@ struct CodexDaemonConfigTests {
         // updater-aware bridge command again.
         let updaterUnknown = CodexDaemonConfigResult(status: "changed", backup: nil, error: nil, daemon: "stopped", updater: "unknown")
         #expect(CodexDaemonConfigResult.message(for: updaterUnknown)
-            == "Codex's shared server was stopped, but Herdcats couldn't confirm the state of its updater, which may restart it. Run `herdcats-bridge codex-config disable-daemon --stop-running` on this computer, then restart Codex in this pane.")
+            == "Codex's shared server was stopped, but Herdcats couldn't confirm the state of its updater, which may restart it. Copy the turn-off command below and run it on this computer, then restart Codex in this pane.")
         #expect(!CodexDaemonConfigResult.showsStopCommand(for: updaterUnknown))
         #expect(CodexDaemonConfigResult.showsUpdaterStopCommand(for: updaterUnknown))
 
-        // The copyable updater command is the bridge operation itself.
-        #expect(AgentTimelineView.codexUpdaterStopCommand == "herdcats-bridge codex-config disable-daemon --stop-running")
+        // Both unverified -> the updater-aware recovery too.
+        let bothUnknown = CodexDaemonConfigResult(status: "changed", backup: nil, error: nil, daemon: "unknown", updater: "unknown")
+        #expect(CodexDaemonConfigResult.message(for: bothUnknown)
+            == "Herdcats couldn't confirm the state of Codex's shared server or its updater. Copy the turn-off command below and run it on this computer, then restart Codex in this pane.")
+        #expect(CodexDaemonConfigResult.showsUpdaterStopCommand(for: bothUnknown))
+
+        // The copyable updater command resolves the bridge the way the app
+        // does (PATH first, then the managed absolute path), so it works
+        // where ~/.local/bin is not on the shell's PATH.
+        #expect(AgentTimelineView.codexUpdaterStopCommand.hasSuffix("codex-config disable-daemon --stop-running"))
+        #expect(AgentTimelineView.codexUpdaterStopCommand.contains("command -v herdcats-bridge"))
+        #expect(AgentTimelineView.codexUpdaterStopCommand.contains("$HOME/.local/bin/herdcats-bridge"))
         #expect(HerdrConnection.codexDisableDaemonStopScript.contains("codex-config disable-daemon --stop-running"))
 
         // Codex not installed keeps its own copy.
