@@ -421,10 +421,10 @@ extension AgentBridgeClient {
 
 /// Immutable release selected by this app build, not a host-supplied URL.
 enum HostHelperSetupPlan {
-    static let version = "0.2.1"
+    static let version = "0.2.2"
     /// The oldest bridge this app works with; bump only when the app needs a newer bridge feature.
     static let minimumVersion = "0.2.0"
-    static let installerSHA256 = "c7ef7992befa6eacc4bd7a71774f625758777aafaab931266cec79bc977e6a7b"
+    static let installerSHA256 = "be2ae7715ffe3ef793565e4a171fe36c47fb562bb62f595bdcca3a8f49119289"
     /// Supported agents bundled in this pinned release. Must be updated when bumping version / installerSHA256.
     static let agents: [String] = ["claude", "codex"]
     static func manualInstallCommand(reason: HostHelperSetupReason, pinnedVersion: String = version) -> String {
