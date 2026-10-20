@@ -975,6 +975,18 @@ struct CodexDaemonConfigTests {
             #expect(AgentTimelineView.codexDaemonResultIsStale(outcome: updaterFailed, codexDaemon: "unknown"))
         }
     }
+
+    @Test func lateStopResultIsDiscardedWhenItsEpisodeEnded() {
+        // A stop runs for up to 90 s; the episode token is captured when it
+        // starts. Nothing cleared the outcome in flight -> record the result.
+        #expect(AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 3, currentEpisode: 3))
+        #expect(AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 0, currentEpisode: 0))
+        // The pane became ready (or the stream re-ran, or a later episode
+        // began) during the flight: every clear bumps the token, so the late
+        // answer is discarded and the new episode keeps its live guidance.
+        #expect(!AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 3, currentEpisode: 4))
+        #expect(!AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 3, currentEpisode: 5))
+    }
 }
 
 private actor CodexTestWire {

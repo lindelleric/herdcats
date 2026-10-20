@@ -48,6 +48,9 @@ struct AgentTimelineView: View {
     @State private var showsCodexDaemonConfirm = false
     @State private var isDisablingCodexDaemon = false
     @State private var codexDaemonStopOutcome: CodexDaemonStopOutcome?
+    /// Episode token for the recorded outcome: bumped on every clear, so a
+    /// stop command still in flight can detect that its episode ended.
+    @State private var codexDaemonEpisode = 0
     @State private var copiedCodexConfig = false
     @State private var copiedCodexStop = false
 
@@ -776,6 +779,15 @@ struct AgentTimelineView: View {
         return codexDaemon == "running" || codexDaemon == "unknown"
     }
 
+    /// A stop command can run for up to 90 s, and its result belongs to the
+    /// no-session episode that initiated it. The episode token is captured
+    /// before awaiting and bumped by every clear, so a completion that lands
+    /// after the pane moved on (ready, a re-run, a later episode) is
+    /// discarded instead of replacing the live guidance.
+    static func shouldRecordStopOutcome(initiatedEpisode: Int, currentEpisode: Int) -> Bool {
+        initiatedEpisode == currentEpisode
+    }
+
     static let codexManualConfigLine = "daemon_auto_start = false"
     static let codexDaemonStopCommand = "codex app-server daemon stop"
 
@@ -997,13 +1009,20 @@ struct AgentTimelineView: View {
 
     private func clearCodexDaemonResult() {
         codexDaemonStopOutcome = nil
+        codexDaemonEpisode += 1
     }
 
     private func disableCodexDaemon() {
         guard !isDisablingCodexDaemon else { return }
         guard let generation = connectionState.generation else { return }
+        // Bind the up-to-90 s stop to the episode that started it. Any clear
+        // while it runs — the pane left the unavailable state, the stream
+        // re-ran, or a fresh daemon report retired the previous result — ends
+        // that episode, and the late answer must not replace newer guidance.
+        let initiatedEpisode = codexDaemonEpisode
         isDisablingCodexDaemon = true
         Task {
+            let outcome: CodexDaemonStopOutcome
             do {
                 let result = try await connection.disableCodexDaemon(
                     target: setupTarget,
@@ -1013,10 +1032,13 @@ struct AgentTimelineView: View {
                 // No retry: the bridge re-emits timeline.unavailable when
                 // codex_daemon changes, and a re-run would clear this feedback,
                 // which tells the user to restart this pane's Codex.
-                codexDaemonStopOutcome = CodexDaemonStopOutcome(result: result)
+                outcome = CodexDaemonStopOutcome(result: result)
             } catch {
-                codexDaemonStopOutcome = CodexDaemonStopOutcome(
+                outcome = CodexDaemonStopOutcome(
                     errorDescription: "Could not turn off Codex's shared background server: \(error.localizedDescription)")
+            }
+            if Self.shouldRecordStopOutcome(initiatedEpisode: initiatedEpisode, currentEpisode: codexDaemonEpisode) {
+                codexDaemonStopOutcome = outcome
             }
             isDisablingCodexDaemon = false
         }
