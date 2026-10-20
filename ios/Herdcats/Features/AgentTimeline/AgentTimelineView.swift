@@ -688,9 +688,10 @@ struct AgentTimelineView: View {
     enum CodexNoSessionAction: Equatable, CaseIterable {
         /// The bridge (0.2.2+) can stop the server and it is running or unverifiable.
         case turnOffServer
-        /// The bridge (0.2.2+) can stop the server but it is already off: wait
-        /// for Codex's first message instead of offering a stop.
+        /// The server is off and there is no session reference yet.
         case waitForSession
+        /// The server is off but the existing reference cannot identify a session.
+        case identifySession
         /// The bridge (0.2.0/0.2.1) can only change the config; upgrading adds
         /// the in-app stop.
         case upgradeBridge
@@ -710,7 +711,8 @@ struct AgentTimelineView: View {
             route == nil
         else { return .manualFallback }
         if capabilities?.codexDaemonStop == true {
-            return codexDaemon == "running" || codexDaemon == "unknown" ? .turnOffServer : .waitForSession
+            if codexDaemon == "running" || codexDaemon == "unknown" { return .turnOffServer }
+            return code == "session_reference_unavailable" ? .waitForSession : .identifySession
         }
         if capabilities?.codexDaemonConfig == true {
             return .upgradeBridge
@@ -726,7 +728,7 @@ struct AgentTimelineView: View {
     /// server is running.
     static func codexNoSessionTitle(_ action: CodexNoSessionAction) -> String {
         switch action {
-        case .turnOffServer, .upgradeBridge: return "Codex session not identified"
+        case .turnOffServer, .upgradeBridge, .identifySession: return "Codex session not identified"
         case .waitForSession: return "Send a message to start"
         case .manualFallback: return "Waiting for Codex session"
         }
@@ -734,12 +736,12 @@ struct AgentTimelineView: View {
     static let codexDaemonUpgradeExplanation =
         "Upgrade Herdcats Bridge to turn off Codex's shared background server from here."
 
-    /// The title already says what to do when the server is off, so that
-    /// state has no body.
+    /// Only a missing session reference needs no explanation beyond the title.
     static func codexNoSessionExplanation(_ action: CodexNoSessionAction, code: String, agent: String?) -> String? {
         switch action {
         case .turnOffServer: return codexDaemonRunningExplanation
         case .waitForSession: return nil
+        case .identifySession: return "Restart Codex in this pane, then check again."
         case .upgradeBridge: return codexDaemonUpgradeExplanation
         case .manualFallback: return explanation(code, agent: agent)
         }
@@ -770,7 +772,7 @@ struct AgentTimelineView: View {
         case .turnOffServer: return [.turnOffServer]
         case .upgradeBridge: return [.upgradeBridge, .manualFallback]
         case .manualFallback: return [.manualFallback]
-        case .waitForSession: return []
+        case .waitForSession, .identifySession: return []
         }
     }
 

@@ -692,10 +692,12 @@ struct CodexDaemonConfigTests {
             // 3A: bridge can stop the server; daemon running or unverifiable -> offer the stop.
             #expect(AgentTimelineView.codexNoSessionAction(agent: "codex", code: code, route: nil, capabilities: stopCaps, codexDaemon: "running") == .turnOffServer)
             #expect(AgentTimelineView.codexNoSessionAction(agent: "codex", code: code, route: nil, capabilities: stopCaps, codexDaemon: "unknown") == .turnOffServer)
-            // 3A: daemon already off (or unreported) -> no stop button, wait for the first message.
-            #expect(AgentTimelineView.codexNoSessionAction(agent: "codex", code: code, route: nil, capabilities: stopCaps, codexDaemon: "not_running") == .waitForSession)
-            #expect(AgentTimelineView.codexNoSessionAction(agent: "codex", code: code, route: nil, capabilities: stopCaps, codexDaemon: nil) == .waitForSession)
-            #expect(AgentTimelineView.codexNoSessionAction(agent: "codex", code: code, route: nil, capabilities: stopCaps, codexDaemon: "something_new") == .waitForSession)
+            // Only a missing reference can be resolved by sending the first message.
+            let daemonOffAction: AgentTimelineView.CodexNoSessionAction =
+                code == "session_reference_unavailable" ? .waitForSession : .identifySession
+            #expect(AgentTimelineView.codexNoSessionAction(agent: "codex", code: code, route: nil, capabilities: stopCaps, codexDaemon: "not_running") == daemonOffAction)
+            #expect(AgentTimelineView.codexNoSessionAction(agent: "codex", code: code, route: nil, capabilities: stopCaps, codexDaemon: nil) == daemonOffAction)
+            #expect(AgentTimelineView.codexNoSessionAction(agent: "codex", code: code, route: nil, capabilities: stopCaps, codexDaemon: "something_new") == daemonOffAction)
             // 3B: 0.2.0/0.2.1 bridge can only change config -> upgrade offer, no config-only stop button.
             #expect(AgentTimelineView.codexNoSessionAction(agent: "codex", code: code, route: nil, capabilities: configOnlyCaps, codexDaemon: "running") == .upgradeBridge)
             #expect(AgentTimelineView.codexNoSessionAction(agent: "codex", code: code, route: nil, capabilities: configOnlyCaps, codexDaemon: nil) == .upgradeBridge)
@@ -713,9 +715,26 @@ struct CodexDaemonConfigTests {
         #expect(AgentTimelineView.codexNoSessionAction(agent: nil, code: "session_reference_unavailable", route: nil, capabilities: stopCaps, codexDaemon: "running") == .manualFallback)
     }
 
+    @Test func invalidOrAmbiguousSessionKeepsRecoveryWhenDaemonIsOff() {
+        let capabilities = AgentBridgeCapabilities(claudeTimeline: true, codexTimeline: true, codexDaemonConfig: true, codexDaemonStop: true, recordContent: true)
+        for code in ["ambiguous_session", "invalid_session_reference"] {
+            for daemon: String? in ["not_running", nil, "something_new"] {
+                let action = AgentTimelineView.codexNoSessionAction(
+                    agent: "codex", code: code, route: nil, capabilities: capabilities, codexDaemon: daemon)
+                #expect(action != .waitForSession)
+                #expect(AgentTimelineView.codexNoSessionTitle(action) == "Codex session not identified")
+                #expect(AgentTimelineView.codexNoSessionExplanation(action, code: code, agent: "codex")
+                    == "Restart Codex in this pane, then check again.")
+                #expect(AgentTimelineView.showsPaneCheckAgain(code: code, agent: "codex"))
+                #expect(AgentTimelineView.codexNoSessionRecovery(outcome: nil, action: action) == [])
+            }
+        }
+    }
+
     @Test func codexNoSessionTitlesMatchTheAction() {
         #expect(AgentTimelineView.codexNoSessionTitle(.turnOffServer) == "Codex session not identified")
         #expect(AgentTimelineView.codexNoSessionTitle(.upgradeBridge) == "Codex session not identified")
+        #expect(AgentTimelineView.codexNoSessionTitle(.identifySession) == "Codex session not identified")
         #expect(AgentTimelineView.codexNoSessionTitle(.waitForSession) == "Send a message to start")
         #expect(AgentTimelineView.codexNoSessionTitle(.manualFallback) == "Waiting for Codex session")
     }
@@ -1065,6 +1084,7 @@ struct CodexDaemonConfigTests {
         // Without an outcome the live action decides.
         #expect(AgentTimelineView.codexNoSessionRecovery(outcome: nil, action: .turnOffServer) == [.turnOffServer])
         #expect(AgentTimelineView.codexNoSessionRecovery(outcome: nil, action: .waitForSession) == [])
+        #expect(AgentTimelineView.codexNoSessionRecovery(outcome: nil, action: .identifySession) == [])
         #expect(AgentTimelineView.codexNoSessionRecovery(outcome: nil, action: .manualFallback) == [.manualFallback])
         #expect(AgentTimelineView.codexNoSessionRecovery(outcome: nil, action: .upgradeBridge) == [.upgradeBridge, .manualFallback])
     }
