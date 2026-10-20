@@ -7,14 +7,16 @@ fn run() -> std::result::Result<(), &'static str> {
         if args.next().is_some() {
             return Err("unknown_argument");
         }
+        // install.sh (including released installers) compares these bytes exactly;
+        // keep the keys in alphabetical order even with preserve_order enabled.
         println!(
             "{}",
             serde_json::json!({
-                "name": "herdcats-bridge",
-                "version": env!("CARGO_PKG_VERSION"),
-                "protocol": 1,
+                "agents": ["claude", "codex"],
                 "herdr_protocol": 22,
-                "agents": ["claude", "codex"]
+                "name": "herdcats-bridge",
+                "protocol": 1,
+                "version": env!("CARGO_PKG_VERSION")
             })
         );
         return Ok(());

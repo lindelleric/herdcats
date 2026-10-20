@@ -42,3 +42,20 @@ fn version_flag_rejects_extra_arguments() {
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
 }
+
+#[test]
+fn version_json_bytes_match_released_installer_contract() {
+    let expected = format!(
+        "{{\"agents\":[\"claude\",\"codex\"],\"herdr_protocol\":22,\"name\":\"herdcats-bridge\",\"protocol\":1,\"version\":\"{}\"}}\n",
+        env!("CARGO_PKG_VERSION")
+    );
+    for flag in ["--version-json", "--version"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_herdcats-bridge"))
+            .arg(flag)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(output.stderr.is_empty());
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+    }
+}
