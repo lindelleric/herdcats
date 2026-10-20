@@ -44,16 +44,19 @@ impl Server {
             while !done.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
-                        stream.set_nonblocking(false).unwrap();
-                        stream
-                            .set_read_timeout(Some(Duration::from_millis(500)))
-                            .unwrap();
-                        let mut line = String::new();
-                        if BufReader::new(stream.try_clone().unwrap())
-                            .read_line(&mut line)
-                            .is_err()
+                        // A peer can exit with a snapshot connection queued.
+                        // macOS may reject timeout setup on that closed socket.
+                        if stream.set_nonblocking(false).is_err()
+                            || stream
+                                .set_read_timeout(Some(Duration::from_millis(500)))
+                                .is_err()
                         {
                             continue;
+                        }
+                        let mut line = String::new();
+                        match BufReader::new(stream.try_clone().unwrap()).read_line(&mut line) {
+                            Ok(0) | Err(_) => continue,
+                            Ok(_) => {}
                         }
                         let request: Value = serde_json::from_str(&line).unwrap();
                         assert_eq!(request["method"], "session.snapshot");
@@ -183,6 +186,18 @@ fn row(session: &str, id: &str, text: &str) -> String {
         "{}\n",
         json!({"type":"user","uuid":id,"sessionId":session,"message":{"role":"user","content":text}})
     )
+}
+
+#[test]
+fn snapshot_server_survives_a_client_disconnecting_before_its_request() {
+    let server = Server::new();
+    drop(std::os::unix::net::UnixStream::connect(&server.socket).unwrap());
+    let snapshot = herdcats_bridge::herdr::Client {
+        socket: server.socket.clone(),
+    }
+    .snapshot();
+    drop(server);
+    assert_eq!(snapshot.unwrap().panes[0].pane_id, "w1:p1");
 }
 
 #[test]

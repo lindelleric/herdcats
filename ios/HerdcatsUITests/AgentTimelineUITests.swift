@@ -57,7 +57,7 @@ final class AgentTimelineUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-pending", "-hc.light", "-paneShowComposeByDefault", "YES"]
         launch(app)
-        XCTAssertTrue(app.staticTexts["No messages yet"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Send a message to start"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts["Timeline unavailable"].exists)
         XCTAssertFalse(app.buttons["timeline-helper-retry"].exists)
         XCTAssertTrue(app.descendants(matching: .any)["timeline-compose-field"].firstMatch.exists)
@@ -626,7 +626,7 @@ final class AgentTimelineUITests: XCTestCase {
         let installButton = appMissingPane.buttons["timeline-helper-setup"]
         XCTAssertTrue(installButton.waitForExistence(timeout: 5))
         XCTAssertEqual(installButton.label, "Install Herdcats Bridge")
-        XCTAssertTrue(appMissingPane.staticTexts["Install Herdcats Bridge to see this session as native messages. Terminal is available now."].exists)
+        XCTAssertTrue(appMissingPane.staticTexts["Install Herdcats Bridge to see this session as native messages."].exists)
         XCTAssertFalse(appMissingPane.buttons["timeline-helper-retry"].exists)
         saveNamedScreenshot(appMissingPane.screenshot(), name: "missing-pane")
         appMissingPane.terminate()
@@ -693,7 +693,7 @@ final class AgentTimelineUITests: XCTestCase {
             "-hc.screenshots", "-hc.screen", "timeline-codex-no-session", "-hc.agent", "codex", "-hc.light", "-paneShowComposeByDefault", "YES"
         ]
         launch(app)
-        XCTAssertTrue(app.staticTexts["Waiting for Codex session"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Codex session not identified"].waitForExistence(timeout: 5))
         let expectedExplanation = "Codex's shared background server is running, so Herdcats can't tell which session belongs to this pane."
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label == %@", expectedExplanation)).firstMatch.exists)
         XCTAssertTrue(app.descendants(matching: .any)["timeline-compose-field"].firstMatch.exists)

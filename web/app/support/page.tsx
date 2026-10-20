@@ -809,10 +809,11 @@ Set-Service -Name sshd -StartupType 'Automatic'`}</code></pre>
                   </p>
                 </div>
                 <div className="faq-item">
-                  <h4 id="troubleshooting-codex-session-not-identified" className="faq-question">Timeline says &ldquo;Waiting for Codex session&rdquo; or &ldquo;Codex session not identified&rdquo;</h4>
-                  <p>Send a message first. A new Codex session is identified after its first message.</p>
-                  <p>If the message remains after Codex replies, that Codex is attached to the shared background server. Follow <a href="#using-app-codex-shared-background-server">Codex background server</a>, then restart that pane&#x27;s Codex.</p>
-                  <p>Codex sessions started before you turned the server off keep using it until restarted.</p>
+                  <h4 id="troubleshooting-codex-session-not-identified" className="faq-question">Timeline says &ldquo;Send a message to start&rdquo; or &ldquo;Codex session not identified&rdquo;</h4>
+                  <p><strong>Send a message to start:</strong> Codex starts a session only when you send its first message. Send one, and Timeline appears once Codex replies.</p>
+                  <p><strong>Codex session not identified:</strong> if Timeline says the shared background server is running, follow <a href="#using-app-codex-shared-background-server">Codex background server</a>, then restart Codex in that pane.</p>
+                  <p>If the server is already off, the pane&#x27;s session reference is invalid or matches more than one session. Restart Codex in that pane, then tap <strong>Check again</strong>.</p>
+                  <p>Codex sessions started before you turned the server off keep using it, and stop working once it is stopped. Quit Codex in that pane and run <code>codex resume</code> to continue the conversation in Timeline.</p>
                 </div>
               </div>
             </div>
