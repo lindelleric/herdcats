@@ -228,3 +228,45 @@ fn trim(dir: &Path, path: &Path, file: &mut File) -> io::Result<()> {
     }
     result
 }
+
+/// Delete regular session spool files strictly older than 24 hours. Never follow
+/// a symlinked spool directory or treat temporary/unrelated files as records.
+pub fn prune(dir: &Path, now: SystemTime) -> io::Result<()> {
+    let metadata = match fs::symlink_metadata(dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(io::Error::other("spool_symlink_or_not_directory"));
+    }
+    let max_age = std::time::Duration::from_secs(24 * 60 * 60);
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some(session) = name
+            .strip_prefix("claude-")
+            .or_else(|| name.strip_prefix("codex-"))
+            .and_then(|name| name.strip_suffix(".jsonl"))
+        else {
+            continue;
+        };
+        if session.is_empty()
+            || !session
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+        {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if metadata.is_file()
+            && now
+                .duration_since(metadata.modified()?)
+                .is_ok_and(|age| age > max_age)
+        {
+            fs::remove_file(entry.path())?;
+        }
+    }
+    Ok(())
+}

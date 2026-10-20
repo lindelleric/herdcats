@@ -104,6 +104,9 @@ fn run() -> std::result::Result<(), &'static str> {
     if let Some(cr) = codex_root {
         service = service.with_codex_root(cr);
     }
+    if let Some(dir) = herdcats_bridge::hooks::resolve_spool_dir() {
+        let _ = herdcats_bridge::spool::prune(&dir, std::time::SystemTime::now());
+    }
     serve(service, Duration::from_millis(poll)).map_err(|_| "stream_closed")
 }
 fn main() {

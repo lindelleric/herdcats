@@ -615,3 +615,132 @@ fn recorder_marks_single_record_that_exceeds_spool_budget() {
         json!({"truncated":true})
     );
 }
+
+#[test]
+fn prune_deletes_only_spool_files_strictly_older_than_one_day() {
+    use std::{
+        fs::FileTimes,
+        time::{Duration, UNIX_EPOCH},
+    };
+    let t = Temp::new();
+    let dir = t.spool();
+    fs::create_dir_all(&dir).unwrap();
+    let now = UNIX_EPOCH + Duration::from_secs(200_000);
+    for (name, age) in [
+        ("claude-old.jsonl", 86_401),
+        ("codex-old.jsonl", 86_401),
+        ("claude-boundary.jsonl", 86_400),
+        ("codex-recent.jsonl", 1),
+        ("notes.txt", 100_000),
+        ("unknown-old.jsonl", 100_000),
+        ("claude-bad.name.jsonl", 100_000),
+        ("claude-.jsonl", 100_000),
+        (".spool.tmp-1-0", 100_000),
+    ] {
+        let path = dir.join(name);
+        fs::write(&path, "record").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(now - Duration::from_secs(age)))
+            .unwrap();
+    }
+    let future = dir.join("claude-future.jsonl");
+    fs::write(&future, "future").unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&future)
+        .unwrap()
+        .set_times(FileTimes::new().set_modified(now + Duration::from_secs(1)))
+        .unwrap();
+    fs::create_dir(dir.join("claude-directory.jsonl")).unwrap();
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(dir.join("notes.txt"), dir.join("claude-link.jsonl")).unwrap();
+    }
+    herdcats_bridge::spool::prune(&dir, now).unwrap();
+    assert!(!dir.join("claude-old.jsonl").exists());
+    assert!(!dir.join("codex-old.jsonl").exists());
+    for name in [
+        "claude-boundary.jsonl",
+        "codex-recent.jsonl",
+        "notes.txt",
+        "unknown-old.jsonl",
+        "claude-bad.name.jsonl",
+        "claude-.jsonl",
+        ".spool.tmp-1-0",
+        "claude-future.jsonl",
+        "claude-directory.jsonl",
+    ] {
+        assert!(dir.join(name).exists(), "{name}");
+    }
+    #[cfg(unix)]
+    {
+        assert!(
+            fs::symlink_metadata(dir.join("claude-link.jsonl"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+}
+
+#[test]
+fn prune_missing_directory_is_noop_and_symlink_directory_is_refused() {
+    let t = Temp::new();
+    let now = std::time::SystemTime::now();
+    herdcats_bridge::spool::prune(&t.spool(), now).unwrap();
+    assert!(!t.spool().exists());
+    #[cfg(unix)]
+    {
+        let target = t.0.join("target");
+        fs::create_dir(&target).unwrap();
+        let old = target.join("claude-old.jsonl");
+        fs::write(&old, "keep").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+            .unwrap();
+        fs::create_dir_all(t.spool().parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&target, t.spool()).unwrap();
+        assert!(herdcats_bridge::spool::prune(&t.spool(), now).is_err());
+        assert_eq!(fs::read_to_string(old).unwrap(), "keep");
+    }
+}
+
+#[test]
+fn serve_prunes_at_start_and_ignores_cleanup_errors() {
+    use std::process::Stdio;
+    let t = Temp::new();
+    fs::create_dir_all(t.spool()).unwrap();
+    let old = t.spool().join("claude-old.jsonl");
+    fs::write(&old, "old").unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&old)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+        .unwrap();
+    let serve = || {
+        let output = Command::new(env!("CARGO_BIN_EXE_herdcats-bridge"))
+            .args(["serve", "--stdio", "--socket"])
+            .arg(t.0.join("unused.sock"))
+            .env("HOME", &t.0)
+            .env("XDG_STATE_HOME", t.0.join("state"))
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+    };
+    serve();
+    assert!(!old.exists());
+    fs::remove_dir(t.spool()).unwrap();
+    fs::write(t.spool(), "not a directory").unwrap();
+    serve();
+    assert_eq!(fs::read_to_string(t.spool()).unwrap(), "not a directory");
+}
