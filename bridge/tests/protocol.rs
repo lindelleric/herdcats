@@ -261,10 +261,14 @@ fn timeline_unavailable_carries_codex_daemon_for_codex_and_not_for_claude() {
     );
     assert!(claude_missing["data"].get("codex_daemon").is_none());
 
-    // 2. Switch to Codex pane with missing reference: codex_daemon IS present
-    server.state.lock().unwrap()["panes"][0]["agent"] = json!("codex");
+    // 2. Switch to Codex pane with missing reference: codex_daemon IS present.
+    // Unwatch before switching, or the live watch can emit an unavailable
+    // frame for the switch ahead of the unwatch reply.
     peer.send(json!({"id":"unwatch","method":"unwatch","params":{}}));
-    assert_eq!(peer.next()["result"]["watching"], Value::Null);
+    let unwatched = peer.next();
+    assert_eq!(unwatched["id"], "unwatch");
+    assert_eq!(unwatched["result"]["watching"], Value::Null);
+    server.state.lock().unwrap()["panes"][0]["agent"] = json!("codex");
     peer.send(json!({"id":"watch-codex","method":"watch","params":{"pane_id":"w1:p1"}}));
     assert_eq!(peer.next()["id"], "watch-codex");
     let codex_missing = peer.next();

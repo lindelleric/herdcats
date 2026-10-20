@@ -1400,10 +1400,14 @@ rm -f "$CODEX_HOME/app-server-daemon/daemon.pid"
         usec,
     );
     wait_for_check_status(&pid_file, &temp.path, ProcessStatus::Running, "running");
+    // Confirming any non-Running status takes two consecutive 100ms polls,
+    // so leave room for a stalled runner: 200ms left none, and the second
+    // pass then treated the never-started updater as alive and skipped
+    // `daemon stop`. Polls end early once confirmed, so this costs nothing.
     let (status, _) = stop_daemon_and_updater_with_timeouts(
         &temp.path,
         Duration::from_secs(1),
-        Duration::from_millis(200),
+        Duration::from_secs(1),
     );
     assert!(!pid_file.exists());
     assert_eq!(status, DaemonStopStatus::StopFailed);
