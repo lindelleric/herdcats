@@ -142,7 +142,7 @@ struct CodexDaemonConfigResult: Decodable, Equatable, Sendable {
             case (true, true):
                 return "Codex's shared server was stopped, but its updater is still running and may restart it. Copy the turn-off command below and run it on this computer to stop the updater too, then restart Codex in this pane."
             case (true, false):
-                return "Codex's shared server and its updater are both still running. Copy the turn-off command below and run it on this computer to stop the updater and the server, then restart Codex in this pane."
+                return "Herdcats couldn't stop the updater that keeps Codex's shared server running. Copy the turn-off command below and run it on this computer to stop the updater and the server, then restart Codex in this pane."
             case (false, true):
                 return "Codex's shared server was stopped, but Herdcats couldn't confirm the state of its updater, which may restart it. Copy the turn-off command below and run it on this computer, then restart Codex in this pane."
             case (false, false):

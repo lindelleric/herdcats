@@ -778,7 +778,7 @@ struct CodexDaemonConfigTests {
         // hidden by the earlier daemon branch.
         let bothStopFailed = CodexDaemonConfigResult(status: "changed", backup: nil, error: nil, daemon: "stop_failed", updater: "stop_failed")
         #expect(CodexDaemonConfigResult.message(for: bothStopFailed)
-            == "Codex's shared server and its updater are both still running. Copy the turn-off command below and run it on this computer to stop the updater and the server, then restart Codex in this pane.")
+            == "Herdcats couldn't stop the updater that keeps Codex's shared server running. Copy the turn-off command below and run it on this computer to stop the updater and the server, then restart Codex in this pane.")
         #expect(!CodexDaemonConfigResult.showsStopCommand(for: bothStopFailed))
         #expect(CodexDaemonConfigResult.showsUpdaterStopCommand(for: bothStopFailed))
 
@@ -997,6 +997,20 @@ struct CodexDaemonConfigTests {
             #expect(!AgentTimelineView.codexDaemonResultIsStale(outcome: implicated, codexDaemon: "running"))
             #expect(AgentTimelineView.codexDaemonResultIsStale(outcome: implicated, codexDaemon: "not_running"))
         }
+
+        // Both processes failed: no daemon-only report can contradict the
+        // recorded updater failure, so every daemon value keeps the outcome
+        // (and its updater-aware recovery) until the episode ends.
+        for both in [outcome(daemon: "stop_failed", updater: "stop_failed"),
+                     outcome(daemon: "stop_failed", updater: "unknown"),
+                     outcome(daemon: "unknown", updater: "unknown")] {
+            #expect(both.daemonStillRunning)
+            #expect(both.showsUpdaterStopCommand)
+            #expect(!AgentTimelineView.codexDaemonResultIsStale(outcome: both, codexDaemon: "not_running"))
+            #expect(!AgentTimelineView.codexDaemonResultIsStale(outcome: both, codexDaemon: "running"))
+            #expect(!AgentTimelineView.codexDaemonResultIsStale(outcome: both, codexDaemon: "unknown"))
+            #expect(!AgentTimelineView.codexDaemonResultIsStale(outcome: both, codexDaemon: nil))
+        }
         for failed in [outcome(daemon: nil, error: "config_invalid"),
                        AgentTimelineView.CodexDaemonStopOutcome(errorDescription: "Could not turn off Codex's shared background server: timed out")] {
             #expect(failed.errorOccurred)
@@ -1020,19 +1034,48 @@ struct CodexDaemonConfigTests {
         }
     }
 
+    @Test func codexNoSessionRecoveryRendersOutcomeRecoveryIndependentlyOfTheAction() {
+        func outcome(daemon: String?, updater: String?) -> AgentTimelineView.CodexDaemonStopOutcome {
+            AgentTimelineView.CodexDaemonStopOutcome(
+                result: CodexDaemonConfigResult(status: "changed", backup: nil, error: nil, daemon: daemon, updater: updater))
+        }
+        let updaterFailed = outcome(daemon: "stopped", updater: "stop_failed")
+        let daemonFailed = outcome(daemon: "stop_failed", updater: "stopped")
+        let stopped = outcome(daemon: "stopped", updater: "stopped")
+        let errored = AgentTimelineView.CodexDaemonStopOutcome(
+            errorDescription: "Could not turn off Codex's shared background server: timed out")
+
+        // The recovery bug this PR round fixed: after an updater-only failure
+        // the bridge's daemon-only not_running re-emit moves the pane to
+        // waiting, and the updater recovery must still render — as it must
+        // under every other live action.
+        for action in AgentTimelineView.CodexNoSessionAction.allCases {
+            #expect(AgentTimelineView.codexNoSessionRecovery(outcome: updaterFailed, action: action) == [.updaterStopCommand])
+            #expect(AgentTimelineView.codexNoSessionRecovery(outcome: daemonFailed, action: action) == [.stopCommand])
+            #expect(AgentTimelineView.codexNoSessionRecovery(outcome: stopped, action: action) == [])
+            #expect(AgentTimelineView.codexNoSessionRecovery(outcome: errored, action: action) == [.manualFallback])
+        }
+
+        // Without an outcome the live action decides.
+        #expect(AgentTimelineView.codexNoSessionRecovery(outcome: nil, action: .turnOffServer) == [.turnOffServer])
+        #expect(AgentTimelineView.codexNoSessionRecovery(outcome: nil, action: .waitForSession) == [])
+        #expect(AgentTimelineView.codexNoSessionRecovery(outcome: nil, action: .manualFallback) == [.manualFallback])
+        #expect(AgentTimelineView.codexNoSessionRecovery(outcome: nil, action: .upgradeBridge) == [.upgradeBridge, .manualFallback])
+    }
+
     @Test func lateStopResultIsDiscardedWhenItsEpisodeEnded() {
         let stopped = AgentTimelineView.CodexDaemonStopOutcome(
             result: CodexDaemonConfigResult(status: "changed", backup: nil, error: nil, daemon: "stopped", updater: "stopped"))
         // A stop runs for up to 90 s; the episode token is captured when it
         // starts. Nothing cleared the outcome in flight and the daemon report
         // still agrees -> record the result.
-        #expect(AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 3, currentEpisode: 3, outcome: stopped, latestCodexDaemon: "not_running"))
-        #expect(AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 0, currentEpisode: 0, outcome: stopped, latestCodexDaemon: nil))
+        #expect(AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 3, currentEpisode: 3, initiatedReportSeq: 1, currentReportSeq: 2, outcome: stopped, latestCodexDaemon: "not_running"))
+        #expect(AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 0, currentEpisode: 0, initiatedReportSeq: 0, currentReportSeq: 0, outcome: stopped, latestCodexDaemon: nil))
         // The pane became ready (or the stream re-ran, or a later episode
         // began) during the flight: every clear bumps the token, so the late
         // answer is discarded and the new episode keeps its live guidance.
-        #expect(!AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 3, currentEpisode: 4, outcome: stopped, latestCodexDaemon: "not_running"))
-        #expect(!AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 3, currentEpisode: 5, outcome: stopped, latestCodexDaemon: nil))
+        #expect(!AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 3, currentEpisode: 4, initiatedReportSeq: 1, currentReportSeq: 2, outcome: stopped, latestCodexDaemon: "not_running"))
+        #expect(!AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 3, currentEpisode: 5, initiatedReportSeq: 1, currentReportSeq: 1, outcome: stopped, latestCodexDaemon: nil))
     }
 
     @Test func lateStopFailureIsDiscardedWhenTheDaemonIsAlreadyOff() {
@@ -1040,20 +1083,37 @@ struct CodexDaemonConfigTests {
             result: CodexDaemonConfigResult(status: nil, backup: nil, error: nil, daemon: "stop_failed", updater: "stopped"))
         let errored = AgentTimelineView.CodexDaemonStopOutcome(
             errorDescription: "Could not turn off Codex's shared background server: timed out")
-        // A not_running report arrived while the command was still awaiting
-        // its response — before any outcome existed for the daemon-change
-        // handler to retire. The pane's live state already says the server
-        // is off, so the late failure answer must not claim otherwise.
-        #expect(!AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 2, currentEpisode: 2, outcome: daemonFailed, latestCodexDaemon: "not_running"))
-        #expect(!AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 2, currentEpisode: 2, outcome: errored, latestCodexDaemon: "not_running"))
-        // The latest report still shows the daemon alive (or reports
-        // nothing) -> the failure guidance is kept.
-        #expect(AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 2, currentEpisode: 2, outcome: daemonFailed, latestCodexDaemon: "running"))
-        #expect(AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 2, currentEpisode: 2, outcome: errored, latestCodexDaemon: nil))
-        // Updater-only failures survive a daemon-only not_running report.
+        // A not_running report changed during the flight (the report sequence
+        // moved), and nothing about these outcomes survives it: the late
+        // failure answer must not claim the server is still running.
+        #expect(!AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 2, currentEpisode: 2, initiatedReportSeq: 1, currentReportSeq: 2, outcome: daemonFailed, latestCodexDaemon: "not_running"))
+        #expect(!AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 2, currentEpisode: 2, initiatedReportSeq: 1, currentReportSeq: 2, outcome: errored, latestCodexDaemon: "not_running"))
+        // The daemon is still reported running or unverifiable (a changed
+        // report) -> the failure guidance is kept.
+        #expect(AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 2, currentEpisode: 2, initiatedReportSeq: 1, currentReportSeq: 2, outcome: daemonFailed, latestCodexDaemon: "running"))
+        #expect(AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 2, currentEpisode: 2, initiatedReportSeq: 1, currentReportSeq: 2, outcome: errored, latestCodexDaemon: "unknown"))
+        // The reply can also beat the bridge's re-emit: the daemon report the
+        // stop started with is still the latest value, which carries no new
+        // information — the completion's own result is recorded whatever it
+        // says, so a both-failed or updater-only failure (or a success) never
+        // disappears just because the unchanged value reads "running".
+        let bothFailed = AgentTimelineView.CodexDaemonStopOutcome(
+            result: CodexDaemonConfigResult(status: "changed", backup: nil, error: nil, daemon: "stop_failed", updater: "stop_failed"))
+        #expect(AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 2, currentEpisode: 2, initiatedReportSeq: 1, currentReportSeq: 1, outcome: bothFailed, latestCodexDaemon: "running"))
         let updaterFailed = AgentTimelineView.CodexDaemonStopOutcome(
             result: CodexDaemonConfigResult(status: "changed", backup: nil, error: nil, daemon: "stopped", updater: "stop_failed"))
-        #expect(AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 2, currentEpisode: 2, outcome: updaterFailed, latestCodexDaemon: "not_running"))
+        #expect(AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 2, currentEpisode: 2, initiatedReportSeq: 1, currentReportSeq: 1, outcome: updaterFailed, latestCodexDaemon: "running"))
+        let stopped = AgentTimelineView.CodexDaemonStopOutcome(
+            result: CodexDaemonConfigResult(status: "changed", backup: nil, error: nil, daemon: "stopped", updater: "stopped"))
+        #expect(AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 2, currentEpisode: 2, initiatedReportSeq: 1, currentReportSeq: 1, outcome: stopped, latestCodexDaemon: "running"))
+        // Once a report DID change, the staleness rules apply again: an
+        // updater-only failure is retired by the daemon being alive again...
+        #expect(!AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 2, currentEpisode: 2, initiatedReportSeq: 1, currentReportSeq: 2, outcome: updaterFailed, latestCodexDaemon: "running"))
+        // ...a both-failed outcome is not retired by any daemon-only value...
+        #expect(AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 2, currentEpisode: 2, initiatedReportSeq: 1, currentReportSeq: 2, outcome: bothFailed, latestCodexDaemon: "not_running"))
+        // ...and an updater-only failure survives the daemon-only not_running
+        // re-emit, which is what keeps its recovery on screen.
+        #expect(AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 2, currentEpisode: 2, initiatedReportSeq: 1, currentReportSeq: 2, outcome: updaterFailed, latestCodexDaemon: "not_running"))
     }
 
     @Test func stopRevalidationRequiresTheLivePaneToStillAskForIt() {

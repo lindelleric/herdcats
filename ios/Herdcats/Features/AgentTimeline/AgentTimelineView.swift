@@ -51,6 +51,9 @@ struct AgentTimelineView: View {
     /// Episode token for the recorded outcome: bumped on every clear, so a
     /// stop command still in flight can detect that its episode ended.
     @State private var codexDaemonEpisode = 0
+    /// Sequence of `codex_daemon` report changes; lets a completing stop tell
+    /// an unchanged pre-stop report from one that changed while it ran.
+    @State private var codexDaemonReportSeq = 0
     @State private var copiedCodexConfig = false
     @State private var copiedCodexStop = false
     @State private var copiedCodexUpdaterStop = false
@@ -279,6 +282,7 @@ struct AgentTimelineView: View {
             dismissStaleCodexDaemonConfirm()
         }
         .onChange(of: timeline.codexDaemon) { _, codexDaemon in
+            codexDaemonReportSeq += 1
             // A fresh daemon report that contradicts the recorded result (the
             // server came back after "off", or was stopped despite "still
             // running") hands the pane back to the live state.
@@ -566,19 +570,12 @@ struct AgentTimelineView: View {
                     .accessibilityIdentifier("timeline-helper-setup")
                 }
                 if let codexNoSession {
-                    switch codexNoSession {
-                    case .turnOffServer:
-                        if let outcome = codexDaemonStopOutcome {
-                            if outcome.errorOccurred {
-                                // The config step failed or the command never
-                                // ran; the manual fallback is the escape hatch.
-                                codexManualFallback
-                            } else if outcome.showsStopCommand {
-                                codexStopCommandFallback
-                            } else if outcome.showsUpdaterStopCommand {
-                                codexUpdaterStopFallback
-                            }
-                        } else {
+                    ForEach(
+                        Self.codexNoSessionRecovery(outcome: codexDaemonStopOutcome, action: codexNoSession),
+                        id: \.self
+                    ) { recovery in
+                        switch recovery {
+                        case .turnOffServer:
                             Button {
                                 showsCodexDaemonConfirm = true
                             } label: {
@@ -590,18 +587,19 @@ struct AgentTimelineView: View {
                             .buttonStyle(.herdrPrimary)
                             .accessibilityIdentifier("timeline-codex-disable-daemon")
                             .disabled(isDisablingCodexDaemon)
+                        case .upgradeBridge:
+                            Button("Upgrade Herdcats Bridge") {
+                                beginSetup(reason: .updateRequired)
+                            }
+                            .buttonStyle(.herdrPrimary)
+                            .accessibilityIdentifier("timeline-codex-upgrade-bridge")
+                        case .manualFallback:
+                            codexManualFallback
+                        case .stopCommand:
+                            codexStopCommandFallback
+                        case .updaterStopCommand:
+                            codexUpdaterStopFallback
                         }
-                    case .upgradeBridge:
-                        Button("Upgrade Herdcats Bridge") {
-                            beginSetup(reason: .updateRequired)
-                        }
-                        .buttonStyle(.herdrPrimary)
-                        .accessibilityIdentifier("timeline-codex-upgrade-bridge")
-                        codexManualFallback
-                    case .manualFallback:
-                        codexManualFallback
-                    case .waitForSession:
-                        EmptyView()
                     }
                 }
                 if Self.showsPaneCheckAgain(code: code, agent: agent, bridgeVersion: bridgeVersion) {
@@ -686,7 +684,7 @@ struct AgentTimelineView: View {
 
     /// What the pane can do about a Codex pane with no identified session,
     /// decided from what the installed bridge can actually do.
-    enum CodexNoSessionAction: Equatable {
+    enum CodexNoSessionAction: Equatable, CaseIterable {
         /// The bridge (0.2.2+) can stop the server and it is running or unverifiable.
         case turnOffServer
         /// The bridge (0.2.2+) can stop the server but it is already off: wait
@@ -732,6 +730,35 @@ struct AgentTimelineView: View {
         case .waitForSession: return codexDaemonOffExplanation
         case .upgradeBridge: return codexDaemonUpgradeExplanation
         case .manualFallback: return explanation(code, agent: agent)
+        }
+    }
+
+    /// One recovery control offered under a no-session Codex state.
+    enum CodexRecoveryAction: Hashable {
+        case turnOffServer, upgradeBridge, manualFallback, stopCommand, updaterStopCommand
+    }
+
+    /// Which recovery actions the pane offers. A recorded stop outcome drives
+    /// its own recovery regardless of the live daemon action — after an
+    /// updater-only failure the not_running re-emit moves the pane to waiting
+    /// while the updater may still restart the server, so the command the
+    /// message points at must stay reachable — and an outcome error replaces,
+    /// never duplicates, the action's own fallbacks. Without an outcome the
+    /// live action decides.
+    static func codexNoSessionRecovery(
+        outcome: CodexDaemonStopOutcome?, action: CodexNoSessionAction
+    ) -> [CodexRecoveryAction] {
+        if let outcome {
+            if outcome.errorOccurred { return [.manualFallback] }
+            if outcome.showsStopCommand { return [.stopCommand] }
+            if outcome.showsUpdaterStopCommand { return [.updaterStopCommand] }
+            return []
+        }
+        switch action {
+        case .turnOffServer: return [.turnOffServer]
+        case .upgradeBridge: return [.upgradeBridge, .manualFallback]
+        case .manualFallback: return [.manualFallback]
+        case .waitForSession: return []
         }
     }
 
@@ -795,13 +822,20 @@ struct AgentTimelineView: View {
     }
 
     /// Whether a fresh `codex_daemon` report retires a recorded stop result.
-    /// The event reports only the daemon process, so `not_running` can only
-    /// resolve a result that implicated the daemon itself — an error, or a
-    /// daemon stop_failed/unknown. A successful stop or an updater-only
-    /// failure is confirmed by `not_running` (the surviving updater may still
-    /// restart the daemon) and retires only when the daemon is alive again.
+    /// The event reports only the daemon process:
+    /// - Both processes failed: no daemon-only report can contradict the
+    ///   recorded updater failure, so only the episode end retires it.
+    /// - Only the updater failed (the daemon was stopped): the daemon being
+    ///   alive again (running or unverifiable) contradicts it.
+    /// - Only the daemon failed, or nothing was stopped (an error): a
+    ///   not_running report resolves it.
+    /// - A successful stop: the daemon being alive again retires it.
     static func codexDaemonResultIsStale(outcome: CodexDaemonStopOutcome?, codexDaemon: String?) -> Bool {
         guard let outcome, let codexDaemon else { return false }
+        if outcome.showsUpdaterStopCommand {
+            if outcome.daemonStillRunning { return false }
+            return codexDaemon == "running" || codexDaemon == "unknown"
+        }
         if outcome.errorOccurred || outcome.daemonStillRunning {
             return codexDaemon == "not_running"
         }
@@ -812,17 +846,22 @@ struct AgentTimelineView: View {
     /// no-session episode that initiated it. The episode token is captured
     /// before awaiting and bumped by every clear, so a completion that lands
     /// after the pane moved on (ready, a re-run, a later episode) is
-    /// discarded instead of replacing the live guidance. The completion must
-    /// also agree with the latest daemon report: a `not_running` event that
-    /// arrived mid-flight (before any outcome existed to retire) means a
-    /// late failure answer must not claim the server is still running.
+    /// discarded instead of replacing the live guidance. A daemon report
+    /// that never changed during the flight carries no new information —
+    /// the completion's own result is the freshest evidence — so the
+    /// staleness comparison applies only to a report that changed after the
+    /// stop started; an updater failure recorded then is not retired by a
+    /// daemon-only value the bridge never re-emitted.
     static func shouldRecordStopOutcome(
         initiatedEpisode: Int,
         currentEpisode: Int,
+        initiatedReportSeq: Int,
+        currentReportSeq: Int,
         outcome: CodexDaemonStopOutcome,
         latestCodexDaemon: String?
     ) -> Bool {
         guard initiatedEpisode == currentEpisode else { return false }
+        guard initiatedReportSeq != currentReportSeq else { return true }
         return !codexDaemonResultIsStale(outcome: outcome, codexDaemon: latestCodexDaemon)
     }
 
@@ -1103,6 +1142,7 @@ struct AgentTimelineView: View {
         // re-ran, or a fresh daemon report retired the previous result — ends
         // that episode, and the late answer must not replace newer guidance.
         let initiatedEpisode = codexDaemonEpisode
+        let initiatedReportSeq = codexDaemonReportSeq
         isDisablingCodexDaemon = true
         Task {
             let outcome: CodexDaemonStopOutcome
@@ -1123,6 +1163,8 @@ struct AgentTimelineView: View {
             if Self.shouldRecordStopOutcome(
                 initiatedEpisode: initiatedEpisode,
                 currentEpisode: codexDaemonEpisode,
+                initiatedReportSeq: initiatedReportSeq,
+                currentReportSeq: codexDaemonReportSeq,
                 outcome: outcome,
                 latestCodexDaemon: timeline.codexDaemon
             ) {
