@@ -47,10 +47,16 @@ struct AgentTimelineView: View {
     @State private var bridgeVersion: String?
     @State private var showsCodexDaemonConfirm = false
     @State private var isDisablingCodexDaemon = false
-    @State private var codexDaemonFeedback: String?
-    @State private var codexDaemonErrorOccurred = false
+    @State private var codexDaemonStopOutcome: CodexDaemonStopOutcome?
+    /// Episode token for the recorded outcome: bumped on every clear, so a
+    /// stop command still in flight can detect that its episode ended.
+    @State private var codexDaemonEpisode = 0
+    /// Sequence of `codex_daemon` report changes; lets a completing stop tell
+    /// an unchanged pre-stop report from one that changed while it ran.
+    @State private var codexDaemonReportSeq = 0
     @State private var copiedCodexConfig = false
     @State private var copiedCodexStop = false
+    @State private var copiedCodexUpdaterStop = false
 
     private var conversationItems: [TimelineConversationItem] {
         TimelineConversationItem.group(timeline.entries, showsRecords: agent == "codex")
@@ -269,6 +275,22 @@ struct AgentTimelineView: View {
         }
         .onChange(of: connectionState) { _, _ in cancelHelperInstallation() }
         .onChange(of: scenePhase) { _, phase in if phase != .active { cancelHelperInstallation() } }
+        .onChange(of: timeline.phase) { _, newPhase in
+            // A stop result only describes the no-session episode it answered;
+            // a later episode (after the pane was ready again) starts fresh.
+            if !Self.codexDaemonResultIsCurrent(phase: newPhase) { clearCodexDaemonResult() }
+            dismissStaleCodexDaemonConfirm()
+        }
+        .onChange(of: timeline.codexDaemon) { _, codexDaemon in
+            codexDaemonReportSeq += 1
+            // A fresh daemon report that contradicts the recorded result (the
+            // server came back after "off", or was stopped despite "still
+            // running") hands the pane back to the live state.
+            if Self.codexDaemonResultIsStale(outcome: codexDaemonStopOutcome, codexDaemon: codexDaemon) {
+                clearCodexDaemonResult()
+            }
+            dismissStaleCodexDaemonConfirm()
+        }
         .onChange(of: bridgeUpgrade.requested) { _, requested in
             if requested {
                 bridgeUpgrade.requested = false
@@ -520,18 +542,22 @@ struct AgentTimelineView: View {
             let showsProtocolMismatch = code == "protocol_mismatch" && isSupportedAgent
             let isNoSession = ["session_reference_unavailable", "ambiguous_session", "invalid_session_reference"].contains(code)
             let isCwdMismatch = code == "session_cwd_mismatch"
-            let canTurnOffCodexDaemon = Self.canConfigureCodexDaemon(
-                agent: agent,
-                code: code,
-                route: connection.route,
-                capabilities: bridgeCapabilities
-            )
+            let codexNoSession: CodexNoSessionAction? = isCodex && isNoSession
+                ? Self.codexNoSessionAction(
+                    agent: agent,
+                    code: code,
+                    route: connection.route,
+                    capabilities: bridgeCapabilities,
+                    codexDaemon: timeline.codexDaemon)
+                : nil
 
             ContentUnavailableView {
                 Label(title(code), systemImage: "text.bubble")
             } description: {
-                if isCodex && isNoSession, let feedback = codexDaemonFeedback {
-                    Text(feedback)
+                if codexNoSession != nil, let outcome = codexDaemonStopOutcome {
+                    Text(outcome.message)
+                } else if let codexNoSession {
+                    Text(Self.codexNoSessionExplanation(codexNoSession, code: code, agent: agent))
                 } else {
                     Text(explanation(code))
                 }
@@ -543,39 +569,36 @@ struct AgentTimelineView: View {
                     .buttonStyle(.herdrPrimary)
                     .accessibilityIdentifier("timeline-helper-setup")
                 }
-                if isCodex && isNoSession {
-                    if canTurnOffCodexDaemon && !codexDaemonErrorOccurred && codexDaemonFeedback == nil {
-                        Button("Turn off Codex's shared daemon") {
-                            showsCodexDaemonConfirm = true
-                        }
-                        .buttonStyle(.herdrPrimary)
-                        .accessibilityIdentifier("timeline-codex-disable-daemon")
-                        .disabled(isDisablingCodexDaemon)
-                    } else {
-                        VStack(spacing: 8) {
-                            if !codexDaemonErrorOccurred && codexDaemonFeedback != nil {
-                                Button {
-                                    UIPasteboard.general.string = Self.codexDaemonStopCommand
-                                    copiedCodexStop = true
-                                } label: {
-                                    Label(copiedCodexStop ? "Command copied" : "Copy stop command", systemImage: copiedCodexStop ? "checkmark" : "doc.on.doc")
-                                }
-                                .buttonStyle(.herdrPrimary)
-                                .accessibilityIdentifier("timeline-codex-copy-stop")
-                            } else {
-                                Text(Self.codexManualFallbackText())
-                                    .font(.jost(.subheadline))
-                                    .foregroundStyle(Theme.textMuted)
-                                    .multilineTextAlignment(.center)
-                                Button {
-                                    UIPasteboard.general.string = Self.codexManualConfigLine
-                                    copiedCodexConfig = true
-                                } label: {
-                                    Label(copiedCodexConfig ? "Setting copied" : "Copy setting", systemImage: copiedCodexConfig ? "checkmark" : "doc.on.doc")
-                                }
-                                .buttonStyle(.herdrSecondary)
-                                .accessibilityIdentifier("timeline-codex-copy-setting")
+                if let codexNoSession {
+                    ForEach(
+                        Self.codexNoSessionRecovery(outcome: codexDaemonStopOutcome, action: codexNoSession),
+                        id: \.self
+                    ) { recovery in
+                        switch recovery {
+                        case .turnOffServer:
+                            Button {
+                                showsCodexDaemonConfirm = true
+                            } label: {
+                                HStack {
+                                    if isDisablingCodexDaemon { ProgressView() }
+                                    Text(isDisablingCodexDaemon ? "Turning off…" : "Turn off Codex's shared background server")
+                                }.frame(maxWidth: .infinity)
                             }
+                            .buttonStyle(.herdrPrimary)
+                            .accessibilityIdentifier("timeline-codex-disable-daemon")
+                            .disabled(isDisablingCodexDaemon)
+                        case .upgradeBridge:
+                            Button("Upgrade Herdcats Bridge") {
+                                beginSetup(reason: .updateRequired)
+                            }
+                            .buttonStyle(.herdrPrimary)
+                            .accessibilityIdentifier("timeline-codex-upgrade-bridge")
+                        case .manualFallback:
+                            codexManualFallback
+                        case .stopCommand:
+                            codexStopCommandFallback
+                        case .updaterStopCommand:
+                            codexUpdaterStopFallback
                         }
                     }
                 }
@@ -659,21 +682,199 @@ struct AgentTimelineView: View {
         return !showsInstallOrUpgrade(code: code, agent: agent, bridgeVersion: bridgeVersion, supportedAgents: supportedAgents)
     }
 
-    static func canConfigureCodexDaemon(
+    /// What the pane can do about a Codex pane with no identified session,
+    /// decided from what the installed bridge can actually do.
+    enum CodexNoSessionAction: Equatable, CaseIterable {
+        /// The bridge (0.2.2+) can stop the server and it is running or unverifiable.
+        case turnOffServer
+        /// The bridge (0.2.2+) can stop the server but it is already off: wait
+        /// for Codex's first message instead of offering a stop.
+        case waitForSession
+        /// The bridge (0.2.0/0.2.1) can only change the config; upgrading adds
+        /// the in-app stop.
+        case upgradeBridge
+        /// Older bridge, routed host, or nothing to do: keep the manual fallback.
+        case manualFallback
+    }
+
+    static func codexNoSessionAction(
         agent: String?,
         code: String,
         route: HerdrMachineRoute?,
-        capabilities: AgentBridgeCapabilities?
+        capabilities: AgentBridgeCapabilities?,
+        codexDaemon: String?
+    ) -> CodexNoSessionAction {
+        guard agent == "codex",
+            ["session_reference_unavailable", "ambiguous_session", "invalid_session_reference"].contains(code),
+            route == nil
+        else { return .manualFallback }
+        if capabilities?.codexDaemonStop == true {
+            return codexDaemon == "running" || codexDaemon == "unknown" ? .turnOffServer : .waitForSession
+        }
+        if capabilities?.codexDaemonConfig == true {
+            return .upgradeBridge
+        }
+        return .manualFallback
+    }
+
+    static let codexDaemonRunningExplanation =
+        "Codex's shared background server is running, so Herdcats can't tell which session belongs to this pane."
+    static let codexDaemonOffExplanation =
+        "Codex reports its session after the first message. Send a message below to start. If Timeline still doesn't appear, quit Codex in this pane and start it again."
+    static let codexDaemonUpgradeExplanation =
+        "Upgrade Herdcats Bridge to turn off Codex's shared background server from here."
+
+    static func codexNoSessionExplanation(_ action: CodexNoSessionAction, code: String, agent: String?) -> String {
+        switch action {
+        case .turnOffServer: return codexDaemonRunningExplanation
+        case .waitForSession: return codexDaemonOffExplanation
+        case .upgradeBridge: return codexDaemonUpgradeExplanation
+        case .manualFallback: return explanation(code, agent: agent)
+        }
+    }
+
+    /// One recovery control offered under a no-session Codex state.
+    enum CodexRecoveryAction: Hashable {
+        case turnOffServer, upgradeBridge, manualFallback, stopCommand, updaterStopCommand
+    }
+
+    /// Which recovery actions the pane offers. A recorded stop outcome drives
+    /// its own recovery regardless of the live daemon action — after an
+    /// updater-only failure the not_running re-emit moves the pane to waiting
+    /// while the updater may still restart the server, so the command the
+    /// message points at must stay reachable — and an outcome error replaces,
+    /// never duplicates, the action's own fallbacks. Without an outcome the
+    /// live action decides.
+    static func codexNoSessionRecovery(
+        outcome: CodexDaemonStopOutcome?, action: CodexNoSessionAction
+    ) -> [CodexRecoveryAction] {
+        if let outcome {
+            if outcome.errorOccurred { return [.manualFallback] }
+            if outcome.showsStopCommand { return [.stopCommand] }
+            if outcome.showsUpdaterStopCommand { return [.updaterStopCommand] }
+            return []
+        }
+        switch action {
+        case .turnOffServer: return [.turnOffServer]
+        case .upgradeBridge: return [.upgradeBridge, .manualFallback]
+        case .manualFallback: return [.manualFallback]
+        case .waitForSession: return []
+        }
+    }
+
+    /// The stop is destructive, so it may run only while the live pane still
+    /// asks for it: a no-session Codex pane whose bridge can stop the server
+    /// and currently reports it as running or unverifiable. Anything else —
+    /// the session was identified, the pane reconnected, the server is
+    /// already off, or an older bridge/routed host — must not stop anything.
+    static func canRunCodexDaemonStop(
+        phase: AgentTimelineState.Phase,
+        agent: String?,
+        route: HerdrMachineRoute?,
+        capabilities: AgentBridgeCapabilities?,
+        codexDaemon: String?
     ) -> Bool {
-        guard agent == "codex" else { return false }
-        let isNoSession = ["session_reference_unavailable", "ambiguous_session", "invalid_session_reference"].contains(code)
-        guard isNoSession else { return false }
-        guard route == nil else { return false }
-        return capabilities?.codexDaemonConfig == true
+        guard case .unavailable(let code) = phase else { return false }
+        return codexNoSessionAction(
+            agent: agent, code: code, route: route, capabilities: capabilities, codexDaemon: codexDaemon
+        ) == .turnOffServer
+    }
+
+    /// The recorded stop result for the current no-session episode. Keeps the
+    /// per-process outcome: `codex_daemon` events report only the daemon
+    /// process, so an updater-only failure is not contradicted by them.
+    struct CodexDaemonStopOutcome: Equatable {
+        let message: String
+        let errorOccurred: Bool
+        let showsStopCommand: Bool
+        /// The daemon stopped but its updater survived or is unverified;
+        /// recovery needs the updater-aware bridge command, not Codex's own
+        /// `daemon stop`.
+        let showsUpdaterStopCommand: Bool
+        /// The result reported the daemon process itself as still running
+        /// (stop_failed) or alive-but-unverifiable (unknown).
+        let daemonStillRunning: Bool
+
+        init(result: CodexDaemonConfigResult) {
+            self.message = CodexDaemonConfigResult.message(for: result)
+            self.errorOccurred = result.error != nil
+            self.showsStopCommand = CodexDaemonConfigResult.showsStopCommand(for: result)
+            self.showsUpdaterStopCommand = CodexDaemonConfigResult.showsUpdaterStopCommand(for: result)
+            self.daemonStillRunning = result.daemon == "stop_failed" || result.daemon == "unknown"
+        }
+
+        /// The stop command failed before any result came back.
+        init(errorDescription: String) {
+            self.message = errorDescription
+            self.errorOccurred = true
+            self.showsStopCommand = false
+            self.showsUpdaterStopCommand = false
+            self.daemonStillRunning = false
+        }
+    }
+
+    /// A stop result survives only within the unavailable episode it answered;
+    /// once the pane is ready (or reconnecting) again, a later no-session
+    /// episode must not inherit its feedback.
+    static func codexDaemonResultIsCurrent(phase: AgentTimelineState.Phase) -> Bool {
+        if case .unavailable = phase { return true }
+        return false
+    }
+
+    /// Whether a fresh `codex_daemon` report retires a recorded stop result.
+    /// The event reports only the daemon process:
+    /// - Both processes failed: no daemon-only report can contradict the
+    ///   recorded updater failure, so only the episode end retires it.
+    /// - Only the updater failed (the daemon was stopped): the daemon being
+    ///   alive again (running or unverifiable) contradicts it.
+    /// - Only the daemon failed, or nothing was stopped (an error): a
+    ///   not_running report resolves it.
+    /// - A successful stop: the daemon being alive again retires it.
+    static func codexDaemonResultIsStale(outcome: CodexDaemonStopOutcome?, codexDaemon: String?) -> Bool {
+        guard let outcome, let codexDaemon else { return false }
+        if outcome.showsUpdaterStopCommand {
+            if outcome.daemonStillRunning { return false }
+            return codexDaemon == "running" || codexDaemon == "unknown"
+        }
+        if outcome.errorOccurred || outcome.daemonStillRunning {
+            return codexDaemon == "not_running"
+        }
+        return codexDaemon == "running" || codexDaemon == "unknown"
+    }
+
+    /// A stop command can run for up to 90 s, and its result belongs to the
+    /// no-session episode that initiated it. The episode token is captured
+    /// before awaiting and bumped by every clear, so a completion that lands
+    /// after the pane moved on (ready, a re-run, a later episode) is
+    /// discarded instead of replacing the live guidance. A daemon report
+    /// that never changed during the flight carries no new information —
+    /// the completion's own result is the freshest evidence — so the
+    /// staleness comparison applies only to a report that changed after the
+    /// stop started; an updater failure recorded then is not retired by a
+    /// daemon-only value the bridge never re-emitted.
+    static func shouldRecordStopOutcome(
+        initiatedEpisode: Int,
+        currentEpisode: Int,
+        initiatedReportSeq: Int,
+        currentReportSeq: Int,
+        outcome: CodexDaemonStopOutcome,
+        latestCodexDaemon: String?
+    ) -> Bool {
+        guard initiatedEpisode == currentEpisode else { return false }
+        guard initiatedReportSeq != currentReportSeq else { return true }
+        return !codexDaemonResultIsStale(outcome: outcome, codexDaemon: latestCodexDaemon)
     }
 
     static let codexManualConfigLine = "daemon_auto_start = false"
     static let codexDaemonStopCommand = "codex app-server daemon stop"
+    /// Recovery for a surviving or unverified updater: Codex's own
+    /// `daemon stop` cannot address it, and only the bridge stops the
+    /// updater before the daemon. The lookup mirrors the app's helper
+    /// discovery exactly — the managed ~/.local/bin path first, then PATH,
+    /// then the remaining known locations — so it runs the same bridge
+    /// binary that advertised codex_daemon_stop instead of an older copy
+    /// left on PATH.
+    static let codexUpdaterStopCommand = "B=\"$HOME/.local/bin/herdcats-bridge\"; [ -x \"$B\" ] || B=$(command -v herdcats-bridge 2>/dev/null); [ -n \"$B\" ] || for P in \"$HOME/.cargo/bin/herdcats-bridge\" /opt/homebrew/bin/herdcats-bridge /usr/local/bin/herdcats-bridge; do [ -x \"$P\" ] && { B=\"$P\"; break; }; done; \"$B\" codex-config disable-daemon --stop-running"
 
     /// The pane options menu's optional upgrade item reads `bridgeUpgrade`,
     /// which outlives this view's runs. Every refresh of the handshake-derived
@@ -806,8 +1007,7 @@ struct AgentTimelineView: View {
         bridgeCapabilities = await connection.bridgeCapabilities(for: connectionState.generation)
         bridgeVersion = await connection.bridgeVersion(for: connectionState.generation)
         Self.publishBridgeVersion(bridgeVersion, to: bridgeUpgrade, owner: owner, activeOwner: activeOwner)
-        codexDaemonFeedback = nil
-        codexDaemonErrorOccurred = false
+        clearCodexDaemonResult()
         guard scenePhase == .active, connectionState.isReady else {
             timeline.end(owner: owner, error: .closed)
             return
@@ -821,7 +1021,7 @@ struct AgentTimelineView: View {
                     bridgeVersion = "0.2.0"
                 }
                 if ScreenshotFixtures.screen == "timeline-codex-no-session" {
-                    bridgeCapabilities = AgentBridgeCapabilities(claudeTimeline: true, codexTimeline: true, codexDaemonConfig: true, recordContent: true)
+                    bridgeCapabilities = AgentBridgeCapabilities(claudeTimeline: true, codexTimeline: true, codexDaemonConfig: true, codexDaemonStop: true, recordContent: true)
                 }
                 Self.publishBridgeVersion(bridgeVersion, to: bridgeUpgrade, owner: owner, activeOwner: activeOwner)
                 do {
@@ -864,21 +1064,111 @@ struct AgentTimelineView: View {
         }
     }
 
+    @ViewBuilder private var codexManualFallback: some View {
+        VStack(spacing: 8) {
+            Text(Self.codexManualFallbackText())
+                .font(.jost(.subheadline))
+                .foregroundStyle(Theme.textMuted)
+                .multilineTextAlignment(.center)
+            Button {
+                UIPasteboard.general.string = Self.codexManualConfigLine
+                copiedCodexConfig = true
+            } label: {
+                Label(copiedCodexConfig ? "Setting copied" : "Copy setting", systemImage: copiedCodexConfig ? "checkmark" : "doc.on.doc")
+            }
+            .buttonStyle(.herdrSecondary)
+            .accessibilityIdentifier("timeline-codex-copy-setting")
+        }
+    }
+
+    @ViewBuilder private var codexStopCommandFallback: some View {
+        Button {
+            UIPasteboard.general.string = Self.codexDaemonStopCommand
+            copiedCodexStop = true
+        } label: {
+            Label(copiedCodexStop ? "Command copied" : "Copy stop command", systemImage: copiedCodexStop ? "checkmark" : "doc.on.doc")
+        }
+        .buttonStyle(.herdrPrimary)
+        .accessibilityIdentifier("timeline-codex-copy-stop")
+    }
+
+    @ViewBuilder private var codexUpdaterStopFallback: some View {
+        Button {
+            UIPasteboard.general.string = Self.codexUpdaterStopCommand
+            copiedCodexUpdaterStop = true
+        } label: {
+            Label(copiedCodexUpdaterStop ? "Command copied" : "Copy turn-off command", systemImage: copiedCodexUpdaterStop ? "checkmark" : "doc.on.doc")
+        }
+        .buttonStyle(.herdrPrimary)
+        .accessibilityIdentifier("timeline-codex-copy-updater-stop")
+    }
+
+    private func clearCodexDaemonResult() {
+        codexDaemonStopOutcome = nil
+        codexDaemonEpisode += 1
+    }
+
+    /// The confirmation sheet can outlive the state that offered it; if the
+    /// pane no longer asks for the stop (session identified, server already
+    /// off, stream re-ran), close it instead of stopping a working server.
+    private func dismissStaleCodexDaemonConfirm() {
+        guard showsCodexDaemonConfirm else { return }
+        if !Self.canRunCodexDaemonStop(
+            phase: timeline.phase,
+            agent: agent,
+            route: connection.route,
+            capabilities: bridgeCapabilities,
+            codexDaemon: timeline.codexDaemon
+        ) {
+            showsCodexDaemonConfirm = false
+        }
+    }
+
     private func disableCodexDaemon() {
         guard !isDisablingCodexDaemon else { return }
+        // The sheet may have stayed open after the pane moved on; revalidate
+        // the live state so confirming a stale sheet never stops a server the
+        // pane no longer reports as running.
+        guard Self.canRunCodexDaemonStop(
+            phase: timeline.phase,
+            agent: agent,
+            route: connection.route,
+            capabilities: bridgeCapabilities,
+            codexDaemon: timeline.codexDaemon
+        ) else { return }
         guard let generation = connectionState.generation else { return }
+        // Bind the up-to-90 s stop to the episode that started it. Any clear
+        // while it runs — the pane left the unavailable state, the stream
+        // re-ran, or a fresh daemon report retired the previous result — ends
+        // that episode, and the late answer must not replace newer guidance.
+        let initiatedEpisode = codexDaemonEpisode
+        let initiatedReportSeq = codexDaemonReportSeq
         isDisablingCodexDaemon = true
         Task {
+            let outcome: CodexDaemonStopOutcome
             do {
                 let result = try await connection.disableCodexDaemon(
                     target: setupTarget,
-                    owned: generation
+                    owned: generation,
+                    stopRunning: true
                 )
-                codexDaemonFeedback = CodexDaemonConfigResult.message(for: result)
-                codexDaemonErrorOccurred = (result.error != nil)
+                // No retry: the bridge re-emits timeline.unavailable when
+                // codex_daemon changes, and a re-run would clear this feedback,
+                // which tells the user to restart this pane's Codex.
+                outcome = CodexDaemonStopOutcome(result: result)
             } catch {
-                codexDaemonFeedback = "Could not turn off Codex daemon: \(error.localizedDescription)"
-                codexDaemonErrorOccurred = true
+                outcome = CodexDaemonStopOutcome(
+                    errorDescription: "Could not turn off Codex's shared background server: \(error.localizedDescription)")
+            }
+            if Self.shouldRecordStopOutcome(
+                initiatedEpisode: initiatedEpisode,
+                currentEpisode: codexDaemonEpisode,
+                initiatedReportSeq: initiatedReportSeq,
+                currentReportSeq: codexDaemonReportSeq,
+                outcome: outcome,
+                latestCodexDaemon: timeline.codexDaemon
+            ) {
+                codexDaemonStopOutcome = outcome
             }
             isDisablingCodexDaemon = false
         }
@@ -1572,64 +1862,57 @@ struct CodexDaemonConfirmSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    Text("Turn off Codex's shared daemon so Herdcats can identify this pane's session.")
+                    Text("Codex's shared background server only remembers the terminal that started it, so Herdcats can't tell which pane this conversation belongs to. Turning it off lets Herdcats identify this pane's session.")
                         .font(.jost(.body))
                         .foregroundStyle(Theme.text)
 
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("File to modify")
+                        Text("What happens")
                             .font(.jost(.headline))
-                        Text("~/.codex/config.toml (or $CODEX_HOME/config.toml)")
-                            .font(.system(.footnote, design: .monospaced))
-                            .padding(10)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Theme.fieldBackground, in: RoundedRectangle(cornerRadius: 10))
-                    }
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Setting")
-                            .font(.jost(.headline))
-                        Text("[features]\ndaemon_auto_start = false")
-                            .font(.system(.footnote, design: .monospaced))
-                            .padding(10)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Theme.fieldBackground, in: RoundedRectangle(cornerRadius: 10))
+                        Text("Sets `daemon_auto_start = false` in ~/.codex/config.toml (a backup is made first), then stops Codex's shared background server and its updater on this computer.")
+                            .font(.jost(.subheadline))
+                            .foregroundStyle(Theme.textMuted)
                     }
 
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Cost")
                             .font(.jost(.headline))
-                        Text("Codex background sessions stop working on this computer.")
+                        Text("Every Codex session using the shared server disconnects. Restart those sessions; new ones start without it.")
                             .font(.jost(.subheadline))
                             .foregroundStyle(Theme.textMuted)
                     }
 
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Backup & Undo")
+                        Text("Undo")
                             .font(.jost(.headline))
-                        Text("A timestamped backup of your config file is made before changes. To undo, delete the line from config.toml or restore the backup.")
+                        Text("codex features enable daemon_auto_start")
+                            .font(.system(.footnote, design: .monospaced))
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Theme.fieldBackground, in: RoundedRectangle(cornerRadius: 10))
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Safety")
+                            .font(.jost(.headline))
+                        Text("Herdcats only stops processes it can confirm belong to Codex; anything else is left running.")
                             .font(.jost(.subheadline))
                             .foregroundStyle(Theme.textMuted)
                     }
 
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Restart required")
-                            .font(.jost(.headline))
-                        Text(CodexDaemonConfigResult.restartGuidance)
-                            .font(.jost(.subheadline))
-                            .foregroundStyle(Theme.textMuted)
-                    }
+                    Link("Learn more", destination: URL(string: "https://herdcats.dev/support/#using-app-codex-shared-background-server")!)
+                        .font(.jost(.subheadline))
                 }
                 .padding(20)
             }
-            .navigationTitle("Turn off Codex daemon")
+            .navigationTitle("Turn off shared server")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { onCancel() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Turn off") { onConfirm() }
+                    Button("Turn off", role: .destructive) { onConfirm() }
                         .fontWeight(.semibold)
                 }
             }

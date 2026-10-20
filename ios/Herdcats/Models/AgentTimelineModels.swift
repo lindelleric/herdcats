@@ -61,17 +61,20 @@ struct AgentBridgeCapabilities: Codable, Equatable, Sendable {
     let claudeTimeline: Bool
     var codexTimeline: Bool? = false
     var codexDaemonConfig: Bool? = false
+    var codexDaemonStop: Bool? = false
     var recordContent: Bool? = nil
 
     init(
         claudeTimeline: Bool,
         codexTimeline: Bool? = false,
         codexDaemonConfig: Bool? = false,
+        codexDaemonStop: Bool? = false,
         recordContent: Bool? = nil
     ) {
         self.claudeTimeline = claudeTimeline
         self.codexTimeline = codexTimeline
         self.codexDaemonConfig = codexDaemonConfig
+        self.codexDaemonStop = codexDaemonStop
         self.recordContent = recordContent
     }
 
@@ -80,6 +83,7 @@ struct AgentBridgeCapabilities: Codable, Equatable, Sendable {
         self.claudeTimeline = try container.decode(Bool.self, forKey: .claudeTimeline)
         self.codexTimeline = try container.decodeIfPresent(Bool.self, forKey: .codexTimeline) ?? false
         self.codexDaemonConfig = try container.decodeIfPresent(Bool.self, forKey: .codexDaemonConfig) ?? false
+        self.codexDaemonStop = try container.decodeIfPresent(Bool.self, forKey: .codexDaemonStop) ?? false
         self.recordContent = try container.decodeIfPresent(Bool.self, forKey: .recordContent)
     }
 }
@@ -88,6 +92,10 @@ struct CodexDaemonConfigResult: Decodable, Equatable, Sendable {
     let status: String?
     let backup: String?
     let error: String?
+    /// `stopped`/`not_running`/`stop_failed`/`unknown`; present only with
+    /// --stop-running and only when the config step succeeded.
+    var daemon: String? = nil
+    var updater: String? = nil
 
     static func parse(_ raw: String) throws -> CodexDaemonConfigResult {
         let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -122,17 +130,57 @@ struct CodexDaemonConfigResult: Decodable, Equatable, Sendable {
                 return "Could not update Codex config: \(err)."
             }
         }
+        // The updater is checked first: the bridge never runs `daemon stop`
+        // while the updater is alive (it TERM-and-waits precisely so the
+        // updater cannot restart the daemon), so an updater failure is the
+        // root cause whenever it appears — including the both-stop_failed
+        // shape — and recovery must go through the updater-aware command.
+        if result.updater == "stop_failed" || result.updater == "unknown" {
+            let updaterSurvived = result.updater == "stop_failed"
+            let daemonOff = result.daemon == "stopped" || result.daemon == "not_running"
+            switch (updaterSurvived, daemonOff) {
+            case (true, true):
+                return "Codex's shared server was stopped, but its updater is still running and may restart it. Copy the turn-off command below and run it on this computer to stop the updater too, then restart Codex in this pane."
+            case (true, false):
+                return "Herdcats couldn't stop the updater that keeps Codex's shared server running. Copy the turn-off command below and run it on this computer to stop the updater and the server, then restart Codex in this pane."
+            case (false, true):
+                return "Codex's shared server was stopped, but Herdcats couldn't confirm the state of its updater, which may restart it. Copy the turn-off command below and run it on this computer, then restart Codex in this pane."
+            case (false, false):
+                return "Herdcats couldn't confirm the state of Codex's shared server or its updater. Copy the turn-off command below and run it on this computer, then restart Codex in this pane."
+            }
+        }
+        if result.daemon == "stop_failed" {
+            return "Codex's shared server is still running. Run `codex app-server daemon stop` on this computer, then restart Codex in this pane."
+        }
+        if result.daemon == "unknown" {
+            return "Herdcats couldn't confirm the running server belongs to Codex, so it left it running. Run `codex app-server daemon stop` on this computer, then restart Codex in this pane."
+        }
         switch result.status {
-        case "changed", "already_disabled":
-            return Self.restartGuidance
         case "codex_not_installed":
             return "Codex directory was not found on this host."
         default:
-            return "Completed with status: \(result.status ?? "unknown")."
+            // stopped, not_running, or a legacy reply without daemon fields.
+            return "Codex's shared server is off. Quit Codex in this pane and start it again so Herdcats can identify the session."
         }
     }
 
-    static let restartGuidance = "Quit Codex in every pane, run `codex app-server daemon stop` on this computer (this ends all Codex sessions that use the shared daemon), then start Codex again in this pane. Or start Codex with `codex --no-daemon` now."
+    /// The updater survived the stop or could not be verified — on its own or
+    /// alongside a daemon failure (the bridge refuses to stop the daemon
+    /// while the updater is alive). Codex's own `daemon stop` cannot address
+    /// the updater, so recovery always goes through the updater-aware bridge
+    /// command.
+    static func showsUpdaterStopCommand(for result: CodexDaemonConfigResult) -> Bool {
+        guard result.error == nil else { return false }
+        return result.updater == "stop_failed" || result.updater == "unknown"
+    }
+
+    /// The daemon itself survived the stop (or could not be verified) while
+    /// the updater was handled: pair the message with Codex's own stop
+    /// command.
+    static func showsStopCommand(for result: CodexDaemonConfigResult) -> Bool {
+        guard result.error == nil, !showsUpdaterStopCommand(for: result) else { return false }
+        return result.daemon == "stop_failed" || result.daemon == "unknown"
+    }
 }
 struct AgentBridgePayload: Codable, Sendable {
     var `protocol`: Int?
@@ -152,6 +200,7 @@ struct AgentBridgePayload: Codable, Sendable {
     var delayed: Bool?
     var paneId: String?
     var code: String?
+    var codexDaemon: String?
     var contentRef: String?
     var offset: Int?
     var nextOffset: Int?

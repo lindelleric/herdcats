@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-20",
+  "status": "published_and_pinned",
+  "version": "0.2.2",
+  "tag": "herdcats-bridge-v0.2.2",
+  "source_commit": "7eeec041728742ebe337f5763f332eefb19ac99f",
+  "url": "https://github.com/zhiyao/herdcats/releases/tag/herdcats-bridge-v0.2.2",
+  "ci_url": "https://github.com/zhiyao/herdcats/actions/runs/39362219012",
+  "native_builds": [
+    "darwin-arm64",
+    "darwin-x86_64",
+    "linux-arm64",
+    "linux-x86_64"
+  ],
+  "native_ci_result": "All four native test/Clippy/build/package jobs and draft assembly passed",
+  "binary_sha256": {
+    "herdcats-bridge-darwin-arm64": "23edc3b9fb7527c15e9b836a8c3344110b89ba62c8ac80714ce4578dee1bc1c9",
+    "herdcats-bridge-darwin-x86_64": "1900e5a5dff713d22220b2870fe418c546a8fde939223aa89100b36b737dfaaa",
+    "herdcats-bridge-linux-arm64": "047ad3a887314fd02409c94bc12949ef510ee246c91fa15954141c5fc711ca52",
+    "herdcats-bridge-linux-x86_64": "a30c112cd48a7c9299f22f4dac48602d968b0b11a52365f4f3a6de3826fdd2d1"
+  },
+  "installer_sha256": "be2ae7715ffe3ef793565e4a171fe36c47fb562bb62f595bdcca3a8f49119289",
+  "validation": {
+    "rust_tests": 128,
+    "installer_distribution_tests": 33,
+    "clippy": "passed",
+    "ios_unit_tests": 456,
+    "release_ci": "CI39362219012: four native test/Clippy/build/package jobs and draft assembly passed",
+    "published_assets_verified": "SHA256SUMS matched all four binaries; released install.sh identical to the repo at the tag; darwin-arm64 --version reported 0.2.2 with agents claude,codex"
+  },
+  "publication_authorization": "Tagged and published by the user",
+  "minimum_compatible_version": "0.2.0",
+  "limits": [
+    "Claude and Codex read-only timeline; question/approval responses and saved-machine routing remain unavailable",
+    "Codex requires an exact session reference from Herdr; the shared background server can be turned off from the app with confirmation, and stopping it disconnects attached Codex sessions",
+    "Verified source hard limit 64MiB; retained entries 1000; references to retired entries unavailable",
+    "macOS binaries unsigned/unnotarized",
+    "App draft PR not merged; no phone deployment"
+  ]
+}
