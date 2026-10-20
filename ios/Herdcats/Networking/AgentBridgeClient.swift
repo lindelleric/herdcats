@@ -680,7 +680,7 @@ extension HerdrConnection {
     }
 
     func disableCodexDaemon(
-        target: ConnectionIdentity, owned: ConnectionGeneration
+        target: ConnectionIdentity, owned: ConnectionGeneration, stopRunning: Bool = false
     ) async throws -> CodexDaemonConfigResult {
         guard route == nil else { throw AgentBridgeError.routedHostUnsupported }
         try requireGeneration(owned)
@@ -694,12 +694,20 @@ extension HerdrConnection {
         try requireGeneration(owned)
         guard identity == target else { throw HerdrError.notConnected }
         let output = try await HostHelperCommand().run(
-            client: client, script: Self.codexDisableDaemonCommand, timeout: 15
+            client: client,
+            script: stopRunning ? Self.codexDisableDaemonStopScript : Self.codexDisableDaemonScript,
+            timeout: Self.codexDisableDaemonTimeout(stopRunning: stopRunning)
         )
         try Task.checkCancellation()
         try requireGeneration(owned)
         guard identity == target else { throw HerdrError.notConnected }
         return try CodexDaemonConfigResult.parse(output)
+    }
+
+    /// The bridge's stop pass can take ~60 s (updater wait, two stop passes,
+    /// recheck); keep the app-side bound above its own worst case.
+    static func codexDisableDaemonTimeout(stopRunning: Bool) -> TimeInterval {
+        stopRunning ? 90 : 15
     }
 
     static var codexDisableDaemonScript: String {
@@ -711,7 +719,20 @@ extension HerdrConnection {
         )
     }
 
+    static var codexDisableDaemonStopScript: String {
+        helperScript(
+            exec: "exec \"$B\" codex-config disable-daemon --stop-running",
+            missingPayload: "{\"error\":\"helper_missing\"}",
+            readStdinOnMissing: false,
+            missingExitCode: 0
+        )
+    }
+
     static var codexDisableDaemonCommand: String {
         "exec /bin/sh -c \(shellSafeArgument(codexDisableDaemonScript))"
+    }
+
+    static var codexDisableDaemonStopCommand: String {
+        "exec /bin/sh -c \(shellSafeArgument(codexDisableDaemonStopScript))"
     }
 }

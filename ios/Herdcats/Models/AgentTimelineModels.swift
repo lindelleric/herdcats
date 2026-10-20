@@ -61,17 +61,20 @@ struct AgentBridgeCapabilities: Codable, Equatable, Sendable {
     let claudeTimeline: Bool
     var codexTimeline: Bool? = false
     var codexDaemonConfig: Bool? = false
+    var codexDaemonStop: Bool? = false
     var recordContent: Bool? = nil
 
     init(
         claudeTimeline: Bool,
         codexTimeline: Bool? = false,
         codexDaemonConfig: Bool? = false,
+        codexDaemonStop: Bool? = false,
         recordContent: Bool? = nil
     ) {
         self.claudeTimeline = claudeTimeline
         self.codexTimeline = codexTimeline
         self.codexDaemonConfig = codexDaemonConfig
+        self.codexDaemonStop = codexDaemonStop
         self.recordContent = recordContent
     }
 
@@ -80,6 +83,7 @@ struct AgentBridgeCapabilities: Codable, Equatable, Sendable {
         self.claudeTimeline = try container.decode(Bool.self, forKey: .claudeTimeline)
         self.codexTimeline = try container.decodeIfPresent(Bool.self, forKey: .codexTimeline) ?? false
         self.codexDaemonConfig = try container.decodeIfPresent(Bool.self, forKey: .codexDaemonConfig) ?? false
+        self.codexDaemonStop = try container.decodeIfPresent(Bool.self, forKey: .codexDaemonStop) ?? false
         self.recordContent = try container.decodeIfPresent(Bool.self, forKey: .recordContent)
     }
 }
@@ -88,6 +92,10 @@ struct CodexDaemonConfigResult: Decodable, Equatable, Sendable {
     let status: String?
     let backup: String?
     let error: String?
+    /// `stopped`/`not_running`/`stop_failed`/`unknown`; present only with
+    /// --stop-running and only when the config step succeeded.
+    var daemon: String? = nil
+    var updater: String? = nil
 
     static func parse(_ raw: String) throws -> CodexDaemonConfigResult {
         let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -122,17 +130,28 @@ struct CodexDaemonConfigResult: Decodable, Equatable, Sendable {
                 return "Could not update Codex config: \(err)."
             }
         }
+        if result.daemon == "stop_failed" || result.updater == "stop_failed" {
+            return "Codex's shared server is still running. Run `codex app-server daemon stop` on this computer, then restart Codex in this pane."
+        }
+        if result.daemon == "unknown" || result.updater == "unknown" {
+            return "Herdcats couldn't confirm the running server belongs to Codex, so it left it running. Run `codex app-server daemon stop` on this computer, then restart Codex in this pane."
+        }
         switch result.status {
-        case "changed", "already_disabled":
-            return Self.restartGuidance
         case "codex_not_installed":
             return "Codex directory was not found on this host."
         default:
-            return "Completed with status: \(result.status ?? "unknown")."
+            // stopped, not_running, or a legacy reply without daemon fields.
+            return "Codex's shared server is off. Quit Codex in this pane and start it again so Herdcats can identify the session."
         }
     }
 
-    static let restartGuidance = "Quit Codex in every pane, run `codex app-server daemon stop` on this computer (this ends all Codex sessions that use the shared daemon), then start Codex again in this pane. Or start Codex with `codex --no-daemon` now."
+    /// The server (or its updater) survived the stop attempt or could not be
+    /// verified: pair the message with the manual stop command.
+    static func showsStopCommand(for result: CodexDaemonConfigResult) -> Bool {
+        guard result.error == nil else { return false }
+        return ["stop_failed", "unknown"].contains(result.daemon ?? "")
+            || ["stop_failed", "unknown"].contains(result.updater ?? "")
+    }
 }
 struct AgentBridgePayload: Codable, Sendable {
     var `protocol`: Int?
@@ -152,6 +171,7 @@ struct AgentBridgePayload: Codable, Sendable {
     var delayed: Bool?
     var paneId: String?
     var code: String?
+    var codexDaemon: String?
     var contentRef: String?
     var offset: Int?
     var nextOffset: Int?

@@ -51,6 +51,28 @@ struct CodexTimelineDecodingTests {
         #expect(caps.recordContent == true)
     }
 
+    @Test func capabilitiesDecodeCodexDaemonStopWithAndWithoutTheFlag() throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+
+        // 0.2.2 handshake advertises both daemon capabilities.
+        let json022 = "{\"claude_timeline\": true, \"codex_timeline\": true, \"codex_daemon_config\": true, \"codex_daemon_stop\": true, \"record_content\": true}"
+        let caps022 = try decoder.decode(AgentBridgeCapabilities.self, from: Data(json022.utf8))
+        #expect(caps022.codexDaemonStop == true)
+        #expect(caps022.codexDaemonConfig == true)
+
+        // 0.2.0/0.2.1 handshakes omit codex_daemon_stop; it defaults to false.
+        let json021 = "{\"claude_timeline\": true, \"codex_timeline\": true, \"codex_daemon_config\": true, \"record_content\": true}"
+        let caps021 = try decoder.decode(AgentBridgeCapabilities.self, from: Data(json021.utf8))
+        #expect(caps021.codexDaemonStop == false)
+        #expect(caps021.codexDaemonConfig == true)
+
+        // Explicit false stays false; the memberwise default matches older helpers.
+        let jsonFalse = "{\"claude_timeline\": true, \"codex_daemon_stop\": false}"
+        #expect(try decoder.decode(AgentBridgeCapabilities.self, from: Data(jsonFalse.utf8)).codexDaemonStop == false)
+        #expect(AgentBridgeCapabilities(claudeTimeline: true).codexDaemonStop == false)
+    }
+
     @Test func helperVersionGatingForCodex() {
         #expect(!AgentBridgeClient.isVersionAtLeast("0.1.4", major: 0, minor: 2))
         #expect(!AgentBridgeClient.isVersionAtLeast("0.1.0", major: 0, minor: 2))
@@ -182,7 +204,7 @@ struct CodexTimelineGatingTests {
             #expect(!AgentTimelineView.showsPaneCheckAgain(code: "routed_host_unsupported", agent: agent))
             #expect(!AgentTimelineView.showsInstallOrUpgrade(code: "routed_host_unsupported", agent: agent))
             #expect(!AgentTimelineView.isNeedsUpgrade(code: "routed_host_unsupported", agent: agent))
-            #expect(!AgentTimelineView.canConfigureCodexDaemon(agent: agent, code: "routed_host_unsupported", route: nil, capabilities: AgentBridgeCapabilities(claudeTimeline: true, codexTimeline: true, codexDaemonConfig: true, recordContent: true)))
+            #expect(AgentTimelineView.codexNoSessionAction(agent: agent, code: "routed_host_unsupported", route: nil, capabilities: AgentBridgeCapabilities(claudeTimeline: true, codexTimeline: true, codexDaemonConfig: true, codexDaemonStop: true, recordContent: true), codexDaemon: "running") == .manualFallback)
         }
         // Other unavailable codes keep the pane Check again button.
         #expect(AgentTimelineView.showsPaneCheckAgain(code: "herdr_unavailable", agent: "claude"))
@@ -265,6 +287,58 @@ struct CodexTimelineGatingTests {
         #expect(throws: AgentBridgeError.self) {
             try state.consume(unsupported, owner: owner)
         }
+    }
+
+    @Test func unavailableEventKeepsCodexDaemonAndReemitUpdatesState() throws {
+        func unavailableFrame(seq: Int, code: String, codexDaemon: String?) throws -> AgentBridgeFrame {
+            var data: [String: Any] = ["pane_id": "p-codex", "generation": 1, "code": code]
+            if let codexDaemon { data["codex_daemon"] = codexDaemon }
+            return try AgentBridgeFrame.decode(
+                JSONSerialization.data(withJSONObject: [
+                    "event": "timeline.unavailable", "epoch": "epoch-codex", "seq": seq, "data": data,
+                ]))
+        }
+
+        // The wire frame keeps codex_daemon for the pane to act on.
+        let running = try unavailableFrame(seq: 1, code: "session_reference_unavailable", codexDaemon: "running")
+        #expect(running.data?.codexDaemon == "running")
+
+        let state = AgentTimelineState()
+        state.begin(owner: owner, paneId: "p-codex")
+        try state.consume(running, owner: owner)
+        #expect(state.phase == .unavailable("session_reference_unavailable"))
+        #expect(state.codexDaemon == "running")
+
+        // Same code re-emitted with a different codex_daemon updates the state.
+        try state.consume(
+            try unavailableFrame(seq: 2, code: "session_reference_unavailable", codexDaemon: "not_running"),
+            owner: owner)
+        #expect(state.phase == .unavailable("session_reference_unavailable"))
+        #expect(state.codexDaemon == "not_running")
+
+        // A later re-emit back to running is visible too (same code, new value).
+        try state.consume(
+            try unavailableFrame(seq: 3, code: "session_reference_unavailable", codexDaemon: "unknown"),
+            owner: owner)
+        #expect(state.codexDaemon == "unknown")
+
+        // Older bridges omit the field; missing and unrecognized values stay nil.
+        try state.consume(
+            try unavailableFrame(seq: 4, code: "session_reference_unavailable", codexDaemon: nil),
+            owner: owner)
+        #expect(state.codexDaemon == nil)
+        try state.consume(
+            try unavailableFrame(seq: 5, code: "session_reference_unavailable", codexDaemon: "something_new"),
+            owner: owner)
+        #expect(state.codexDaemon == nil)
+        #expect(AgentTimelineState.normalizedCodexDaemon("running") == "running")
+        #expect(AgentTimelineState.normalizedCodexDaemon("something_new") == nil)
+        #expect(AgentTimelineState.normalizedCodexDaemon(nil) == nil)
+
+        // Leaving the unavailable phase (a ready snapshot) clears it.
+        try state.consume(try frame("timeline.snapshot", seq: 6), owner: owner)
+        #expect(state.phase == .ready)
+        #expect(state.codexDaemon == nil)
     }
 
     @Test func codexPaneDisplaysHelperTooOldState() {
@@ -572,178 +646,113 @@ struct CodexTimelineTaskKeyTests {
     }
 }
 
-@Suite("Codex daemon configuration gating and messaging")
+@Suite("Codex daemon gating, messaging and stop command")
 struct CodexDaemonConfigTests {
-    @Test func buttonGatingCapability() {
-        let capsEnabled = AgentBridgeCapabilities(
-            claudeTimeline: true, codexTimeline: true, codexDaemonConfig: true
-        )
-        let capsDisabled = AgentBridgeCapabilities(
-            claudeTimeline: true, codexTimeline: true, codexDaemonConfig: false
-        )
-        let capsNil = AgentBridgeCapabilities(
-            claudeTimeline: true, codexTimeline: true, codexDaemonConfig: nil
-        )
-
-        // Enabled capability + direct host (route == nil) + codex + no-session code -> true
-        #expect(
-            AgentTimelineView.canConfigureCodexDaemon(
-                agent: "codex",
-                code: "session_reference_unavailable",
-                route: nil,
-                capabilities: capsEnabled
-            )
-        )
-        #expect(
-            AgentTimelineView.canConfigureCodexDaemon(
-                agent: "codex",
-                code: "ambiguous_session",
-                route: nil,
-                capabilities: capsEnabled
-            )
-        )
-        #expect(
-            AgentTimelineView.canConfigureCodexDaemon(
-                agent: "codex",
-                code: "invalid_session_reference",
-                route: nil,
-                capabilities: capsEnabled
-            )
-        )
-
-        // Disabled capability -> false
-        #expect(
-            !AgentTimelineView.canConfigureCodexDaemon(
-                agent: "codex",
-                code: "session_reference_unavailable",
-                route: nil,
-                capabilities: capsDisabled
-            )
-        )
-
-        // Nil capability (old helper without codex_daemon_config) -> false
-        #expect(
-            !AgentTimelineView.canConfigureCodexDaemon(
-                agent: "codex",
-                code: "session_reference_unavailable",
-                route: nil,
-                capabilities: capsNil
-            )
-        )
-        #expect(
-            !AgentTimelineView.canConfigureCodexDaemon(
-                agent: "codex",
-                code: "session_reference_unavailable",
-                route: nil,
-                capabilities: nil
-            )
-        )
-    }
-
-    @Test func buttonGatingRoutedHost() {
-        let capsEnabled = AgentBridgeCapabilities(
-            claudeTimeline: true, codexTimeline: true, codexDaemonConfig: true
-        )
+    @Test func codexNoSessionDecisionTable() {
+        let stopCaps = AgentBridgeCapabilities(claudeTimeline: true, codexTimeline: true, codexDaemonConfig: true, codexDaemonStop: true, recordContent: true)
+        let configOnlyCaps = AgentBridgeCapabilities(claudeTimeline: true, codexTimeline: true, codexDaemonConfig: true, recordContent: true)
+        let oldCaps = AgentBridgeCapabilities(claudeTimeline: true, codexTimeline: true, recordContent: true)
         let gateway = HerdrConnection()
         let machine = HerdrMachine(id: "child", label: "Child", target: "u@child", session: "default", enabled: true)
         let route = HerdrMachineRoute(gateway: gateway, machine: machine, generation: ConnectionGeneration(rawValue: 1))
 
-        // Routed host (route != nil) -> false even with capability enabled
-        #expect(
-            !AgentTimelineView.canConfigureCodexDaemon(
-                agent: "codex",
-                code: "session_reference_unavailable",
-                route: route,
-                capabilities: capsEnabled
-            )
-        )
+        for code in ["session_reference_unavailable", "ambiguous_session", "invalid_session_reference"] {
+            // 3A: bridge can stop the server; daemon running or unverifiable -> offer the stop.
+            #expect(AgentTimelineView.codexNoSessionAction(agent: "codex", code: code, route: nil, capabilities: stopCaps, codexDaemon: "running") == .turnOffServer)
+            #expect(AgentTimelineView.codexNoSessionAction(agent: "codex", code: code, route: nil, capabilities: stopCaps, codexDaemon: "unknown") == .turnOffServer)
+            // 3A: daemon already off (or unreported) -> no stop button, wait for the first message.
+            #expect(AgentTimelineView.codexNoSessionAction(agent: "codex", code: code, route: nil, capabilities: stopCaps, codexDaemon: "not_running") == .waitForSession)
+            #expect(AgentTimelineView.codexNoSessionAction(agent: "codex", code: code, route: nil, capabilities: stopCaps, codexDaemon: nil) == .waitForSession)
+            #expect(AgentTimelineView.codexNoSessionAction(agent: "codex", code: code, route: nil, capabilities: stopCaps, codexDaemon: "something_new") == .waitForSession)
+            // 3B: 0.2.0/0.2.1 bridge can only change config -> upgrade offer, no config-only stop button.
+            #expect(AgentTimelineView.codexNoSessionAction(agent: "codex", code: code, route: nil, capabilities: configOnlyCaps, codexDaemon: "running") == .upgradeBridge)
+            #expect(AgentTimelineView.codexNoSessionAction(agent: "codex", code: code, route: nil, capabilities: configOnlyCaps, codexDaemon: nil) == .upgradeBridge)
+            // 3C: neither capability -> manual fallback only.
+            #expect(AgentTimelineView.codexNoSessionAction(agent: "codex", code: code, route: nil, capabilities: oldCaps, codexDaemon: "running") == .manualFallback)
+            #expect(AgentTimelineView.codexNoSessionAction(agent: "codex", code: code, route: nil, capabilities: nil, codexDaemon: "running") == .manualFallback)
+            // Routed hosts never get any of these actions, whatever the bridge can do.
+            #expect(AgentTimelineView.codexNoSessionAction(agent: "codex", code: code, route: route, capabilities: stopCaps, codexDaemon: "running") == .manualFallback)
+            #expect(AgentTimelineView.codexNoSessionAction(agent: "codex", code: code, route: route, capabilities: configOnlyCaps, codexDaemon: "running") == .manualFallback)
+        }
+        // Not a no-session code, or not Codex -> none of the Codex actions apply.
+        #expect(AgentTimelineView.codexNoSessionAction(agent: "codex", code: "session_cwd_mismatch", route: nil, capabilities: stopCaps, codexDaemon: "running") == .manualFallback)
+        #expect(AgentTimelineView.codexNoSessionAction(agent: "codex", code: "transcript_root_unavailable", route: nil, capabilities: stopCaps, codexDaemon: "running") == .manualFallback)
+        #expect(AgentTimelineView.codexNoSessionAction(agent: "claude", code: "session_reference_unavailable", route: nil, capabilities: stopCaps, codexDaemon: "running") == .manualFallback)
+        #expect(AgentTimelineView.codexNoSessionAction(agent: nil, code: "session_reference_unavailable", route: nil, capabilities: stopCaps, codexDaemon: "running") == .manualFallback)
     }
 
-    @Test func buttonGatingAgentAndCode() {
-        let capsEnabled = AgentBridgeCapabilities(
-            claudeTimeline: true, codexTimeline: true, codexDaemonConfig: true
-        )
-
-        // Claude agent -> false
-        #expect(
-            !AgentTimelineView.canConfigureCodexDaemon(
-                agent: "claude",
-                code: "session_reference_unavailable",
-                route: nil,
-                capabilities: capsEnabled
-            )
-        )
-
-        // Unrelated unavailable code -> false
-        #expect(
-            !AgentTimelineView.canConfigureCodexDaemon(
-                agent: "codex",
-                code: "session_cwd_mismatch",
-                route: nil,
-                capabilities: capsEnabled
-            )
-        )
-        #expect(
-            !AgentTimelineView.canConfigureCodexDaemon(
-                agent: "codex",
-                code: "transcript_root_unavailable",
-                route: nil,
-                capabilities: capsEnabled
-            )
-        )
+    @Test func codexNoSessionExplanationsMatchTheAction() {
+        #expect(AgentTimelineView.codexNoSessionExplanation(.turnOffServer, code: "session_reference_unavailable", agent: "codex")
+            == "Codex's shared background server is running, so Herdcats can't tell which session belongs to this pane.")
+        #expect(AgentTimelineView.codexNoSessionExplanation(.waitForSession, code: "session_reference_unavailable", agent: "codex")
+            == "Codex reports its session after the first message. Send a message below to start. If Timeline still doesn't appear, quit Codex in this pane and start it again.")
+        #expect(AgentTimelineView.codexNoSessionExplanation(.upgradeBridge, code: "ambiguous_session", agent: "codex")
+            == "Upgrade Herdcats Bridge to turn off Codex's shared background server from here.")
+        // 3C keeps today's manual-fallback copy verbatim.
+        let manual = AgentTimelineView.codexNoSessionExplanation(.manualFallback, code: "invalid_session_reference", agent: "codex")
+        #expect(manual == AgentTimelineView.explanation("invalid_session_reference", agent: "codex"))
+        #expect(manual.contains("codex --no-daemon"))
     }
 
     @Test func statusAndErrorMessageMapping() {
-        let expectedGuidance = "Quit Codex in every pane, run `codex app-server daemon stop` on this computer (this ends all Codex sessions that use the shared daemon), then start Codex again in this pane. Or start Codex with `codex --no-daemon` now."
-        #expect(CodexDaemonConfigResult.restartGuidance == expectedGuidance)
         #expect(AgentTimelineView.codexDaemonStopCommand == "codex app-server daemon stop")
 
-        // Changed with backup
-        let resChangedBackup = CodexDaemonConfigResult(
-            status: "changed", backup: "config.toml.bak.herdcats-20261017T083528Z", error: nil
-        )
-        let msgChangedBackup = CodexDaemonConfigResult.message(for: resChangedBackup)
-        #expect(msgChangedBackup == expectedGuidance)
-
-        // Changed without backup
-        let resChangedNoBackup = CodexDaemonConfigResult(
-            status: "changed", backup: nil, error: nil
-        )
-        let msgChangedNoBackup = CodexDaemonConfigResult.message(for: resChangedNoBackup)
-        #expect(msgChangedNoBackup == expectedGuidance)
-
-        // Already disabled
-        let resAlready = CodexDaemonConfigResult(
-            status: "already_disabled", backup: nil, error: nil
-        )
-        let msgAlready = CodexDaemonConfigResult.message(for: resAlready)
-        #expect(msgAlready == expectedGuidance)
-
-        // Codex not installed
-        let resNotInstalled = CodexDaemonConfigResult(
-            status: "codex_not_installed", backup: nil, error: nil
-        )
-        let msgNotInstalled = CodexDaemonConfigResult.message(for: resNotInstalled)
-        #expect(msgNotInstalled.contains("Codex directory was not found"))
-
-        // Errors
+        // Config errors keep their existing copy; nothing was stopped.
         let resInvalid = CodexDaemonConfigResult(status: nil, backup: nil, error: "config_invalid")
         #expect(CodexDaemonConfigResult.message(for: resInvalid).contains("invalid TOML"))
-
-        let resNotTable = CodexDaemonConfigResult(status: nil, backup: nil, error: "features_not_table")
-        #expect(CodexDaemonConfigResult.message(for: resNotTable).contains("not a table"))
-
+        #expect(!CodexDaemonConfigResult.showsStopCommand(for: resInvalid))
         let resSymlink = CodexDaemonConfigResult(status: nil, backup: nil, error: "config_symlink")
         #expect(CodexDaemonConfigResult.message(for: resSymlink).contains("symbolic link"))
-
+        let resNotTable = CodexDaemonConfigResult(status: nil, backup: nil, error: "features_not_table")
+        #expect(CodexDaemonConfigResult.message(for: resNotTable).contains("not a table"))
         let resWriteFailed = CodexDaemonConfigResult(status: nil, backup: nil, error: "write_failed")
         #expect(CodexDaemonConfigResult.message(for: resWriteFailed).contains("failed to write"))
-
         let resVerification = CodexDaemonConfigResult(status: nil, backup: nil, error: "verification_failed")
         #expect(CodexDaemonConfigResult.message(for: resVerification).contains("verification failed"))
+        let resUnknownError = CodexDaemonConfigResult(status: nil, backup: nil, error: "custom_err")
+        #expect(CodexDaemonConfigResult.message(for: resUnknownError).contains("custom_err"))
+        #expect(!CodexDaemonConfigResult.showsStopCommand(for: resUnknownError))
 
-        let resUnknown = CodexDaemonConfigResult(status: nil, backup: nil, error: "custom_err")
-        #expect(CodexDaemonConfigResult.message(for: resUnknown).contains("custom_err"))
+        // stopped / not_running -> the server is off; no stop command to copy.
+        let stopped = CodexDaemonConfigResult(status: "changed", backup: "config.toml.bak.herdcats-20261020T083528Z", error: nil, daemon: "stopped", updater: "stopped")
+        #expect(CodexDaemonConfigResult.message(for: stopped)
+            == "Codex's shared server is off. Quit Codex in this pane and start it again so Herdcats can identify the session.")
+        #expect(!CodexDaemonConfigResult.showsStopCommand(for: stopped))
+        let notRunning = CodexDaemonConfigResult(status: "already_disabled", backup: nil, error: nil, daemon: "not_running", updater: "not_running")
+        #expect(CodexDaemonConfigResult.message(for: notRunning)
+            == "Codex's shared server is off. Quit Codex in this pane and start it again so Herdcats can identify the session.")
+        #expect(!CodexDaemonConfigResult.showsStopCommand(for: notRunning))
+
+        // stop_failed on either process -> still running + copy stop command.
+        let daemonStopFailed = CodexDaemonConfigResult(status: "changed", backup: nil, error: nil, daemon: "stop_failed", updater: "stopped")
+        #expect(CodexDaemonConfigResult.message(for: daemonStopFailed)
+            == "Codex's shared server is still running. Run `codex app-server daemon stop` on this computer, then restart Codex in this pane.")
+        #expect(CodexDaemonConfigResult.showsStopCommand(for: daemonStopFailed))
+        let updaterStopFailed = CodexDaemonConfigResult(status: "changed", backup: nil, error: nil, daemon: "stopped", updater: "stop_failed")
+        #expect(CodexDaemonConfigResult.message(for: updaterStopFailed)
+            == "Codex's shared server is still running. Run `codex app-server daemon stop` on this computer, then restart Codex in this pane.")
+        #expect(CodexDaemonConfigResult.showsStopCommand(for: updaterStopFailed))
+
+        // unknown on either process -> left running + copy stop command.
+        let daemonUnknown = CodexDaemonConfigResult(status: "changed", backup: nil, error: nil, daemon: "unknown", updater: "stopped")
+        #expect(CodexDaemonConfigResult.message(for: daemonUnknown)
+            == "Herdcats couldn't confirm the running server belongs to Codex, so it left it running. Run `codex app-server daemon stop` on this computer, then restart Codex in this pane.")
+        #expect(CodexDaemonConfigResult.showsStopCommand(for: daemonUnknown))
+        let updaterUnknown = CodexDaemonConfigResult(status: "changed", backup: nil, error: nil, daemon: "stopped", updater: "unknown")
+        #expect(CodexDaemonConfigResult.message(for: updaterUnknown)
+            == "Herdcats couldn't confirm the running server belongs to Codex, so it left it running. Run `codex app-server daemon stop` on this computer, then restart Codex in this pane.")
+        #expect(CodexDaemonConfigResult.showsStopCommand(for: updaterUnknown))
+
+        // Codex not installed keeps its own copy.
+        let notInstalled = CodexDaemonConfigResult(status: "codex_not_installed", backup: nil, error: nil)
+        #expect(CodexDaemonConfigResult.message(for: notInstalled).contains("Codex directory was not found"))
+        #expect(!CodexDaemonConfigResult.showsStopCommand(for: notInstalled))
+
+        // Missing daemon fields (legacy reply shape) fall through to the stopped copy.
+        let missingFields = CodexDaemonConfigResult(status: "changed", backup: nil, error: nil)
+        #expect(CodexDaemonConfigResult.message(for: missingFields)
+            == "Codex's shared server is off. Quit Codex in this pane and start it again so Herdcats can identify the session.")
+        #expect(!CodexDaemonConfigResult.showsStopCommand(for: missingFields))
     }
 
     @Test func manualFallbackText() {
@@ -762,11 +771,20 @@ struct CodexDaemonConfigTests {
         #expect(resChanged.status == "changed")
         #expect(resChanged.backup == "config.toml.bak.herdcats-123")
         #expect(resChanged.error == nil)
+        #expect(resChanged.daemon == nil)
+        #expect(resChanged.updater == nil)
 
         let rawError = "{\"error\":\"config_symlink\"}\n"
         let resError = try CodexDaemonConfigResult.parse(rawError)
         #expect(resError.error == "config_symlink")
         #expect(resError.status == nil)
+
+        let rawStop = "{\"status\":\"changed\",\"backup\":\"config.toml.bak.herdcats-456\",\"daemon\":\"stopped\",\"updater\":\"not_running\"}\n"
+        let resStop = try CodexDaemonConfigResult.parse(rawStop)
+        #expect(resStop.status == "changed")
+        #expect(resStop.daemon == "stopped")
+        #expect(resStop.updater == "not_running")
+        #expect(resStop.error == nil)
     }
 
     @Test func handshakeCapabilitiesPersistWhenWatchFailsWithSessionReferenceUnavailable() async throws {
@@ -796,7 +814,7 @@ struct CodexDaemonConfigTests {
         }
         let initId = try await wire.requestId()
         let handshakeJSON = """
-        {"id":"\(initId)","result":{"protocol":1,"epoch":"e1","bridge_version":"0.2.0","capabilities":{"claude_timeline":true,"codex_timeline":true,"record_content":true,"codex_daemon_config":true}}}
+        {"id":"\(initId)","result":{"protocol":1,"epoch":"e1","bridge_version":"0.2.2","capabilities":{"claude_timeline":true,"codex_timeline":true,"record_content":true,"codex_daemon_config":true,"codex_daemon_stop":true}}}
         """
         await client.receive(Data((handshakeJSON + "\n").utf8))
 
@@ -819,53 +837,54 @@ struct CodexDaemonConfigTests {
         #expect(caughtCode == "session_reference_unavailable")
 
         let recordedCaps = await connection.bridgeCapabilities(for: generation)
-        #expect(recordedCaps?.codexDaemonConfig == true)
+        #expect(recordedCaps?.codexDaemonStop == true)
         let recordedVersion = await connection.bridgeVersion(for: generation)
-        #expect(recordedVersion == "0.2.0")
+        #expect(recordedVersion == "0.2.2")
 
-        let canTurnOff = AgentTimelineView.canConfigureCodexDaemon(
-            agent: "codex",
-            code: caughtCode ?? "",
-            route: nil,
-            capabilities: recordedCaps
-        )
-        #expect(canTurnOff == true)
+        // A running shared server gets the in-app stop; an already-off one does not.
+        #expect(AgentTimelineView.codexNoSessionAction(
+            agent: "codex", code: caughtCode ?? "", route: nil, capabilities: recordedCaps, codexDaemon: "running"
+        ) == .turnOffServer)
+        #expect(AgentTimelineView.codexNoSessionAction(
+            agent: "codex", code: caughtCode ?? "", route: nil, capabilities: recordedCaps, codexDaemon: "not_running"
+        ) == .waitForSession)
 
         await connection.closeAllAgentBridges()
         let clearedCaps = await connection.bridgeCapabilities(for: generation)
         #expect(clearedCaps == nil)
     }
 
-    @Test func sharedHelperLookupCommand() {
-        let bridgeScript = HerdrConnection.agentBridgeScript
-        let disableDaemonScript = HerdrConnection.codexDisableDaemonScript
-
-        // Both commands share the exact binary search paths
+    @Test func stopRunningUsesItsOwnScriptAndTimeout() {
+        let stopScript = HerdrConnection.codexDisableDaemonStopScript
+        #expect(stopScript.contains("codex-config disable-daemon --stop-running"))
+        // The stop path shares the helper lookup and missing-helper fallback.
         for path in [
             "$HOME/.local/bin/herdcats-bridge",
             "$HOME/.cargo/bin/herdcats-bridge",
             "/opt/homebrew/bin/herdcats-bridge",
             "/usr/local/bin/herdcats-bridge"
         ] {
-            #expect(bridgeScript.contains(path))
-            #expect(disableDaemonScript.contains(path))
+            #expect(stopScript.contains(path))
         }
+        #expect(stopScript.contains("command -v herdcats-bridge"))
+        #expect(stopScript.contains("{\"error\":\"helper_missing\"}"))
+        #expect(HerdrConnection.codexDisableDaemonStopCommand.starts(with: "exec /bin/sh -c "))
 
-        #expect(bridgeScript.contains("command -v herdcats-bridge"))
-        #expect(disableDaemonScript.contains("command -v herdcats-bridge"))
+        // The stop pass can take ~60 s on the bridge side; the app bounds it at 90 s.
+        #expect(HerdrConnection.codexDisableDaemonTimeout(stopRunning: true) == 90)
+        #expect(HerdrConnection.codexDisableDaemonTimeout(stopRunning: false) == 15)
 
-        // Bridge command serves stdio over herdr socket and drains stdin on missing
+        // The config-only command never stops a running server.
+        #expect(!HerdrConnection.codexDisableDaemonScript.contains("--stop-running"))
+        #expect(HerdrConnection.codexDisableDaemonCommand.starts(with: "exec /bin/sh -c "))
+    }
+
+    @Test func bridgeServeScriptKeepsItsOwnShape() {
+        let bridgeScript = HerdrConnection.agentBridgeScript
         #expect(bridgeScript.contains("exec \"$B\" serve --stdio --socket \"$S\""))
         #expect(bridgeScript.contains("IFS= read -r HB_REQUEST || exit 127"))
         #expect(bridgeScript.contains("{\"error\":{\"code\":\"helper_missing\"}}"))
-
-        // Disable daemon command executes codex-config disable-daemon with JSON fallback
-        #expect(disableDaemonScript.contains("exec \"$B\" codex-config disable-daemon"))
-        #expect(disableDaemonScript.contains("{\"error\":\"helper_missing\"}"))
-
-        // Both commands are wrapped safely for /bin/sh
         #expect(HerdrConnection.agentBridgeCommand.starts(with: "exec /bin/sh -c "))
-        #expect(HerdrConnection.codexDisableDaemonCommand.starts(with: "exec /bin/sh -c "))
     }
 }
 
