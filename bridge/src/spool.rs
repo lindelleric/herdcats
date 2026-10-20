@@ -120,16 +120,30 @@ pub fn record_in_dir(
     line.push(b'\n');
     ensure_dir(dir)?;
     let path = dir.join(format!("{}-{session}.jsonl", agent.name()));
-    // Lock a stable sidecar inode: the data inode changes during trim's rename.
-    // Keep the sidecar after releasing it so waiting processes share the lock.
-    let _lock = SessionLock::acquire(&path.with_extension("lock"))?;
+    // One stable lock serializes append/replace with prune and uninstall.
+    // Its inode is retained, but storage stays constant across session IDs.
+    let _lock = lock_existing(dir)?;
     let mut file = open_file(&path, false)?;
     file.write_all(&line)?;
     trim(dir, &path, &mut file)
 }
 
-struct SessionLock(File);
-impl SessionLock {
+/// Lock an existing spool directory without creating it on a cleanup/no-op path.
+/// Never delete the lock file: waiters must always synchronize on one inode.
+pub(crate) fn lock_existing(dir: &Path) -> io::Result<Option<SpoolLock>> {
+    let metadata = match fs::symlink_metadata(dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(io::Error::other("spool_symlink_or_not_directory"));
+    }
+    SpoolLock::acquire(&dir.join(".spool.lock")).map(Some)
+}
+
+pub(crate) struct SpoolLock(File);
+impl SpoolLock {
     fn acquire(path: &Path) -> io::Result<Self> {
         let file = open_file(path, false)?;
         #[cfg(unix)]
@@ -151,7 +165,7 @@ impl SessionLock {
         Ok(Self(file))
     }
 }
-impl Drop for SessionLock {
+impl Drop for SpoolLock {
     fn drop(&mut self) {
         #[cfg(unix)]
         {
@@ -288,14 +302,9 @@ fn trim(dir: &Path, path: &Path, file: &mut File) -> io::Result<()> {
 /// Delete regular session spool files strictly older than 24 hours. Never follow
 /// a symlinked spool directory or treat temporary/unrelated files as records.
 pub fn prune(dir: &Path, now: SystemTime) -> io::Result<()> {
-    let metadata = match fs::symlink_metadata(dir) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
+    let Some(_lock) = lock_existing(dir)? else {
+        return Ok(());
     };
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(io::Error::other("spool_symlink_or_not_directory"));
-    }
     let max_age = std::time::Duration::from_secs(24 * 60 * 60);
     for entry in fs::read_dir(dir)? {
         let entry = entry?;

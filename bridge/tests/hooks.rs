@@ -789,7 +789,8 @@ fn serve_prunes_at_start_and_ignores_cleanup_errors() {
     };
     serve();
     assert!(!old.exists());
-    fs::remove_dir(t.spool()).unwrap();
+    assert!(t.spool().join(".spool.lock").is_file());
+    fs::remove_dir_all(t.spool()).unwrap();
     fs::write(t.spool(), "not a directory").unwrap();
     serve();
     assert_eq!(fs::read_to_string(t.spool()).unwrap(), "not a directory");
@@ -861,4 +862,204 @@ fn concurrent_trimming_retains_all_new_requests() {
         .collect();
     ids.sort();
     assert_eq!(ids, (0..32).collect::<Vec<_>>());
+}
+
+#[test]
+fn codex_cleanup_migrates_downstream_trust_state() {
+    for action in ["install", "uninstall"] {
+        let t = Temp::new();
+        t.run("install", "codex");
+        let path = t.file("codex");
+        let initial: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let recorder = initial["hooks"]["PermissionRequest"][0]["hooks"][0].clone();
+        let stale = json!({"type":"command","command":"/old/bridge hook record --agent codex"});
+        let doc = json!({"hooks":{"PermissionRequest":[
+            {"hooks":[recorder,stale.clone(),{"type":"command","command":"echo first"}]},
+            {"hooks":[stale]},
+            {"hooks":[{"type":"command","command":"echo second"}]}
+        ]}});
+        fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+        let key = |g, h| format!("{}:permission_request:{g}:{h}", path.display());
+        let config_path = path.parent().unwrap().join("config.toml");
+        let config = format!(
+            "# keep comment\nmodel = 'test'\n[hooks.state.{}]\nenabled = false\ntrusted_hash = 'first'\n[hooks.state.{}]\nenabled = true\ntrusted_hash = 'second'\n[hooks.state.{}]\ntrusted_hash = 'removed'\n[hooks.state.unrelated]\nenabled = false\n",
+            serde_json::to_string(&key(0, 2)).unwrap(),
+            serde_json::to_string(&key(2, 0)).unwrap(),
+            serde_json::to_string(&key(1, 0)).unwrap()
+        );
+        fs::write(&config_path, &config).unwrap();
+        let result = t.run(action, "codex");
+        assert!(result.get("error").is_none(), "{result}");
+        let text = fs::read_to_string(config_path).unwrap();
+        let config: toml_edit::DocumentMut = text.parse().unwrap();
+        let state = &config["hooks"]["state"];
+        let first = if action == "install" { 1 } else { 0 };
+        assert_eq!(
+            state[&key(0, first)]["trusted_hash"].as_str(),
+            Some("first")
+        );
+        assert_eq!(state[&key(0, first)]["enabled"].as_bool(), Some(false));
+        assert_eq!(state[&key(1, 0)]["trusted_hash"].as_str(), Some("second"));
+        assert_eq!(state[&key(1, 0)]["enabled"].as_bool(), Some(true));
+        assert_eq!(state["unrelated"]["enabled"].as_bool(), Some(false));
+        assert!(text.contains("# keep comment"));
+        assert_eq!(config["model"].as_str(), Some("test"));
+    }
+}
+
+#[test]
+fn codex_migration_refuses_invalid_config_without_changing_hooks() {
+    for action in ["install", "uninstall"] {
+        let t = Temp::new();
+        t.run("install", "codex");
+        let path = t.file("codex");
+        let mut doc: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        doc["hooks"]["PermissionRequest"].as_array_mut().unwrap().push(json!({"hooks":[{"type":"command","command":"/old/bridge hook record --agent codex"},{"type":"command","command":"echo keep"}]}));
+        let original = serde_json::to_vec(&doc).unwrap();
+        fs::write(&path, &original).unwrap();
+        let config = path.parent().unwrap().join("config.toml");
+        fs::write(&config, "[invalid").unwrap();
+        assert_eq!(t.run(action, "codex")["error"], "hooks_config_invalid");
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(fs::read_to_string(config).unwrap(), "[invalid");
+    }
+}
+
+#[test]
+fn concurrent_byte_trimming_retains_new_requests() {
+    use std::{io::Write, process::Stdio};
+    let t = Temp::new();
+    let data = "x".repeat(60 * 1024);
+    for i in 0..4 {
+        t.record(
+            &["hook", "record", "--agent", "claude"],
+            &serde_json::to_vec(&json!({"session_id":"byte-race","old":i,"data":data})).unwrap(),
+            true,
+        );
+    }
+    let mut children = vec![];
+    for i in 0..3 {
+        let mut child = t
+            .record_command(&["hook", "record", "--agent", "claude"], true)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(
+                &serde_json::to_vec(&json!({"session_id":"byte-race","new":i,"data":data}))
+                    .unwrap(),
+            )
+            .unwrap();
+        children.push(child);
+    }
+    for child in children {
+        assert!(child.wait_with_output().unwrap().status.success());
+    }
+    let records = t.records("claude", "byte-race");
+    assert_eq!(records.len(), 4);
+    let mut ids: Vec<_> = records
+        .iter()
+        .filter_map(|r| r["payload"]["new"].as_u64())
+        .collect();
+    ids.sort();
+    assert_eq!(ids, vec![0, 1, 2]);
+}
+
+#[test]
+fn codex_migration_does_not_inherit_stale_destination_state() {
+    let t = Temp::new();
+    t.run("install", "codex");
+    let path = t.file("codex");
+    let mut doc: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    doc["hooks"]["PermissionRequest"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"hooks":[
+            {"type":"command","command":"echo a"},
+            {"type":"command","command":"echo b"},
+            {"type":"command","command":"echo c"}
+        ]}));
+    fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+    let config_path = path.parent().unwrap().join("config.toml");
+    let key = format!("{}:permission_request:0:2", path.display());
+    fs::write(
+        &config_path,
+        format!(
+            "[hooks.state.{}]\nenabled = false\ntrusted_hash = 'stale'\n",
+            serde_json::to_string(&key).unwrap()
+        ),
+    )
+    .unwrap();
+    t.run("uninstall", "codex");
+    let config: toml_edit::DocumentMut = fs::read_to_string(config_path).unwrap().parse().unwrap();
+    assert!(
+        config
+            .get("hooks")
+            .and_then(|h| h.get("state"))
+            .and_then(|s| s.get(&key))
+            .is_none()
+    );
+}
+
+#[test]
+fn spool_lock_storage_is_constant_across_sessions() {
+    let t = Temp::new();
+    for i in 0..8 {
+        t.record(
+            &["hook", "record", "--agent", "claude"],
+            &serde_json::to_vec(&json!({"session_id":format!("session-{i}")})).unwrap(),
+            true,
+        );
+    }
+    let locks: Vec<_> = fs::read_dir(t.spool())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .filter(|name| name.to_string_lossy().ends_with(".lock"))
+        .collect();
+    assert_eq!(locks, vec![std::ffi::OsString::from(".spool.lock")]);
+}
+
+#[cfg(unix)]
+#[test]
+fn prune_waits_for_recorder_lock_and_rechecks_age() {
+    use std::{
+        os::fd::AsRawFd,
+        sync::mpsc,
+        time::{Duration, SystemTime},
+    };
+    let t = Temp::new();
+    fs::create_dir_all(t.spool()).unwrap();
+    let path = t.spool().join("claude-race.jsonl");
+    fs::write(&path, "old").unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+        .unwrap();
+    let lock = fs::File::create(t.spool().join(".spool.lock")).unwrap();
+    assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) }, 0);
+    let (started_tx, started_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    let dir = t.spool();
+    let thread = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        let result = herdcats_bridge::spool::prune(&dir, SystemTime::now());
+        done_tx.send(result).unwrap();
+    });
+    started_rx.recv().unwrap();
+    assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err());
+    fs::write(&path, "fresh request").unwrap();
+    assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_UN) }, 0);
+    done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    thread.join().unwrap();
+    assert_eq!(fs::read_to_string(path).unwrap(), "fresh request");
 }

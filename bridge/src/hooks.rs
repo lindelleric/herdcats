@@ -311,22 +311,39 @@ fn install_inner(agent: Agent, dir: &Path, spool: &Path) -> Result<HooksResult> 
         .as_array_mut()
         .ok_or("hooks_invalid_json")?;
     let mut replaced = false;
+    let mut positions = Vec::new();
+    let mut old_group = 0;
+    let mut new_group = 0;
     groups.retain_mut(|group| {
+        let mut old_handler = 0;
+        let mut new_handler = 0;
         // Keep the first recorder in place so its trust key stays stable.
         let handlers = group["hooks"].as_array_mut().unwrap();
         let before = handlers.len();
         handlers.retain_mut(|handler| {
-            if !ours(handler, agent) {
-                return true;
+            let old = (old_group, old_handler);
+            old_handler += 1;
+            let keep = if !ours(handler, agent) {
+                true
+            } else if replaced || (keep_current && handler["command"].as_str() != Some(&command)) {
+                false
+            } else {
+                handler["command"] = Value::String(command.clone());
+                replaced = true;
+                true
+            };
+            positions.push((old, keep.then_some((new_group, new_handler))));
+            if keep {
+                new_handler += 1;
             }
-            if replaced || (keep_current && handler["command"].as_str() != Some(&command)) {
-                return false;
-            }
-            handler["command"] = Value::String(command.clone());
-            replaced = true;
-            true
+            keep
         });
-        !(handlers.len() != before && handlers.is_empty())
+        let keep = !(handlers.len() != before && handlers.is_empty());
+        old_group += 1;
+        if keep {
+            new_group += 1;
+        }
+        keep
     });
     if !replaced {
         let mut group = json!({"hooks":[{"type":"command", "command":command,"timeout":10}]});
@@ -338,7 +355,7 @@ fn install_inner(agent: Agent, dir: &Path, spool: &Path) -> Result<HooksResult> 
         }
         groups.push(group);
     }
-    let backup = write_document(agent, &path, &doc, meta.as_ref())?;
+    let backup = write_hook_edit(agent, &path, &doc, meta.as_ref(), &positions)?;
     let mut result = HooksResult::state("installed", spool_confirmed(agent, spool));
     if let Some(backup) = backup {
         result.0["backup"] = json!(backup);
@@ -355,18 +372,39 @@ fn uninstall_inner(agent: Agent, dir: &Path, spool: &Path) -> Result<HooksResult
     let path = dir.join(agent.filename());
     let (mut doc, meta) = read_document(&path)?;
     let mut changed = false;
+    let mut positions = Vec::new();
     if let Some(groups) = doc
         .get_mut("hooks")
         .and_then(|h| h.get_mut("PermissionRequest"))
         .and_then(Value::as_array_mut)
     {
+        let mut old_group = 0;
+        let mut new_group = 0;
         groups.retain_mut(|group| {
             let handlers = group["hooks"].as_array_mut().unwrap();
             let before = handlers.len();
-            handlers.retain(|h| !ours(h, agent));
+            let mut old_handler = 0;
+            let mut new_handler = 0;
+            handlers.retain(|handler| {
+                let keep = !ours(handler, agent);
+                positions.push((
+                    (old_group, old_handler),
+                    keep.then_some((new_group, new_handler)),
+                ));
+                old_handler += 1;
+                if keep {
+                    new_handler += 1;
+                }
+                keep
+            });
             let removed = handlers.len() != before;
             changed |= removed;
-            !(removed && handlers.is_empty())
+            let keep = !(removed && handlers.is_empty());
+            old_group += 1;
+            if keep {
+                new_group += 1;
+            }
+            keep
         });
     }
     if changed {
@@ -380,10 +418,11 @@ fn uninstall_inner(agent: Agent, dir: &Path, spool: &Path) -> Result<HooksResult
         }
     }
     let backup = if changed {
-        write_document(agent, &path, &doc, meta.as_ref())?
+        write_hook_edit(agent, &path, &doc, meta.as_ref(), &positions)?
     } else {
         None
     };
+    let _spool_lock = crate::spool::lock_existing(spool).map_err(|_| "spool_cleanup_failed")?;
     for file in spool_files(agent, spool).map_err(|_| "spool_cleanup_failed")? {
         fs::remove_file(file).map_err(|_| "spool_cleanup_failed")?;
     }
@@ -393,12 +432,113 @@ fn uninstall_inner(agent: Agent, dir: &Path, spool: &Path) -> Result<HooksResult
     }
     Ok(result)
 }
+type Position = (usize, usize);
+type PositionChange = (Position, Option<Position>);
+
+// Trust state belongs to a handler, not its transient array index. Snapshot
+// every source value before moving keys so overlapping moves cannot clobber it.
+fn write_hook_edit(
+    agent: Agent,
+    path: &Path,
+    doc: &Value,
+    meta: Option<&fs::Metadata>,
+    positions: &[PositionChange],
+) -> Result<Option<String>> {
+    if agent != Agent::Codex || positions.iter().all(|(old, new)| Some(*old) == *new) {
+        return write_document(agent, path, doc, meta);
+    }
+    let config_path = path
+        .parent()
+        .ok_or("hooks_write_failed")?
+        .join("config.toml");
+    let config_meta = match fs::symlink_metadata(&config_path) {
+        Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => meta,
+        Ok(_) => return Err("hooks_config_unreadable"),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return write_document(agent, path, doc, meta);
+        }
+        Err(_) => return Err("hooks_config_unreadable"),
+    };
+    let original = fs::read_to_string(&config_path).map_err(|_| "hooks_config_unreadable")?;
+    let mut config: toml_edit::DocumentMut =
+        original.parse().map_err(|_| "hooks_config_invalid")?;
+    let Some(state) = config
+        .get_mut("hooks")
+        .and_then(|h| h.get_mut("state"))
+        .and_then(|s| s.as_table_like_mut())
+    else {
+        return write_document(agent, path, doc, meta);
+    };
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|_| "hooks_read_failed")?
+            .join(path)
+    };
+    let key = |(g, h)| format!("{}:permission_request:{g}:{h}", absolute.display());
+    let values: Vec<_> = positions
+        .iter()
+        .map(|(old, new)| (*new, state.remove(&key(*old))))
+        .collect();
+    // An orphaned destination must not become state for an unrelated handler
+    // that had no source entry. Clear only after all source values are saved.
+    for (_, new) in positions {
+        if let Some(new) = new {
+            state.remove(&key(*new));
+        }
+    }
+    for (new, value) in values {
+        if let (Some(new), Some(value)) = (new, value) {
+            state.insert(&key(new), value);
+        }
+    }
+    let updated = config.to_string();
+    if updated == original {
+        return write_document(agent, path, doc, meta);
+    }
+    // Both files retain backups; if the hooks update fails, restore the config.
+    write_bytes_document(
+        Agent::Claude,
+        &config_path,
+        updated.as_bytes(),
+        Some(&config_meta),
+    )?;
+    match write_document(agent, path, doc, meta) {
+        Ok(backup) => Ok(backup),
+        Err(error) => {
+            write_bytes_document(
+                Agent::Claude,
+                &config_path,
+                original.as_bytes(),
+                Some(&config_meta),
+            )
+            .map_err(|_| "hooks_config_rollback_failed")?;
+            Err(error)
+        }
+    }
+}
+
 fn write_document(
     agent: Agent,
     path: &Path,
     doc: &Value,
     meta: Option<&fs::Metadata>,
 ) -> Result<Option<String>> {
+    let mut bytes = serde_json::to_vec_pretty(doc).map_err(|_| "hooks_write_failed")?;
+    bytes.push(b'\n');
+    write_bytes_document(agent, path, &bytes, meta)
+}
+fn write_bytes_document(
+    agent: Agent,
+    path: &Path,
+    bytes: &[u8],
+    meta: Option<&fs::Metadata>,
+) -> Result<Option<String>> {
+    let filename = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or("hooks_write_failed")?;
     let dir = path.parent().ok_or("hooks_write_failed")?;
     fs::create_dir_all(dir).map_err(|_| "hooks_write_failed")?;
     let backup = if let Some(meta) = meta {
@@ -410,7 +550,7 @@ fn write_document(
             } else {
                 format!("_{count}")
             };
-            let name = format!("{}.bak.herdcats-{timestamp}{suffix}", agent.filename());
+            let name = format!("{}.bak.herdcats-{timestamp}{suffix}", filename);
             let backup_path = dir.join(&name);
             let mut options = fs::OpenOptions::new();
             options.write(true).create_new(true);
@@ -436,13 +576,11 @@ fn write_document(
     } else {
         None
     };
-    let mut bytes = serde_json::to_vec_pretty(doc).map_err(|_| "hooks_write_failed")?;
-    bytes.push(b'\n');
     let mut count = 0;
     let (temp, mut file) = loop {
         let temp = dir.join(format!(
             ".{}.tmp.herdcats-{}-{count}",
-            agent.filename(),
+            filename,
             std::process::id()
         ));
         let mut opts = fs::OpenOptions::new();
@@ -472,7 +610,7 @@ fn write_document(
                 }))?;
             }
         }
-        file.write_all(&bytes)?;
+        file.write_all(bytes)?;
         file.sync_all()?;
         drop(file);
         // Refuse a symlink substituted since the initial read, too.
@@ -485,9 +623,7 @@ fn write_document(
         let _ = fs::remove_file(temp);
         return Err("hooks_write_failed");
     }
-    let verified = fs::read(path).ok().is_some_and(|data| {
-        data == bytes && serde_json::from_slice::<Value>(&data).is_ok_and(|v| v == *doc)
-    });
+    let verified = fs::read(path).ok().is_some_and(|data| data == bytes);
     if !verified {
         return Err("hooks_verification_failed");
     }
