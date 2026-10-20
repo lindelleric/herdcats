@@ -275,6 +275,7 @@ struct AgentTimelineView: View {
             // A stop result only describes the no-session episode it answered;
             // a later episode (after the pane was ready again) starts fresh.
             if !Self.codexDaemonResultIsCurrent(phase: newPhase) { clearCodexDaemonResult() }
+            dismissStaleCodexDaemonConfirm()
         }
         .onChange(of: timeline.codexDaemon) { _, codexDaemon in
             // A fresh daemon report that contradicts the recorded result (the
@@ -283,6 +284,7 @@ struct AgentTimelineView: View {
             if Self.codexDaemonResultIsStale(outcome: codexDaemonStopOutcome, codexDaemon: codexDaemon) {
                 clearCodexDaemonResult()
             }
+            dismissStaleCodexDaemonConfirm()
         }
         .onChange(of: bridgeUpgrade.requested) { _, requested in
             if requested {
@@ -730,6 +732,24 @@ struct AgentTimelineView: View {
         }
     }
 
+    /// The stop is destructive, so it may run only while the live pane still
+    /// asks for it: a no-session Codex pane whose bridge can stop the server
+    /// and currently reports it as running or unverifiable. Anything else —
+    /// the session was identified, the pane reconnected, the server is
+    /// already off, or an older bridge/routed host — must not stop anything.
+    static func canRunCodexDaemonStop(
+        phase: AgentTimelineState.Phase,
+        agent: String?,
+        route: HerdrMachineRoute?,
+        capabilities: AgentBridgeCapabilities?,
+        codexDaemon: String?
+    ) -> Bool {
+        guard case .unavailable(let code) = phase else { return false }
+        return codexNoSessionAction(
+            agent: agent, code: code, route: route, capabilities: capabilities, codexDaemon: codexDaemon
+        ) == .turnOffServer
+    }
+
     /// The recorded stop result for the current no-session episode. Keeps the
     /// per-process outcome: `codex_daemon` events report only the daemon
     /// process, so an updater-only failure is not contradicted by them.
@@ -783,9 +803,18 @@ struct AgentTimelineView: View {
     /// no-session episode that initiated it. The episode token is captured
     /// before awaiting and bumped by every clear, so a completion that lands
     /// after the pane moved on (ready, a re-run, a later episode) is
-    /// discarded instead of replacing the live guidance.
-    static func shouldRecordStopOutcome(initiatedEpisode: Int, currentEpisode: Int) -> Bool {
-        initiatedEpisode == currentEpisode
+    /// discarded instead of replacing the live guidance. The completion must
+    /// also agree with the latest daemon report: a `not_running` event that
+    /// arrived mid-flight (before any outcome existed to retire) means a
+    /// late failure answer must not claim the server is still running.
+    static func shouldRecordStopOutcome(
+        initiatedEpisode: Int,
+        currentEpisode: Int,
+        outcome: CodexDaemonStopOutcome,
+        latestCodexDaemon: String?
+    ) -> Bool {
+        guard initiatedEpisode == currentEpisode else { return false }
+        return !codexDaemonResultIsStale(outcome: outcome, codexDaemon: latestCodexDaemon)
     }
 
     static let codexManualConfigLine = "daemon_auto_start = false"
@@ -1012,8 +1041,34 @@ struct AgentTimelineView: View {
         codexDaemonEpisode += 1
     }
 
+    /// The confirmation sheet can outlive the state that offered it; if the
+    /// pane no longer asks for the stop (session identified, server already
+    /// off, stream re-ran), close it instead of stopping a working server.
+    private func dismissStaleCodexDaemonConfirm() {
+        guard showsCodexDaemonConfirm else { return }
+        if !Self.canRunCodexDaemonStop(
+            phase: timeline.phase,
+            agent: agent,
+            route: connection.route,
+            capabilities: bridgeCapabilities,
+            codexDaemon: timeline.codexDaemon
+        ) {
+            showsCodexDaemonConfirm = false
+        }
+    }
+
     private func disableCodexDaemon() {
         guard !isDisablingCodexDaemon else { return }
+        // The sheet may have stayed open after the pane moved on; revalidate
+        // the live state so confirming a stale sheet never stops a server the
+        // pane no longer reports as running.
+        guard Self.canRunCodexDaemonStop(
+            phase: timeline.phase,
+            agent: agent,
+            route: connection.route,
+            capabilities: bridgeCapabilities,
+            codexDaemon: timeline.codexDaemon
+        ) else { return }
         guard let generation = connectionState.generation else { return }
         // Bind the up-to-90 s stop to the episode that started it. Any clear
         // while it runs — the pane left the unavailable state, the stream
@@ -1037,7 +1092,12 @@ struct AgentTimelineView: View {
                 outcome = CodexDaemonStopOutcome(
                     errorDescription: "Could not turn off Codex's shared background server: \(error.localizedDescription)")
             }
-            if Self.shouldRecordStopOutcome(initiatedEpisode: initiatedEpisode, currentEpisode: codexDaemonEpisode) {
+            if Self.shouldRecordStopOutcome(
+                initiatedEpisode: initiatedEpisode,
+                currentEpisode: codexDaemonEpisode,
+                outcome: outcome,
+                latestCodexDaemon: timeline.codexDaemon
+            ) {
                 codexDaemonStopOutcome = outcome
             }
             isDisablingCodexDaemon = false

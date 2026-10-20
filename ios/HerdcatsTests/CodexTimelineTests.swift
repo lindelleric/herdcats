@@ -977,15 +977,65 @@ struct CodexDaemonConfigTests {
     }
 
     @Test func lateStopResultIsDiscardedWhenItsEpisodeEnded() {
+        let stopped = AgentTimelineView.CodexDaemonStopOutcome(
+            result: CodexDaemonConfigResult(status: "changed", backup: nil, error: nil, daemon: "stopped", updater: "stopped"))
         // A stop runs for up to 90 s; the episode token is captured when it
-        // starts. Nothing cleared the outcome in flight -> record the result.
-        #expect(AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 3, currentEpisode: 3))
-        #expect(AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 0, currentEpisode: 0))
+        // starts. Nothing cleared the outcome in flight and the daemon report
+        // still agrees -> record the result.
+        #expect(AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 3, currentEpisode: 3, outcome: stopped, latestCodexDaemon: "not_running"))
+        #expect(AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 0, currentEpisode: 0, outcome: stopped, latestCodexDaemon: nil))
         // The pane became ready (or the stream re-ran, or a later episode
         // began) during the flight: every clear bumps the token, so the late
         // answer is discarded and the new episode keeps its live guidance.
-        #expect(!AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 3, currentEpisode: 4))
-        #expect(!AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 3, currentEpisode: 5))
+        #expect(!AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 3, currentEpisode: 4, outcome: stopped, latestCodexDaemon: "not_running"))
+        #expect(!AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 3, currentEpisode: 5, outcome: stopped, latestCodexDaemon: nil))
+    }
+
+    @Test func lateStopFailureIsDiscardedWhenTheDaemonIsAlreadyOff() {
+        let daemonFailed = AgentTimelineView.CodexDaemonStopOutcome(
+            result: CodexDaemonConfigResult(status: nil, backup: nil, error: nil, daemon: "stop_failed", updater: "stopped"))
+        let errored = AgentTimelineView.CodexDaemonStopOutcome(
+            errorDescription: "Could not turn off Codex's shared background server: timed out")
+        // A not_running report arrived while the command was still awaiting
+        // its response — before any outcome existed for the daemon-change
+        // handler to retire. The pane's live state already says the server
+        // is off, so the late failure answer must not claim otherwise.
+        #expect(!AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 2, currentEpisode: 2, outcome: daemonFailed, latestCodexDaemon: "not_running"))
+        #expect(!AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 2, currentEpisode: 2, outcome: errored, latestCodexDaemon: "not_running"))
+        // The latest report still shows the daemon alive (or reports
+        // nothing) -> the failure guidance is kept.
+        #expect(AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 2, currentEpisode: 2, outcome: daemonFailed, latestCodexDaemon: "running"))
+        #expect(AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 2, currentEpisode: 2, outcome: errored, latestCodexDaemon: nil))
+        // Updater-only failures survive a daemon-only not_running report.
+        let updaterFailed = AgentTimelineView.CodexDaemonStopOutcome(
+            result: CodexDaemonConfigResult(status: "changed", backup: nil, error: nil, daemon: "stopped", updater: "stop_failed"))
+        #expect(AgentTimelineView.shouldRecordStopOutcome(initiatedEpisode: 2, currentEpisode: 2, outcome: updaterFailed, latestCodexDaemon: "not_running"))
+    }
+
+    @Test func stopRevalidationRequiresTheLivePaneToStillAskForIt() {
+        let stopCaps = AgentBridgeCapabilities(claudeTimeline: true, codexTimeline: true, codexDaemonConfig: true, codexDaemonStop: true, recordContent: true)
+        let code = "session_reference_unavailable"
+
+        // Live no-session state with the server running or unverifiable ->
+        // the stop may run.
+        #expect(AgentTimelineView.canRunCodexDaemonStop(phase: .unavailable(code), agent: "codex", route: nil, capabilities: stopCaps, codexDaemon: "running"))
+        #expect(AgentTimelineView.canRunCodexDaemonStop(phase: .unavailable("ambiguous_session"), agent: "codex", route: nil, capabilities: stopCaps, codexDaemon: "unknown"))
+
+        // The session was identified (or the pane reconnected/disconnected)
+        // while the sheet was open -> never stop a working server.
+        #expect(!AgentTimelineView.canRunCodexDaemonStop(phase: .ready, agent: "codex", route: nil, capabilities: stopCaps, codexDaemon: nil))
+        #expect(!AgentTimelineView.canRunCodexDaemonStop(phase: .loading, agent: "codex", route: nil, capabilities: stopCaps, codexDaemon: nil))
+        #expect(!AgentTimelineView.canRunCodexDaemonStop(phase: .disconnected, agent: "codex", route: nil, capabilities: stopCaps, codexDaemon: nil))
+        #expect(!AgentTimelineView.canRunCodexDaemonStop(phase: .unavailable("session_cwd_mismatch"), agent: "codex", route: nil, capabilities: stopCaps, codexDaemon: "running"))
+
+        // The server is already off (or unreported) -> no stop.
+        #expect(!AgentTimelineView.canRunCodexDaemonStop(phase: .unavailable(code), agent: "codex", route: nil, capabilities: stopCaps, codexDaemon: "not_running"))
+        #expect(!AgentTimelineView.canRunCodexDaemonStop(phase: .unavailable(code), agent: "codex", route: nil, capabilities: stopCaps, codexDaemon: nil))
+
+        // Older bridge (config-only) or routed host never offered the stop.
+        #expect(!AgentTimelineView.canRunCodexDaemonStop(phase: .unavailable(code), agent: "codex", route: nil, capabilities: AgentBridgeCapabilities(claudeTimeline: true, codexTimeline: true, codexDaemonConfig: true, recordContent: true), codexDaemon: "running"))
+        let route = HerdrMachineRoute(gateway: HerdrConnection(), machine: HerdrMachine(id: "child", label: "Child", target: "u@child", session: "default", enabled: true), generation: ConnectionGeneration(rawValue: 1))
+        #expect(!AgentTimelineView.canRunCodexDaemonStop(phase: .unavailable(code), agent: "codex", route: route, capabilities: stopCaps, codexDaemon: "running"))
     }
 }
 
