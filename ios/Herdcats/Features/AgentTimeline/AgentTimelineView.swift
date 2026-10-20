@@ -47,9 +47,7 @@ struct AgentTimelineView: View {
     @State private var bridgeVersion: String?
     @State private var showsCodexDaemonConfirm = false
     @State private var isDisablingCodexDaemon = false
-    @State private var codexDaemonFeedback: String?
-    @State private var codexDaemonErrorOccurred = false
-    @State private var codexDaemonShowsStopCommand = false
+    @State private var codexDaemonStopOutcome: CodexDaemonStopOutcome?
     @State private var copiedCodexConfig = false
     @State private var copiedCodexStop = false
 
@@ -279,11 +277,9 @@ struct AgentTimelineView: View {
             // A fresh daemon report that contradicts the recorded result (the
             // server came back after "off", or was stopped despite "still
             // running") hands the pane back to the live state.
-            if Self.codexDaemonResultIsStale(
-                errorOccurred: codexDaemonErrorOccurred,
-                showsStopCommand: codexDaemonShowsStopCommand,
-                codexDaemon: codexDaemon
-            ) { clearCodexDaemonResult() }
+            if Self.codexDaemonResultIsStale(outcome: codexDaemonStopOutcome, codexDaemon: codexDaemon) {
+                clearCodexDaemonResult()
+            }
         }
         .onChange(of: bridgeUpgrade.requested) { _, requested in
             if requested {
@@ -548,8 +544,8 @@ struct AgentTimelineView: View {
             ContentUnavailableView {
                 Label(title(code), systemImage: "text.bubble")
             } description: {
-                if codexNoSession != nil, let feedback = codexDaemonFeedback {
-                    Text(feedback)
+                if codexNoSession != nil, let outcome = codexDaemonStopOutcome {
+                    Text(outcome.message)
                 } else if let codexNoSession {
                     Text(Self.codexNoSessionExplanation(codexNoSession, code: code, agent: agent))
                 } else {
@@ -566,7 +562,15 @@ struct AgentTimelineView: View {
                 if let codexNoSession {
                     switch codexNoSession {
                     case .turnOffServer:
-                        if codexDaemonFeedback == nil && !codexDaemonErrorOccurred {
+                        if let outcome = codexDaemonStopOutcome {
+                            if outcome.errorOccurred {
+                                // The config step failed or the command never
+                                // ran; the manual fallback is the escape hatch.
+                                codexManualFallback
+                            } else if outcome.showsStopCommand {
+                                codexStopCommandFallback
+                            }
+                        } else {
                             Button {
                                 showsCodexDaemonConfirm = true
                             } label: {
@@ -578,12 +582,6 @@ struct AgentTimelineView: View {
                             .buttonStyle(.herdrPrimary)
                             .accessibilityIdentifier("timeline-codex-disable-daemon")
                             .disabled(isDisablingCodexDaemon)
-                        } else if codexDaemonErrorOccurred {
-                            // The config step failed or the command never ran;
-                            // the manual fallback is the escape hatch.
-                            codexManualFallback
-                        } else if codexDaemonShowsStopCommand {
-                            codexStopCommandFallback
                         }
                     case .upgradeBridge:
                         Button("Upgrade Herdcats Bridge") {
@@ -729,6 +727,33 @@ struct AgentTimelineView: View {
         }
     }
 
+    /// The recorded stop result for the current no-session episode. Keeps the
+    /// per-process outcome: `codex_daemon` events report only the daemon
+    /// process, so an updater-only failure is not contradicted by them.
+    struct CodexDaemonStopOutcome: Equatable {
+        let message: String
+        let errorOccurred: Bool
+        let showsStopCommand: Bool
+        /// The result reported the daemon process itself as still running
+        /// (stop_failed) or alive-but-unverifiable (unknown).
+        let daemonStillRunning: Bool
+
+        init(result: CodexDaemonConfigResult) {
+            self.message = CodexDaemonConfigResult.message(for: result)
+            self.errorOccurred = result.error != nil
+            self.showsStopCommand = CodexDaemonConfigResult.showsStopCommand(for: result)
+            self.daemonStillRunning = result.daemon == "stop_failed" || result.daemon == "unknown"
+        }
+
+        /// The stop command failed before any result came back.
+        init(errorDescription: String) {
+            self.message = errorDescription
+            self.errorOccurred = true
+            self.showsStopCommand = false
+            self.daemonStillRunning = false
+        }
+    }
+
     /// A stop result survives only within the unavailable episode it answered;
     /// once the pane is ready (or reconnecting) again, a later no-session
     /// episode must not inherit its feedback.
@@ -737,17 +762,15 @@ struct AgentTimelineView: View {
         return false
     }
 
-    /// Whether a fresh `codex_daemon` report contradicts a recorded stop
-    /// result. A result that says the server is off is superseded by a
-    /// running (or unverifiable) report; one that says it is still running —
-    /// stop_failed, unknown, or a config/transport error — is superseded by a
-    /// not_running report. Consistent reports (notably the `not_running`
-    /// re-emission after a successful stop) keep the result on screen.
-    static func codexDaemonResultIsStale(
-        errorOccurred: Bool, showsStopCommand: Bool, codexDaemon: String?
-    ) -> Bool {
-        guard let codexDaemon else { return false }
-        if errorOccurred || showsStopCommand {
+    /// Whether a fresh `codex_daemon` report retires a recorded stop result.
+    /// The event reports only the daemon process, so `not_running` can only
+    /// resolve a result that implicated the daemon itself — an error, or a
+    /// daemon stop_failed/unknown. A successful stop or an updater-only
+    /// failure is confirmed by `not_running` (the surviving updater may still
+    /// restart the daemon) and retires only when the daemon is alive again.
+    static func codexDaemonResultIsStale(outcome: CodexDaemonStopOutcome?, codexDaemon: String?) -> Bool {
+        guard let outcome, let codexDaemon else { return false }
+        if outcome.errorOccurred || outcome.daemonStillRunning {
             return codexDaemon == "not_running"
         }
         return codexDaemon == "running" || codexDaemon == "unknown"
@@ -973,9 +996,7 @@ struct AgentTimelineView: View {
     }
 
     private func clearCodexDaemonResult() {
-        codexDaemonFeedback = nil
-        codexDaemonErrorOccurred = false
-        codexDaemonShowsStopCommand = false
+        codexDaemonStopOutcome = nil
     }
 
     private func disableCodexDaemon() {
@@ -989,16 +1010,13 @@ struct AgentTimelineView: View {
                     owned: generation,
                     stopRunning: true
                 )
-                codexDaemonFeedback = CodexDaemonConfigResult.message(for: result)
-                codexDaemonErrorOccurred = (result.error != nil)
                 // No retry: the bridge re-emits timeline.unavailable when
                 // codex_daemon changes, and a re-run would clear this feedback,
                 // which tells the user to restart this pane's Codex.
-                codexDaemonShowsStopCommand = CodexDaemonConfigResult.showsStopCommand(for: result)
+                codexDaemonStopOutcome = CodexDaemonStopOutcome(result: result)
             } catch {
-                codexDaemonFeedback = "Could not turn off Codex's shared background server: \(error.localizedDescription)"
-                codexDaemonErrorOccurred = true
-                codexDaemonShowsStopCommand = false
+                codexDaemonStopOutcome = CodexDaemonStopOutcome(
+                    errorDescription: "Could not turn off Codex's shared background server: \(error.localizedDescription)")
             }
             isDisablingCodexDaemon = false
         }

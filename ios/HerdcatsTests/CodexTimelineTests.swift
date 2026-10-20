@@ -352,13 +352,15 @@ struct CodexTimelineGatingTests {
         }
         let state = AgentTimelineState()
         state.begin(owner: owner, paneId: "p-codex")
+        let stoppedOutcome = AgentTimelineView.CodexDaemonStopOutcome(
+            result: CodexDaemonConfigResult(status: "changed", backup: nil, error: nil, daemon: "stopped", updater: "stopped"))
 
         // Stop offered and run while the server is running.
         try state.consume(try unavailable(1, daemon: "running"), owner: owner)
         // The successful stop's "restart Codex" result survives the bridge's
         // not_running re-emission within the same episode.
         try state.consume(try unavailable(2, daemon: "not_running"), owner: owner)
-        #expect(!AgentTimelineView.codexDaemonResultIsStale(errorOccurred: false, showsStopCommand: false, codexDaemon: state.codexDaemon))
+        #expect(!AgentTimelineView.codexDaemonResultIsStale(outcome: stoppedOutcome, codexDaemon: state.codexDaemon))
 
         // The user restarts Codex: the pane becomes ready, ending the episode,
         // so a later no-session state starts without the old result.
@@ -368,7 +370,7 @@ struct CodexTimelineGatingTests {
         try state.consume(try unavailable(4, daemon: "running"), owner: owner)
         #expect(AgentTimelineView.codexDaemonResultIsCurrent(phase: state.phase))
         // A fresh running report contradicts the recorded "server is off" result.
-        #expect(AgentTimelineView.codexDaemonResultIsStale(errorOccurred: false, showsStopCommand: false, codexDaemon: state.codexDaemon))
+        #expect(AgentTimelineView.codexDaemonResultIsStale(outcome: stoppedOutcome, codexDaemon: state.codexDaemon))
     }
 
     @Test func codexPaneDisplaysHelperTooOldState() {
@@ -918,6 +920,15 @@ struct CodexDaemonConfigTests {
     }
 
     @Test func stopResultIsRetiredAtEpisodeBoundariesAndContradictions() {
+        func outcome(daemon: String?, updater: String? = nil, error: String? = nil)
+            -> AgentTimelineView.CodexDaemonStopOutcome
+        {
+            AgentTimelineView.CodexDaemonStopOutcome(
+                result: CodexDaemonConfigResult(
+                    status: error == nil ? "changed" : nil, backup: nil, error: error,
+                    daemon: daemon, updater: updater))
+        }
+
         // The result survives only within the unavailable episode it answered.
         #expect(AgentTimelineView.codexDaemonResultIsCurrent(phase: .unavailable("session_reference_unavailable")))
         #expect(AgentTimelineView.codexDaemonResultIsCurrent(phase: .unavailable("ambiguous_session")))
@@ -927,20 +938,41 @@ struct CodexDaemonConfigTests {
 
         // A successful stop stays on screen through the bridge's not_running
         // re-emission (and when no daemon value is reported)...
-        #expect(!AgentTimelineView.codexDaemonResultIsStale(errorOccurred: false, showsStopCommand: false, codexDaemon: "not_running"))
-        #expect(!AgentTimelineView.codexDaemonResultIsStale(errorOccurred: false, showsStopCommand: false, codexDaemon: nil))
+        let stopped = outcome(daemon: "stopped", updater: "stopped")
+        #expect(!AgentTimelineView.codexDaemonResultIsStale(outcome: stopped, codexDaemon: "not_running"))
+        #expect(!AgentTimelineView.codexDaemonResultIsStale(outcome: stopped, codexDaemon: nil))
         // ...but the server coming back (or being unverifiable) retires it, so
         // the Turn off button returns instead of stale "server is off" copy.
-        #expect(AgentTimelineView.codexDaemonResultIsStale(errorOccurred: false, showsStopCommand: false, codexDaemon: "running"))
-        #expect(AgentTimelineView.codexDaemonResultIsStale(errorOccurred: false, showsStopCommand: false, codexDaemon: "unknown"))
+        #expect(AgentTimelineView.codexDaemonResultIsStale(outcome: stopped, codexDaemon: "running"))
+        #expect(AgentTimelineView.codexDaemonResultIsStale(outcome: stopped, codexDaemon: "unknown"))
 
-        // "Still running" results (stop_failed, unverified, or a config/
-        // transport error) stay until a not_running report retires them.
-        for recorded in [(errorOccurred: true, showsStopCommand: false), (errorOccurred: false, showsStopCommand: true)] {
-            #expect(!AgentTimelineView.codexDaemonResultIsStale(errorOccurred: recorded.errorOccurred, showsStopCommand: recorded.showsStopCommand, codexDaemon: "running"))
-            #expect(!AgentTimelineView.codexDaemonResultIsStale(errorOccurred: recorded.errorOccurred, showsStopCommand: recorded.showsStopCommand, codexDaemon: "unknown"))
-            #expect(!AgentTimelineView.codexDaemonResultIsStale(errorOccurred: recorded.errorOccurred, showsStopCommand: recorded.showsStopCommand, codexDaemon: nil))
-            #expect(AgentTimelineView.codexDaemonResultIsStale(errorOccurred: recorded.errorOccurred, showsStopCommand: recorded.showsStopCommand, codexDaemon: "not_running"))
+        // A result that implicated the daemon process itself (stop_failed or
+        // unknown) is resolved by a not_running report, and so are config and
+        // transport errors (nothing was stopped).
+        for implicated in [outcome(daemon: "stop_failed", updater: "stopped"), outcome(daemon: "unknown", updater: "stopped")] {
+            #expect(implicated.daemonStillRunning)
+            #expect(!AgentTimelineView.codexDaemonResultIsStale(outcome: implicated, codexDaemon: "running"))
+            #expect(AgentTimelineView.codexDaemonResultIsStale(outcome: implicated, codexDaemon: "not_running"))
+        }
+        for failed in [outcome(daemon: nil, error: "config_invalid"),
+                       AgentTimelineView.CodexDaemonStopOutcome(errorDescription: "Could not turn off Codex's shared background server: timed out")] {
+            #expect(failed.errorOccurred)
+            #expect(!AgentTimelineView.codexDaemonResultIsStale(outcome: failed, codexDaemon: "running"))
+            #expect(AgentTimelineView.codexDaemonResultIsStale(outcome: failed, codexDaemon: "not_running"))
+        }
+
+        // An updater-only failure is NOT retired by the daemon-only not_running
+        // event: the daemon is stopped, and the surviving or unverifiable
+        // updater may restart it. The failure copy and Copy stop command stay
+        // until the daemon is reported alive again or the episode ends.
+        for updater in ["stop_failed", "unknown"] {
+            let updaterFailed = outcome(daemon: "stopped", updater: updater)
+            #expect(updaterFailed.showsStopCommand)
+            #expect(!updaterFailed.daemonStillRunning)
+            #expect(!AgentTimelineView.codexDaemonResultIsStale(outcome: updaterFailed, codexDaemon: "not_running"))
+            #expect(!AgentTimelineView.codexDaemonResultIsStale(outcome: updaterFailed, codexDaemon: nil))
+            #expect(AgentTimelineView.codexDaemonResultIsStale(outcome: updaterFailed, codexDaemon: "running"))
+            #expect(AgentTimelineView.codexDaemonResultIsStale(outcome: updaterFailed, codexDaemon: "unknown"))
         }
     }
 }
