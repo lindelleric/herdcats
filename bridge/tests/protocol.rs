@@ -75,14 +75,26 @@ impl Server {
             task: Some(task),
         }
     }
+    // Never truncate in place: fs::write empties the file before writing, and
+    // the bridge's watcher can snapshot that empty file. Growth is appended
+    // like a live transcript; anything else is replaced via write-then-rename.
     fn transcript(&self, session: &str, text: &str) {
-        fs::write(
-            self.root
-                .join("projects/one")
-                .join(format!("{session}.jsonl")),
-            text,
-        )
-        .unwrap();
+        let dir = self.root.join("projects/one");
+        let path = dir.join(format!("{session}.jsonl"));
+        if let Ok(current) = fs::read_to_string(&path) {
+            if let Some(suffix) = text.strip_prefix(current.as_str()) {
+                fs::OpenOptions::new()
+                    .append(true)
+                    .open(&path)
+                    .unwrap()
+                    .write_all(suffix.as_bytes())
+                    .unwrap();
+                return;
+            }
+        }
+        let tmp = dir.join(format!(".{session}.jsonl.tmp"));
+        fs::write(&tmp, text).unwrap();
+        fs::rename(&tmp, &path).unwrap();
     }
 }
 impl Drop for Server {

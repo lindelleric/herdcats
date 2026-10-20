@@ -743,7 +743,10 @@ impl StatusPoll {
     }
 
     fn observe(&mut self, pid_file: &Path, codex_dir: &Path) {
-        let status = check_process(pid_file, codex_dir);
+        self.record(check_process(pid_file, codex_dir));
+    }
+
+    fn record(&mut self, status: ProcessStatus) {
         self.streak = if status != ProcessStatus::Running && status == self.status {
             self.streak + 1
         } else {
@@ -1273,4 +1276,56 @@ fn verify_process_identity(
     _expected_start_usec: Option<i64>,
 ) -> std::result::Result<bool, &'static str> {
     Err("unsupported_platform")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn poll_from(start: ProcessStatus, observed: &[ProcessStatus]) -> StatusPoll {
+        let mut poll = StatusPoll {
+            status: start,
+            streak: 0,
+        };
+        for &status in observed {
+            poll.record(status);
+        }
+        poll
+    }
+
+    #[test]
+    fn single_non_running_observation_is_not_believed() {
+        use ProcessStatus::*;
+        for flap in [Unknown, NotRunning] {
+            let poll = poll_from(Running, &[flap]);
+            assert!(!poll.done());
+            assert_eq!(poll.confirmed(), Running);
+
+            let poll = poll_from(Running, &[flap, Running]);
+            assert!(!poll.done());
+            assert_eq!(poll.confirmed(), Running);
+        }
+    }
+
+    #[test]
+    fn two_consecutive_identical_non_running_observations_confirm() {
+        use ProcessStatus::*;
+        for gone in [Unknown, NotRunning] {
+            let poll = poll_from(Running, &[gone, gone]);
+            assert!(poll.done());
+            assert_eq!(poll.confirmed(), gone);
+        }
+    }
+
+    #[test]
+    fn differing_non_running_observations_restart_the_streak() {
+        use ProcessStatus::*;
+        let poll = poll_from(Running, &[Unknown, NotRunning]);
+        assert!(!poll.done());
+        assert_eq!(poll.confirmed(), Running);
+
+        let poll = poll_from(Running, &[Unknown, NotRunning, NotRunning]);
+        assert!(poll.done());
+        assert_eq!(poll.confirmed(), NotRunning);
+    }
 }

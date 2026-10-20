@@ -1172,8 +1172,8 @@ fn test_stop_running_mismatched_daemon_reports_unknown_and_no_stop() {
 }
 
 #[test]
-fn test_stop_running_live_updater_with_transient_unknown_blocks_daemon_stop() {
-    let temp = TempCodex::new("stop-updater-flap");
+fn test_stop_running_live_updater_ignoring_term_blocks_daemon_stop() {
+    let temp = TempCodex::new("stop-updater-ignores-term");
     let stop_bin = temp
         .path
         .join("packages/app-server-daemon/current/bin/codex");
@@ -1206,16 +1206,15 @@ rm -f "$CODEX_HOME/app-server-daemon/daemon.pid"
     );
 
     let updater_file = temp.path.join("app-server-daemon/daemon-updater.pid");
-    let saved_file = temp.path.join("updater-saved.json");
-    let flap_marker = temp.path.join("updater-flapped");
-    // The first TERM produces one Unknown observation, then restores the
-    // verified pid file. The updater ignores subsequent TERM and stays alive.
+    let term_marker = temp.path.join("updater-got-term");
+    // The updater handles TERM but stays alive with its pid file untouched,
+    // which must block `daemon stop`. A transiently unreadable pid file is
+    // not simulated here: any such window is at the scheduler's mercy on a
+    // loaded runner, so the rule that a lone non-Running observation is not
+    // believed is pinned by the StatusPoll unit tests in src/codex_config.rs.
     let handler = format!(
-        r#"trap "" TERM; printf invalid > "{}"; touch "{}"; sleep 0.12; cp "{}" "{}""#,
-        updater_file.display(),
-        flap_marker.display(),
-        saved_file.display(),
-        updater_file.display(),
+        r#"trap "" TERM; touch "{}""#,
+        term_marker.display()
     );
     let updater = spawn_orphan_in_packages(
         &temp.path,
@@ -1231,7 +1230,6 @@ rm -f "$CODEX_HOME/app-server-daemon/daemon.pid"
         sec,
         usec,
     );
-    fs::copy(&updater_file, &saved_file).unwrap();
     wait_for_check_status(&daemon_file, &temp.path, ProcessStatus::Running, "running");
     wait_for_check_status(&updater_file, &temp.path, ProcessStatus::Running, "running");
 
@@ -1240,7 +1238,7 @@ rm -f "$CODEX_HOME/app-server-daemon/daemon.pid"
         Duration::from_secs(1),
         Duration::from_millis(400),
     );
-    assert!(flap_marker.exists(), "updater must have handled TERM");
+    assert!(term_marker.exists(), "updater must have handled TERM");
     assert!(
         !temp.path.join("stop-calls").exists(),
         "daemon stop ran while updater was alive"
