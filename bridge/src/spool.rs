@@ -30,11 +30,28 @@ pub fn record_cli() {
         return;
     }
     if let (Some(agent), Some(dir)) = (agent, resolve_spool_dir()) {
+        if agent == Agent::Codex && !codex_recording_safe() {
+            let _ = io::copy(&mut input, &mut io::sink());
+            return;
+        }
         let pane = std::env::var("HERDR_PANE_ID").ok();
         let _ = record_in_dir(agent, &dir, &mut input, pane.as_deref());
     } else {
         let _ = io::copy(&mut input, &mut io::sink());
     }
+}
+
+// Shared daemons inherit the launching pane's environment. Refuse to attribute
+// their requests, including when process identity or configuration is unknown.
+fn codex_recording_safe() -> bool {
+    use crate::codex_config::{self, ProcessStatus};
+    let Some(dir) = codex_config::resolve_codex_dir() else {
+        return false;
+    };
+    let status = codex_config::daemon_status_in_dir(&dir);
+    status.auto_start == Some(false)
+        && status.daemon == ProcessStatus::NotRunning
+        && status.updater == ProcessStatus::NotRunning
 }
 
 /// Record at most one request. All errors are returned to the silent caller.
@@ -103,9 +120,48 @@ pub fn record_in_dir(
     line.push(b'\n');
     ensure_dir(dir)?;
     let path = dir.join(format!("{}-{session}.jsonl", agent.name()));
+    // Lock a stable sidecar inode: the data inode changes during trim's rename.
+    // Keep the sidecar after releasing it so waiting processes share the lock.
+    let _lock = SessionLock::acquire(&path.with_extension("lock"))?;
     let mut file = open_file(&path, false)?;
     file.write_all(&line)?;
     trim(dir, &path, &mut file)
+}
+
+struct SessionLock(File);
+impl SessionLock {
+    fn acquire(path: &Path) -> io::Result<Self> {
+        let file = open_file(path, false)?;
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            loop {
+                // SAFETY: file owns a valid descriptor for the lock's lifetime.
+                if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+                    break;
+                }
+                let error = io::Error::last_os_error();
+                if error.kind() != io::ErrorKind::Interrupted {
+                    return Err(error);
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        return Err(io::Error::other("spool_lock_unsupported"));
+        Ok(Self(file))
+    }
+}
+impl Drop for SessionLock {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            // SAFETY: the descriptor remains valid until after Drop returns.
+            unsafe {
+                libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
+            }
+        }
+    }
 }
 
 #[derive(Default)]

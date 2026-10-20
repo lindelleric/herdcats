@@ -334,6 +334,7 @@ impl Temp {
         command
             .args(args)
             .env("HOME", &self.0)
+            .env("CODEX_HOME", self.0.join("codex"))
             .env("XDG_STATE_HOME", self.0.join("state"))
             .env("HERDR_PANE_ID", "fixture:pane")
             .env_remove("HERDR_ENV");
@@ -383,6 +384,14 @@ fn recorder_captures_real_fixture_payloads_and_confirms_status() {
         ),
     ] {
         let t = Temp::new();
+        if agent == "codex" {
+            fs::create_dir_all(t.0.join("codex")).unwrap();
+            fs::write(
+                t.0.join("codex/config.toml"),
+                "[features]\ndaemon_auto_start = false\n",
+            )
+            .unwrap();
+        }
         for line in fixture.lines() {
             let fixture: Value = serde_json::from_str(line).unwrap();
             let payload = &fixture["payload"];
@@ -452,6 +461,12 @@ fn recorder_is_silent_on_invalid_input_arguments_and_outside_herdr() {
 #[test]
 fn recorder_trims_to_newest_records_by_count_and_bytes() {
     let t = Temp::new();
+    fs::create_dir_all(t.0.join("codex")).unwrap();
+    fs::write(
+        t.0.join("codex/config.toml"),
+        "[features]\ndaemon_auto_start = false\n",
+    )
+    .unwrap();
     for i in 0..70 {
         let payload = json!({"session_id":"count","hook_event_name":"PermissionRequest","i":i});
         t.record(
@@ -542,6 +557,12 @@ fn recorder_refuses_symlinks_and_filesystem_errors_silently() {
 fn recorder_handles_unreadable_stdin_non_utf8_args_and_home_fallback() {
     use std::{ffi::OsString, os::unix::ffi::OsStringExt, process::Stdio};
     let t = Temp::new();
+    fs::create_dir_all(t.0.join("codex")).unwrap();
+    fs::write(
+        t.0.join("codex/config.toml"),
+        "[features]\ndaemon_auto_start = false\n",
+    )
+    .unwrap();
     let output = t
         .record_command(&["hook", "record", "--agent", "claude"], true)
         .stdin(Stdio::from(fs::File::open(&t.0).unwrap()))
@@ -627,6 +648,12 @@ fn recorder_concurrent_appends_are_complete_json_lines() {
 #[test]
 fn recorder_marks_single_record_that_exceeds_spool_budget() {
     let t = Temp::new();
+    fs::create_dir_all(t.0.join("codex")).unwrap();
+    fs::write(
+        t.0.join("codex/config.toml"),
+        "[features]\ndaemon_auto_start = false\n",
+    )
+    .unwrap();
     let payload = json!({"session_id":"budget","data":"x".repeat(300*1024)});
     t.record(
         &["hook", "record", "--agent", "codex"],
@@ -766,4 +793,72 @@ fn serve_prunes_at_start_and_ignores_cleanup_errors() {
     fs::write(t.spool(), "not a directory").unwrap();
     serve();
     assert_eq!(fs::read_to_string(t.spool()).unwrap(), "not a directory");
+}
+
+#[test]
+fn install_removes_stale_recorder_when_current_entry_exists() {
+    for agent in ["claude", "codex"] {
+        let t = Temp::new();
+        t.run("install", agent);
+        let p = t.file(agent);
+        let mut v: Value = serde_json::from_slice(&fs::read(&p).unwrap()).unwrap();
+        let current = v["hooks"]["PermissionRequest"][0].clone();
+        v["hooks"]["PermissionRequest"].as_array_mut().unwrap().push(json!({"hooks":[{"type":"command","command":format!("/old/bridge hook record --agent {agent}")}]}));
+        fs::write(&p, serde_json::to_vec(&v).unwrap()).unwrap();
+        t.run("install", agent);
+        let v: Value = serde_json::from_slice(&fs::read(&p).unwrap()).unwrap();
+        assert_eq!(v["hooks"]["PermissionRequest"], json!([current]));
+    }
+}
+
+#[test]
+fn codex_recorder_requires_disabled_daemon() {
+    let t = Temp::new();
+    t.record(
+        &["hook", "record", "--agent", "codex"],
+        br#"{"session_id":"daemon"}"#,
+        true,
+    );
+    assert!(!t.spool().exists());
+}
+
+#[test]
+fn concurrent_trimming_retains_all_new_requests() {
+    use std::{io::Write, process::Stdio};
+    let t = Temp::new();
+    for i in 0..64 {
+        t.record(
+            &["hook", "record", "--agent", "claude"],
+            &serde_json::to_vec(&json!({"session_id":"trim","old":i})).unwrap(),
+            true,
+        );
+    }
+    let mut children = vec![];
+    for i in 0..32 {
+        let mut child = t
+            .record_command(&["hook", "record", "--agent", "claude"], true)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(&serde_json::to_vec(&json!({"session_id":"trim","new":i})).unwrap())
+            .unwrap();
+        children.push(child);
+    }
+    for child in children {
+        assert!(child.wait_with_output().unwrap().status.success());
+    }
+    let records = t.records("claude", "trim");
+    assert_eq!(records.len(), 64);
+    let mut ids: Vec<_> = records
+        .iter()
+        .filter_map(|r| r["payload"]["new"].as_u64())
+        .collect();
+    ids.sort();
+    assert_eq!(ids, (0..32).collect::<Vec<_>>());
 }

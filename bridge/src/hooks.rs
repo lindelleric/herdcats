@@ -1,6 +1,6 @@
 //! Manage non-deciding PermissionRequest hooks without shifting existing trust keys.
 use crate::codex_config;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     fs,
     io::{self, BufRead, Write},
@@ -283,17 +283,21 @@ fn install_inner(agent: Agent, dir: &Path, spool: &Path) -> Result<HooksResult> 
     let path = dir.join(agent.filename());
     let (mut doc, meta) = read_document(&path)?;
     let command = recorder_command(agent)?;
-    if groups(&doc).iter().any(|g| {
-        g["hooks"].as_array().is_some_and(|hs| {
-            hs.iter()
-                .any(|h| h.get("command").and_then(Value::as_str) == Some(&command))
-        })
-    }) {
+    let owned: Vec<_> = groups(&doc)
+        .iter()
+        .flat_map(|g| g["hooks"].as_array().unwrap())
+        .filter(|h| ours(h, agent))
+        .collect();
+    if owned.len() == 1 && owned[0]["command"].as_str() == Some(&command) {
         return Ok(HooksResult::state(
             "installed",
             spool_confirmed(agent, spool),
         ));
     }
+    // Prefer an already current recorder, even when a stale entry precedes it.
+    let keep_current = owned
+        .iter()
+        .any(|h| h["command"].as_str() == Some(&command));
     let hooks = doc
         .as_object_mut()
         .ok_or("hooks_invalid_json")?
@@ -315,7 +319,7 @@ fn install_inner(agent: Agent, dir: &Path, spool: &Path) -> Result<HooksResult> 
             if !ours(handler, agent) {
                 return true;
             }
-            if replaced {
+            if replaced || (keep_current && handler["command"].as_str() != Some(&command)) {
                 return false;
             }
             handler["command"] = Value::String(command.clone());
