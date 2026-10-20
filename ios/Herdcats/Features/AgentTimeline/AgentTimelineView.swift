@@ -109,9 +109,7 @@ struct AgentTimelineView: View {
                                     }
                             }
                             if conversationItems.isEmpty {
-                                ContentUnavailableView(
-                                    "No messages yet", systemImage: "text.bubble",
-                                    description: Text("Messages from this session will appear here."))
+                                ContentUnavailableView("No messages yet", systemImage: "text.bubble")
                             }
                             ForEach(conversationItems) { item in
                                 let scope = contentScope
@@ -520,7 +518,7 @@ struct AgentTimelineView: View {
             ContentUnavailableView {
                 Label("Timeline disconnected", systemImage: "wifi.slash")
             } description: {
-                Text(connectionState.isReady ? "The history connection ended. Check again to reload messages." : "Reconnect to load current session messages.")
+                if !connectionState.isReady { Text("Reconnect to load current session messages.") }
             } actions: {
                 Button("Check again") { retry += 1 }
                     .buttonStyle(.herdrSecondary)
@@ -530,9 +528,7 @@ struct AgentTimelineView: View {
         case .unavailable("transcript_unavailable"):
             // Claude writes its transcript only after the first prompt; the
             // helper keeps polling and swaps in the timeline once it exists.
-            ContentUnavailableView(
-                "No messages yet", systemImage: "text.bubble",
-                description: Text("Send a message below to start this session."))
+            ContentUnavailableView("Send a message to start", systemImage: "text.bubble")
         case .unavailable(let code):
             let isCodex = agent == "codex"
             let isSupportedAgent = canPinnedInstallerSupportAgent
@@ -552,12 +548,14 @@ struct AgentTimelineView: View {
                 : nil
 
             ContentUnavailableView {
-                Label(title(code), systemImage: "text.bubble")
+                Label(codexNoSession.map(Self.codexNoSessionTitle) ?? title(code), systemImage: "text.bubble")
             } description: {
                 if codexNoSession != nil, let outcome = codexDaemonStopOutcome {
                     Text(outcome.message)
                 } else if let codexNoSession {
-                    Text(Self.codexNoSessionExplanation(codexNoSession, code: code, agent: agent))
+                    if let explanation = Self.codexNoSessionExplanation(codexNoSession, code: code, agent: agent) {
+                        Text(explanation)
+                    }
                 } else {
                     Text(explanation(code))
                 }
@@ -602,7 +600,10 @@ struct AgentTimelineView: View {
                         }
                     }
                 }
-                if Self.showsPaneCheckAgain(code: code, agent: agent, bridgeVersion: bridgeVersion) {
+                // The bridge re-resolves every poll, so a session that starts
+                // replaces this state on its own; retrying adds nothing.
+                if codexNoSession != .waitForSession,
+                   Self.showsPaneCheckAgain(code: code, agent: agent, bridgeVersion: bridgeVersion) {
                     Button("Check again") { retry += 1 }.buttonStyle(.herdrSecondary)
                         .accessibilityIdentifier("timeline-helper-retry")
                 }
@@ -719,15 +720,26 @@ struct AgentTimelineView: View {
 
     static let codexDaemonRunningExplanation =
         "Codex's shared background server is running, so Herdcats can't tell which session belongs to this pane."
-    static let codexDaemonOffExplanation =
-        "Codex reports its session after the first message. Send a message below to start. If Timeline still doesn't appear, quit Codex in this pane and start it again."
+
+    /// The title says what the user has to do: "Waiting" only fits when the
+    /// session will arrive on its own, which it never does while the shared
+    /// server is running.
+    static func codexNoSessionTitle(_ action: CodexNoSessionAction) -> String {
+        switch action {
+        case .turnOffServer, .upgradeBridge: return "Codex session not identified"
+        case .waitForSession: return "Send a message to start"
+        case .manualFallback: return "Waiting for Codex session"
+        }
+    }
     static let codexDaemonUpgradeExplanation =
         "Upgrade Herdcats Bridge to turn off Codex's shared background server from here."
 
-    static func codexNoSessionExplanation(_ action: CodexNoSessionAction, code: String, agent: String?) -> String {
+    /// The title already says what to do when the server is off, so that
+    /// state has no body.
+    static func codexNoSessionExplanation(_ action: CodexNoSessionAction, code: String, agent: String?) -> String? {
         switch action {
         case .turnOffServer: return codexDaemonRunningExplanation
-        case .waitForSession: return codexDaemonOffExplanation
+        case .waitForSession: return nil
         case .upgradeBridge: return codexDaemonUpgradeExplanation
         case .manualFallback: return explanation(code, agent: agent)
         }
@@ -942,10 +954,10 @@ struct AgentTimelineView: View {
         case "helper_missing":
             if isCodex {
                 return canSupportCodex
-                    ? "Install Herdcats Bridge to see this session as native messages. Terminal is available now."
+                    ? "Install Herdcats Bridge to see this session as native messages."
                     : "This version of Herdcats can't install a version of Herdcats Bridge that supports Codex yet."
             }
-            return "Install Herdcats Bridge to see this session as native messages. Terminal is available now."
+            return "Install Herdcats Bridge to see this session as native messages."
         case "helper_update_required":
             if let agent, !supportedAgents.contains(agent) {
                 return "This version of Herdcats can't install a version of Herdcats Bridge that supports \(agent.capitalized) yet."
@@ -966,19 +978,19 @@ struct AgentTimelineView: View {
                     return "This version of Herdcats can't install a version of Herdcats Bridge that supports Codex yet."
                 }
             }
-            return "Timeline is not available for this agent yet. You can still send messages below or use Terminal."
+            return "Timeline isn't available for this agent yet."
         case "routed_host_unsupported":
             return routedHostExplanation(gatewayHost: gatewayHost, machineLabel: machineLabel)
         case "session_reference_unavailable", "ambiguous_session", "invalid_session_reference":
             if isCodex {
-                return "Codex reports its session after the first message. Send a message below to start. If Timeline still doesn't appear after Codex replies, this Codex is using its shared daemon. Restart it with `codex --no-daemon`."
+                return "If this stays after Codex replies, restart Codex with `codex --no-daemon`."
             }
-            return "This pane has no verified session history. Compose and Terminal remain available."
+            return "This pane has no verified session history."
         case "session_cwd_mismatch":
             if isCodex {
                 return "The session folder does not match the pane’s folder, so Herdcats will not guess."
             }
-            return "This pane's session folder does not match the verified session. Compose and Terminal remain available."
+            return "This pane's session folder does not match the verified session."
         case "transcript_root_unavailable":
             return "Session history is unavailable on this host."
         case "source_changing": return "Session history is being updated. Try again in a moment."
@@ -986,10 +998,10 @@ struct AgentTimelineView: View {
             if isNeedsUpgrade(code: code, agent: agent, bridgeVersion: installedVersion, supportedAgents: supportedAgents) {
                 return "Herdcats Bridge cannot read an oversized session record. Upgrade Herdcats Bridge to reload history."
             }
-            return "Herdcats Bridge cannot read an oversized session record. You can still send messages below or use Terminal."
-        case "source_too_large": return "This session exceeds the current history size limit. Compose and Terminal remain available."
+            return "Herdcats Bridge cannot read an oversized session record."
+        case "source_too_large": return "This session exceeds the current history size limit."
         case "unsafe_transcript_path", "invalid_transcript", "session_mismatch":
-            return "Session history could not be read safely. Compose and Terminal remain available."
+            return "Session history could not be read safely."
         case "herdr_unavailable": return "Herdcats Bridge cannot reach Herdr on this host. Check the host session, then try again."
         case "unsupported_herdr_protocol", "protocol_mismatch":
             return "Herdcats Bridge and the Herdr version are not compatible."

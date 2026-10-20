@@ -389,8 +389,8 @@ struct CodexTimelineGatingTests {
         // When Codex is supported by pinned installer (0.2.2 pinned release with HostHelperSetupPlan.agents == ["claude", "codex"])
         // Without an installedVersion recorded yet:
         #expect(view.explanation("helper_update_required") == "The Herdcats Bridge on this computer can't show Codex conversations. Upgrade to 0.2.2.")
-        #expect(view.explanation("unsupported_agent") == "Timeline is not available for this agent yet. You can still send messages below or use Terminal.")
-        #expect(view.explanation("helper_missing") == "Install Herdcats Bridge to see this session as native messages. Terminal is available now.")
+        #expect(view.explanation("unsupported_agent") == "Timeline isn't available for this agent yet.")
+        #expect(view.explanation("helper_missing") == "Install Herdcats Bridge to see this session as native messages.")
 
         // Explicitly test both ways with injected supportedAgents:
         // 1. Without Codex in supportedAgents
@@ -404,14 +404,14 @@ struct CodexTimelineGatingTests {
         #expect(AgentTimelineView.explanation("helper_update_required", agent: "codex", installedVersion: "0.1.4", supportedAgents: supportedWithCodex) == "Herdcats Bridge 0.1.4 on this computer can't show Codex conversations. Upgrade to 0.2.2.")
         #expect(AgentTimelineView.explanation("helper_update_required", agent: "codex", installedVersion: nil, supportedAgents: supportedWithCodex) == "The Herdcats Bridge on this computer can't show Codex conversations. Upgrade to 0.2.2.")
         #expect(AgentTimelineView.explanation("unsupported_agent", agent: "codex", installedVersion: "0.1.4", supportedAgents: supportedWithCodex) == "Herdcats Bridge 0.1.4 on this computer can't show Codex conversations. Upgrade to 0.2.2.")
-        #expect(AgentTimelineView.explanation("unsupported_agent", agent: "codex", installedVersion: nil, supportedAgents: supportedWithCodex) == "Timeline is not available for this agent yet. You can still send messages below or use Terminal.")
-        #expect(AgentTimelineView.explanation("helper_missing", agent: "codex", supportedAgents: supportedWithCodex) == "Install Herdcats Bridge to see this session as native messages. Terminal is available now.")
+        #expect(AgentTimelineView.explanation("unsupported_agent", agent: "codex", installedVersion: nil, supportedAgents: supportedWithCodex) == "Timeline isn't available for this agent yet.")
+        #expect(AgentTimelineView.explanation("helper_missing", agent: "codex", supportedAgents: supportedWithCodex) == "Install Herdcats Bridge to see this session as native messages.")
 
         // 3. Claude with and without installedVersion
         #expect(AgentTimelineView.explanation("helper_update_required", agent: "claude", installedVersion: "0.1.4", supportedAgents: unsupportedAgents) == "Herdcats Bridge 0.1.4 on this computer can't show session images. Upgrade to 0.2.2.")
         #expect(AgentTimelineView.explanation("helper_update_required", agent: "claude", installedVersion: nil, supportedAgents: unsupportedAgents) == "The Herdcats Bridge on this computer can't show session images. Upgrade to 0.2.2.")
-        #expect(AgentTimelineView.explanation("unsupported_agent", agent: "claude", supportedAgents: unsupportedAgents) == "Timeline is not available for this agent yet. You can still send messages below or use Terminal.")
-        #expect(AgentTimelineView.explanation("helper_missing", agent: "claude", supportedAgents: unsupportedAgents) == "Install Herdcats Bridge to see this session as native messages. Terminal is available now.")
+        #expect(AgentTimelineView.explanation("unsupported_agent", agent: "claude", supportedAgents: unsupportedAgents) == "Timeline isn't available for this agent yet.")
+        #expect(AgentTimelineView.explanation("helper_missing", agent: "claude", supportedAgents: unsupportedAgents) == "Install Herdcats Bridge to see this session as native messages.")
 
         // 4. Grammar for fallback
         #expect(AgentTimelineView.explanation("unknown_code", agent: "codex") == "Check that the optional Herdcats Bridge is available on your host, then try again.")
@@ -613,7 +613,7 @@ struct CodexTimelineGatingTests {
         let explanation = view.explanation("session_reference_unavailable")
         #expect(
             explanation
-            == "Codex reports its session after the first message. Send a message below to start. If Timeline still doesn't appear after Codex replies, this Codex is using its shared daemon. Restart it with `codex --no-daemon`."
+            == "If this stays after Codex replies, restart Codex with `codex --no-daemon`."
         )
         // Composer remains usable when session reference is unavailable (identity is nil before first message)
         #expect(TimelineComposePolicy.canCompose(identity: nil, paneId: "p-codex", status: nil, connected: true))
@@ -713,17 +713,23 @@ struct CodexDaemonConfigTests {
         #expect(AgentTimelineView.codexNoSessionAction(agent: nil, code: "session_reference_unavailable", route: nil, capabilities: stopCaps, codexDaemon: "running") == .manualFallback)
     }
 
+    @Test func codexNoSessionTitlesMatchTheAction() {
+        #expect(AgentTimelineView.codexNoSessionTitle(.turnOffServer) == "Codex session not identified")
+        #expect(AgentTimelineView.codexNoSessionTitle(.upgradeBridge) == "Codex session not identified")
+        #expect(AgentTimelineView.codexNoSessionTitle(.waitForSession) == "Send a message to start")
+        #expect(AgentTimelineView.codexNoSessionTitle(.manualFallback) == "Waiting for Codex session")
+    }
+
     @Test func codexNoSessionExplanationsMatchTheAction() {
         #expect(AgentTimelineView.codexNoSessionExplanation(.turnOffServer, code: "session_reference_unavailable", agent: "codex")
             == "Codex's shared background server is running, so Herdcats can't tell which session belongs to this pane.")
-        #expect(AgentTimelineView.codexNoSessionExplanation(.waitForSession, code: "session_reference_unavailable", agent: "codex")
-            == "Codex reports its session after the first message. Send a message below to start. If Timeline still doesn't appear, quit Codex in this pane and start it again.")
+        #expect(AgentTimelineView.codexNoSessionExplanation(.waitForSession, code: "session_reference_unavailable", agent: "codex") == nil)
         #expect(AgentTimelineView.codexNoSessionExplanation(.upgradeBridge, code: "ambiguous_session", agent: "codex")
             == "Upgrade Herdcats Bridge to turn off Codex's shared background server from here.")
         // 3C keeps today's manual-fallback copy verbatim.
         let manual = AgentTimelineView.codexNoSessionExplanation(.manualFallback, code: "invalid_session_reference", agent: "codex")
         #expect(manual == AgentTimelineView.explanation("invalid_session_reference", agent: "codex"))
-        #expect(manual.contains("codex --no-daemon"))
+        #expect(manual?.contains("codex --no-daemon") == true)
     }
 
     @Test func statusAndErrorMessageMapping() {
