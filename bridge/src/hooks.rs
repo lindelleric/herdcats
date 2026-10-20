@@ -215,7 +215,20 @@ fn status_inner(agent: Agent, dir: &Path, spool: &Path) -> Result<HooksResult> {
     let (doc, _) = read_document(&path)?;
     let command = recorder_command(agent)?;
     let confirmed = spool_confirmed(agent, spool);
-    let mut stale = false;
+    // Status drives cleanup decisions: inspect all owned entries before
+    // returning the current recorder's trust state, regardless of their order.
+    let owned: Vec<_> = groups(&doc)
+        .iter()
+        .flat_map(|g| g["hooks"].as_array().unwrap())
+        .filter(|h| ours(h, agent))
+        .collect();
+    if owned.len() > 1
+        || owned
+            .iter()
+            .any(|h| h["command"].as_str() != Some(&command))
+    {
+        return Ok(HooksResult::state("stale", confirmed));
+    }
     for (g, group) in groups(&doc).iter().enumerate() {
         for (h, handler) in group["hooks"]
             .as_array()
@@ -224,10 +237,6 @@ fn status_inner(agent: Agent, dir: &Path, spool: &Path) -> Result<HooksResult> {
             .enumerate()
         {
             if !ours(handler, agent) {
-                continue;
-            }
-            if handler["command"].as_str() != Some(&command) {
-                stale = true;
                 continue;
             }
             let state = if agent == Agent::Claude {
@@ -268,10 +277,7 @@ fn status_inner(agent: Agent, dir: &Path, spool: &Path) -> Result<HooksResult> {
             return Ok(HooksResult::state(state, confirmed));
         }
     }
-    Ok(HooksResult::state(
-        if stale { "stale" } else { "missing" },
-        confirmed,
-    ))
+    Ok(HooksResult::state("missing", confirmed))
 }
 pub fn install_in_dir(agent: Agent, dir: &Path, spool: &Path) -> HooksResult {
     match install_inner(agent, dir, spool) {

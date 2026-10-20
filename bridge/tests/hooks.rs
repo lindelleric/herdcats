@@ -1063,3 +1063,47 @@ fn prune_waits_for_recorder_lock_and_rechecks_age() {
     thread.join().unwrap();
     assert_eq!(fs::read_to_string(path).unwrap(), "fresh request");
 }
+
+#[test]
+fn status_reports_mixed_and_duplicate_recorders_as_stale() {
+    for agent in ["claude", "codex"] {
+        for stale_first in [false, true] {
+            for same_group in [false, true] {
+                let t = Temp::new();
+                t.run("install", agent);
+                let path = t.file(agent);
+                let initial: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                let current = initial["hooks"]["PermissionRequest"][0]["hooks"][0].clone();
+                for extra in [
+                    json!({"type":"command","command":format!("/old/bridge hook record --agent {agent}")}),
+                    current.clone(),
+                ] {
+                    let handlers = if stale_first {
+                        vec![extra, current.clone()]
+                    } else {
+                        vec![current.clone(), extra]
+                    };
+                    let groups = if same_group {
+                        json!([{"hooks":handlers}])
+                    } else {
+                        json!([{"hooks":[handlers[0].clone()]},{"hooks":[handlers[1].clone()]}])
+                    };
+                    let bytes =
+                        serde_json::to_vec(&json!({"hooks":{"PermissionRequest":groups}})).unwrap();
+                    fs::write(&path, &bytes).unwrap();
+                    assert_eq!(t.run("status", agent)["status"], "stale");
+                    assert_eq!(fs::read(&path).unwrap(), bytes);
+                    t.run("install", agent);
+                    assert_eq!(
+                        t.run("status", agent)["status"],
+                        if agent == "claude" {
+                            "installed"
+                        } else {
+                            "needs_trust"
+                        }
+                    );
+                }
+            }
+        }
+    }
+}
