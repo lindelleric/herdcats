@@ -107,6 +107,13 @@ fn run() -> std::result::Result<(), &'static str> {
     serve(service, Duration::from_millis(poll)).map_err(|_| "stream_closed")
 }
 fn main() {
+    // Recognize hooks before UTF-8 argument parsing or the normal error path.
+    // Hooks never decide permissions and must not emit even a panic diagnostic.
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("hook")) {
+        std::panic::set_hook(Box::new(|_| {}));
+        let _ = std::panic::catch_unwind(herdcats_bridge::spool::record_cli);
+        return;
+    }
     if let Err(code) = run() {
         eprintln!("{code}");
         std::process::exit(1);
