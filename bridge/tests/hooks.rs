@@ -202,18 +202,41 @@ fn directory_api_preserves_modes_and_empty_groups() {
 }
 
 #[cfg(unix)]
+fn output_retrying_text_file_busy(command: &mut Command) -> std::io::Result<std::process::Output> {
+    // Parallel fork/execs can briefly inherit fs::copy's writable descriptor on
+    // Linux. Retry only ETXTBSY, including the shell's equivalent diagnostic.
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        let result = command.output();
+        let busy = match &result {
+            Err(error) => error.kind() == std::io::ErrorKind::ExecutableFileBusy,
+            Ok(output) => {
+                output.status.code() == Some(126)
+                    && String::from_utf8_lossy(&output.stderr).contains("Text file busy")
+            }
+        };
+        if !busy || attempts == 50 {
+            return result;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[cfg(unix)]
 #[test]
 fn executable_with_spaces_is_shell_quoted_and_backups_do_not_collide() {
     let t = Temp::new();
     let bin = t.0.join("bridge's executable");
     fs::copy(env!("CARGO_BIN_EXE_herdcats-bridge"), &bin).unwrap();
     let dir = t.0.join("claude");
-    let output = Command::new(&bin)
-        .args(["hooks", "install", "--agent", "claude"])
-        .env("CLAUDE_CONFIG_DIR", &dir)
-        .env("XDG_STATE_HOME", t.0.join("state"))
-        .output()
-        .unwrap();
+    let output = output_retrying_text_file_busy(
+        Command::new(&bin)
+            .args(["hooks", "install", "--agent", "claude"])
+            .env("CLAUDE_CONFIG_DIR", &dir)
+            .env("XDG_STATE_HOME", t.0.join("state")),
+    )
+    .unwrap();
     assert!(output.status.success());
     let p = dir.join("settings.json");
     let v: Value = serde_json::from_slice(&fs::read(&p).unwrap()).unwrap();
@@ -221,10 +244,10 @@ fn executable_with_spaces_is_shell_quoted_and_backups_do_not_collide() {
         .as_str()
         .unwrap();
     let executable = command.strip_suffix(" hook record --agent claude").unwrap();
-    let output = Command::new("sh")
-        .args(["-c", &format!("{executable} --version-json")])
-        .output()
-        .unwrap();
+    let output = output_retrying_text_file_busy(
+        Command::new("sh").args(["-c", &format!("{executable} --version-json")]),
+    )
+    .unwrap();
     assert!(output.status.success());
     assert_eq!(
         serde_json::from_slice::<Value>(&output.stdout).unwrap()["name"],
