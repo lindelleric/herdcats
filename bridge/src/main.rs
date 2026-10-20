@@ -19,6 +19,25 @@ fn run() -> std::result::Result<(), &'static str> {
         );
         return Ok(());
     }
+    if command.as_deref() == Some("hooks") {
+        let args: Vec<_> = args.collect();
+        let result = match args.as_slice() {
+            [action, flag, agent] if flag == "--agent" => {
+                match herdcats_bridge::hooks::Agent::parse(agent) {
+                    Some(agent) => match action.as_str() {
+                        "install" => herdcats_bridge::hooks::install(agent),
+                        "status" => herdcats_bridge::hooks::status(agent),
+                        "uninstall" => herdcats_bridge::hooks::uninstall(agent),
+                        _ => herdcats_bridge::hooks::HooksResult::error("unknown_argument"),
+                    },
+                    None => herdcats_bridge::hooks::HooksResult::error("invalid_agent"),
+                }
+            }
+            _ => herdcats_bridge::hooks::HooksResult::error("unknown_argument"),
+        };
+        println!("{}", result.to_json());
+        return Ok(());
+    }
     if command.as_deref() == Some("codex-config") {
         let sub = args.next();
         match sub.as_deref() {
