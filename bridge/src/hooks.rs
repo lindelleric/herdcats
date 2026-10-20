@@ -118,6 +118,25 @@ fn ours(handler: &Value, agent: Agent) -> bool {
     };
     Path::new(&path).is_absolute() && shell_quote(&path) == prefix
 }
+fn recorder_handler(command: &str) -> Value {
+    json!({"type":"command", "command":command, "timeout":10})
+}
+fn recorder_matcher_valid(agent: Agent, group: &Value) -> bool {
+    match agent {
+        Agent::Claude => group.get("matcher").and_then(Value::as_str) == Some("*"),
+        Agent::Codex => group.get("matcher").is_none(),
+    }
+}
+fn recorder_valid(agent: Agent, group: &Value, handler: &Value, command: &str) -> bool {
+    recorder_matcher_valid(agent, group) && *handler == recorder_handler(command)
+}
+fn repair_matcher(agent: Agent, group: &mut Value) {
+    if agent == Agent::Claude {
+        group["matcher"] = json!("*");
+    } else {
+        group.as_object_mut().unwrap().shift_remove("matcher");
+    }
+}
 fn read_document(path: &Path) -> Result<(Value, Option<fs::Metadata>)> {
     let meta = match fs::symlink_metadata(path) {
         Ok(m) if m.file_type().is_symlink() => return Err("hooks_symlink"),
@@ -219,13 +238,19 @@ fn status_inner(agent: Agent, dir: &Path, spool: &Path) -> Result<HooksResult> {
     // returning the current recorder's trust state, regardless of their order.
     let owned: Vec<_> = groups(&doc)
         .iter()
-        .flat_map(|g| g["hooks"].as_array().unwrap())
-        .filter(|h| ours(h, agent))
+        .flat_map(|group| {
+            group["hooks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(move |handler| (group, handler))
+        })
+        .filter(|(_, handler)| ours(handler, agent))
         .collect();
     if owned.len() > 1
         || owned
             .iter()
-            .any(|h| h["command"].as_str() != Some(&command))
+            .any(|(group, handler)| !recorder_valid(agent, group, handler, &command))
     {
         return Ok(HooksResult::state("stale", confirmed));
     }
@@ -291,19 +316,38 @@ fn install_inner(agent: Agent, dir: &Path, spool: &Path) -> Result<HooksResult> 
     let command = recorder_command(agent)?;
     let owned: Vec<_> = groups(&doc)
         .iter()
-        .flat_map(|g| g["hooks"].as_array().unwrap())
-        .filter(|h| ours(h, agent))
+        .enumerate()
+        .flat_map(|(g, group)| {
+            group["hooks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .enumerate()
+                .map(move |(h, handler)| ((g, h), group, handler))
+        })
+        .filter(|(_, _, handler)| ours(handler, agent))
         .collect();
-    if owned.len() == 1 && owned[0]["command"].as_str() == Some(&command) {
+    if owned.len() == 1 && recorder_valid(agent, owned[0].1, owned[0].2, &command) {
         return Ok(HooksResult::state(
             "installed",
             spool_confirmed(agent, spool),
         ));
     }
-    // Prefer an already current recorder, even when a stale entry precedes it.
-    let keep_current = owned
+    // A restrictive group shared with foreign handlers cannot be broadened.
+    // Move its recorder to a new unrestricted group instead.
+    let repairable = |group: &Value| {
+        recorder_matcher_valid(agent, group)
+            || group["hooks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|h| ours(h, agent))
+    };
+    let selected = owned
         .iter()
-        .any(|h| h["command"].as_str() == Some(&command));
+        .find(|(_, group, h)| repairable(group) && h["command"].as_str() == Some(&command))
+        .or_else(|| owned.iter().find(|(_, group, _)| repairable(group)))
+        .map(|(position, _, _)| *position);
     let hooks = doc
         .as_object_mut()
         .ok_or("hooks_invalid_json")?
@@ -323,7 +367,7 @@ fn install_inner(agent: Agent, dir: &Path, spool: &Path) -> Result<HooksResult> 
     groups.retain_mut(|group| {
         let mut old_handler = 0;
         let mut new_handler = 0;
-        // Keep the first recorder in place so its trust key stays stable.
+        // Retain the selected recorder when its group can safely be repaired.
         let handlers = group["hooks"].as_array_mut().unwrap();
         let before = handlers.len();
         handlers.retain_mut(|handler| {
@@ -331,12 +375,12 @@ fn install_inner(agent: Agent, dir: &Path, spool: &Path) -> Result<HooksResult> 
             old_handler += 1;
             let keep = if !ours(handler, agent) {
                 true
-            } else if replaced || (keep_current && handler["command"].as_str() != Some(&command)) {
-                false
-            } else {
-                handler["command"] = Value::String(command.clone());
+            } else if selected == Some(old) {
+                *handler = recorder_handler(&command);
                 replaced = true;
                 true
+            } else {
+                false
             };
             positions.push((old, keep.then_some((new_group, new_handler))));
             if keep {
@@ -345,6 +389,9 @@ fn install_inner(agent: Agent, dir: &Path, spool: &Path) -> Result<HooksResult> 
             keep
         });
         let keep = !(handlers.len() != before && handlers.is_empty());
+        if selected.is_some_and(|(g, _)| g == old_group) {
+            repair_matcher(agent, group);
+        }
         old_group += 1;
         if keep {
             new_group += 1;
@@ -352,13 +399,8 @@ fn install_inner(agent: Agent, dir: &Path, spool: &Path) -> Result<HooksResult> 
         keep
     });
     if !replaced {
-        let mut group = json!({"hooks":[{"type":"command", "command":command,"timeout":10}]});
-        if agent == Agent::Claude {
-            group
-                .as_object_mut()
-                .unwrap()
-                .insert("matcher".into(), json!("*"));
-        }
+        let mut group = json!({"hooks":[recorder_handler(&command)]});
+        repair_matcher(agent, &mut group);
         groups.push(group);
     }
     let backup = write_hook_edit(agent, &path, &doc, meta.as_ref(), &positions)?;
@@ -450,7 +492,23 @@ fn write_hook_edit(
     meta: Option<&fs::Metadata>,
     positions: &[PositionChange],
 ) -> Result<Option<String>> {
-    if agent != Agent::Codex || positions.iter().all(|(old, new)| Some(*old) == *new) {
+    if agent != Agent::Codex {
+        return write_document(agent, path, doc, meta);
+    }
+    let fresh: Vec<_> = groups(doc)
+        .iter()
+        .enumerate()
+        .flat_map(|(g, group)| {
+            group["hooks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .enumerate()
+                .map(move |(h, _)| (g, h))
+        })
+        .filter(|position| !positions.iter().any(|(_, new)| *new == Some(*position)))
+        .collect();
+    if fresh.is_empty() && positions.iter().all(|(old, new)| Some(*old) == *new) {
         return write_document(agent, path, doc, meta);
     }
     let config_path = path
@@ -493,6 +551,11 @@ fn write_hook_edit(
         if let Some(new) = new {
             state.remove(&key(*new));
         }
+    }
+    // New/relocated recorders have no source state and must not inherit an
+    // orphaned trust or disabled entry at their newly allocated position.
+    for position in fresh {
+        state.remove(&key(position));
     }
     for (new, value) in values {
         if let (Some(new), Some(value)) = (new, value) {

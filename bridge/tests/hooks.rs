@@ -292,14 +292,21 @@ fn stale_duplicates_keep_first_position_and_remove_only_empty_owned_groups() {
         let other_agent = if agent == "claude" { "codex" } else { "claude" };
         let foreign =
             json!({"command":format!("/foreign/bridge hook record --agent {other_agent}")});
-        fs::write(&p, serde_json::to_vec(&json!({"hooks":{"PermissionRequest":[
+        let mut doc = json!({"hooks":{"PermissionRequest":[
             {"hooks":[{"command":"echo before"}]},
             {"matcher":"*", "hooks":[{"command":"echo first"},stale("/old/one"),stale("/old/two")]},
             {"hooks":[stale("/old/three"),{"command":"echo keep"}]},
             {"hooks":[stale("/old/four")]},
             {"hooks":[]},
             {"hooks":[foreign.clone()]}
-        ]}})).unwrap()).unwrap();
+        ]}});
+        if agent == "codex" {
+            doc["hooks"]["PermissionRequest"][1]
+                .as_object_mut()
+                .unwrap()
+                .shift_remove("matcher");
+        }
+        fs::write(&p, serde_json::to_vec(&doc).unwrap()).unwrap();
         assert_eq!(t.run("install", agent)["status"], "installed");
         let v: Value = serde_json::from_slice(&fs::read(&p).unwrap()).unwrap();
         let groups = v["hooks"]["PermissionRequest"].as_array().unwrap();
@@ -1105,5 +1112,99 @@ fn status_reports_mixed_and_duplicate_recorders_as_stale() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn install_repairs_damaged_recorder_fields() {
+    for agent in ["claude", "codex"] {
+        for damage in [
+            "matcher",
+            "type",
+            "timeout",
+            "missing_timeout",
+            "extra_field",
+        ] {
+            let t = Temp::new();
+            t.run("install", agent);
+            let path = t.file(agent);
+            let expected: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            let mut damaged = expected.clone();
+            let group = &mut damaged["hooks"]["PermissionRequest"][0];
+            match damage {
+                "matcher" => group["matcher"] = json!("Bash"),
+                "type" => group["hooks"][0]["type"] = json!("prompt"),
+                "timeout" => group["hooks"][0]["timeout"] = json!(0),
+                "missing_timeout" => {
+                    group["hooks"][0]
+                        .as_object_mut()
+                        .unwrap()
+                        .shift_remove("timeout");
+                }
+                _ => group["hooks"][0]["async"] = json!(true),
+            }
+            let before = serde_json::to_vec(&damaged).unwrap();
+            fs::write(&path, &before).unwrap();
+            assert_eq!(
+                t.run("status", agent)["status"],
+                "stale",
+                "{agent}/{damage}"
+            );
+            assert_eq!(fs::read(&path).unwrap(), before);
+            t.run("install", agent);
+            let actual: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(actual, expected, "{agent}/{damage}");
+            let before = fs::read(&path).unwrap();
+            t.run("install", agent);
+            assert_eq!(fs::read(&path).unwrap(), before);
+        }
+    }
+}
+
+#[test]
+fn repair_restrictive_group_preserves_unrelated_matcher() {
+    for agent in ["claude", "codex"] {
+        let t = Temp::new();
+        t.run("install", agent);
+        let path = t.file(agent);
+        let mut doc: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let group = &mut doc["hooks"]["PermissionRequest"][0];
+        group["matcher"] = json!("Bash");
+        let foreign = json!({"type":"command","command":"echo unrelated","timeout":7});
+        group["hooks"].as_array_mut().unwrap().push(foreign.clone());
+        fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+        if agent == "codex" {
+            let key = format!("{}:permission_request:1:0", path.display());
+            fs::write(
+                path.parent().unwrap().join("config.toml"),
+                format!(
+                    "[hooks.state.{}]\nenabled = false\ntrusted_hash = 'orphan'\n",
+                    serde_json::to_string(&key).unwrap()
+                ),
+            )
+            .unwrap();
+        }
+        assert_eq!(t.run("status", agent)["status"], "stale");
+        t.run("install", agent);
+        let actual: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(
+            actual["hooks"]["PermissionRequest"][0],
+            json!({"matcher":"Bash","hooks":[foreign]})
+        );
+        assert_eq!(
+            actual["hooks"]["PermissionRequest"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            t.run("status", agent)["status"],
+            if agent == "claude" {
+                "installed"
+            } else {
+                "needs_trust"
+            }
+        );
     }
 }
