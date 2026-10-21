@@ -178,7 +178,7 @@ fn claude_ignores_wrapped_tip_and_description_rows() {
                 " echo herdcats-probe > probe.txt",
                 " echo herdcats-probe > probe.txt\n\n"
             ),
-            CLAUDE_COMMAND
+            "echo herdcats-probe > probe.txt\n\n"
         )
         .unwrap()
         .detail,
@@ -311,7 +311,7 @@ fn command_indentation_is_preserved_relative_to_dialog() {
                 &format!("\n{base_indent}EOF"),
                 &format!("\n{base_indent}  EOF"),
             ),
-            "cat <<EOF\nEOF",
+            "cat <<EOF\n  EOF",
         )
         .unwrap();
         assert_eq!(indented.detail, ["cat <<EOF", "  EOF"]);
@@ -406,9 +406,8 @@ fn codex_blank_command_rows_are_retained_and_fingerprinted() {
     assert_eq!(plain.detail, ["cat <<EOF", "body", "EOF"]);
     assert_eq!(blank.detail, ["cat <<EOF", "", "body", "EOF"]);
     assert_ne!(plain.fingerprint(), blank.fingerprint());
-    // Normalization intentionally ignores whitespace, including blank rows.
-    assert!(parse_codex(&screen, blank_command).is_some());
-    assert!(parse_codex(&blank_screen, command).is_some());
+    assert!(parse_codex(&screen, blank_command).is_none());
+    assert!(parse_codex(&blank_screen, command).is_none());
 }
 
 #[test]
@@ -493,4 +492,27 @@ fn crafted_screens_have_bounded_work() {
     let claude = parse_claude(&claude_screen, &command).unwrap();
     assert!(start.elapsed() < Duration::from_secs(1));
     assert_eq!(claude.detail, vec!["╌╌╌╌"; 393]);
+}
+
+#[test]
+fn command_matching_preserves_internal_whitespace() {
+    for (agent, fixture, old, indent) in [
+        (Agent::Claude, CLAUDE, CLAUDE_COMMAND, " "),
+        (Agent::Codex, CODEX, CODEX_COMMAND, "  "),
+    ] {
+        for (screen_command, hook_command) in [
+            ("printf '%s' 'a b'", "printf '%s' 'ab'"),
+            ("printf '%s' 'ab'", "printf '%s' 'a b'"),
+            ("echo a\nb", "echo a  b"),
+            ("echo a\nb", "echo a\tb"),
+        ] {
+            let screen_command = screen_command.replace('\n', &format!("\n{indent}"));
+            let screen = fixture.replacen(old, &screen_command, 1);
+            assert!(parse(agent, &screen, hook_command).is_none());
+        }
+        let screen = fixture.replacen(old, &format!("cat <<EOF\n{indent}  EOF"), 1);
+        assert!(parse(agent, &screen, "cat <<EOF\nEOF").is_none());
+        assert!(parse(agent, &screen, "cat <<EOF\n  EOF").is_some());
+        assert!(parse(agent, fixture, &format!("{old}\n \t")).is_some());
+    }
 }

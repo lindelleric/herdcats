@@ -170,3 +170,41 @@ pub fn codex_resolution(request_id: &str, turn_id: &str, rollout: &[Value]) -> R
         Resolution::Pending
     }
 }
+
+/// Correlate a session's spool records, retaining the newest metadata per call.
+pub fn match_claude_records(records: &[Value], transcript: &[Value]) -> Vec<PendingRequest> {
+    match_records(records, transcript, match_claude)
+}
+
+/// Correlate a session's spool records, retaining the newest metadata per call.
+pub fn match_codex_records(records: &[Value], rollout: &[Value]) -> Vec<PendingRequest> {
+    match_records(records, rollout, match_codex)
+}
+
+fn match_records(
+    records: &[Value],
+    history: &[Value],
+    matcher: fn(&Value, &[Value]) -> Option<PendingRequest>,
+) -> Vec<PendingRequest> {
+    let mut latest = std::collections::BTreeMap::<String, PendingRequest>::new();
+    for record in records {
+        let Some(request) = matcher(record, history) else {
+            continue;
+        };
+        let entry = latest.entry(request.request_id.clone());
+        match entry {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(request);
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                // Replacement on equality gives the later input record precedence.
+                if request.recorded_at >= entry.get().recorded_at {
+                    entry.insert(request);
+                }
+            }
+        }
+    }
+    let mut requests: Vec<_> = latest.into_values().collect();
+    requests.sort_by(|a, b| a.recorded_at.total_cmp(&b.recorded_at));
+    requests
+}

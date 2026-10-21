@@ -1,5 +1,6 @@
 use herdcats_bridge::approval_match::{
-    Resolution, claude_resolution, codex_resolution, match_claude, match_codex,
+    Resolution, claude_resolution, codex_resolution, match_claude, match_claude_records,
+    match_codex, match_codex_records,
 };
 use herdcats_bridge::hooks::Agent;
 use serde_json::{Value, json};
@@ -246,4 +247,65 @@ fn codex_event_turns_fall_back_to_root_turn_id() {
         json!({"type":"event_msg","payload":{"type":"item_completed","root_turn_id":"other"}}),
     );
     assert!(match_codex(&h, &p).is_none());
+}
+
+#[test]
+fn claude_records_keep_latest_hook_for_repeated_pending_call() {
+    let mut older = hook("claude", "Bash");
+    older["t"] = json!(1.0);
+    older["payload"]["permission_suggestions"] = json!(["old"]);
+    let mut newer = older.clone();
+    newer["t"] = json!(2.0);
+    newer["payload"]["permission_suggestions"] = json!(["new"]);
+    let transcript = [
+        tool_use("completed", &older),
+        json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"completed"}]}}),
+        tool_use("pending", &newer),
+    ];
+    let matched = match_claude_records(&[newer.clone(), older], &transcript);
+    assert_eq!(matched.len(), 1);
+    assert_eq!(matched[0].request_id, "pending");
+    assert_eq!(matched[0].recorded_at, 2.0);
+    assert_eq!(matched[0].suggestions, Some(json!(["new"])));
+    let mut tied = newer.clone();
+    tied["payload"]["permission_suggestions"] = json!(["tie wins"]);
+    assert_eq!(
+        match_claude_records(&[newer, tied], &transcript)[0].suggestions,
+        Some(json!(["tie wins"]))
+    );
+}
+
+#[test]
+fn codex_records_keep_latest_hook_and_sort_by_recorded_at() {
+    let mut older = hook("codex", "Bash");
+    older["t"] = json!(1.0);
+    let mut newer = older.clone();
+    newer["t"] = json!(3.0);
+    let mut other = older.clone();
+    other["t"] = json!(2.0);
+    other["payload"]["tool_input"]["command"] = json!("echo other");
+    let mut rollout = pending();
+    let mut call = rollout.last().unwrap().clone();
+    call["payload"]["call_id"] = json!("other");
+    call["payload"]["input"] = json!("exec({cmd:\"echo other\"})");
+    rollout.push(call);
+    let matched = match_codex_records(&[newer.clone(), other, older], &rollout);
+    assert_eq!(matched.len(), 2);
+    assert_eq!(matched[0].request_id, "other");
+    assert_eq!(matched[0].recorded_at, 2.0);
+    assert_eq!(
+        matched[1].request_id,
+        "a9716926-1865-55d2-9159-819c0fb40697"
+    );
+    assert_eq!(matched[1].recorded_at, 3.0);
+    let mut tied = newer.clone();
+    tied["payload"]["tool_input"]["description"] = json!("tie wins");
+    assert_eq!(
+        match_codex_records(&[newer, tied], &rollout)[0]
+            .justification
+            .as_deref(),
+        Some("tie wins")
+    );
+    assert!(match_claude_records(&[], &[]).is_empty());
+    assert!(match_codex_records(&[], &[]).is_empty());
 }

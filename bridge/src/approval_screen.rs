@@ -93,8 +93,38 @@ fn command_row(line: &str, indent: &str) -> Option<String> {
 
 const KNOWN_CLAUDE_TITLES: &[&str] = &["Bash command"];
 
-fn normalized(s: &str) -> String {
-    s.chars().filter(|c| !c.is_whitespace()).collect()
+/// Match exact row text, allowing only one visual-wrap separator per boundary.
+fn rows_match_command(rows: &[String], command: &str) -> bool {
+    fn search(
+        rows: &[String],
+        command: &str,
+        row: usize,
+        offset: usize,
+        memo: &mut std::collections::HashMap<(usize, usize), bool>,
+    ) -> bool {
+        if let Some(&matched) = memo.get(&(row, offset)) {
+            return matched;
+        }
+        let matched = if !command[offset..].starts_with(&rows[row]) {
+            false
+        } else {
+            let end = offset + rows[row].len();
+            if row + 1 == rows.len() {
+                command[end..].chars().all(char::is_whitespace)
+            } else {
+                // A blank screen row consumes real newline boundaries on both
+                // sides; it cannot be invented by a zero-width or word wrap.
+                let blank = rows[row].is_empty() || rows[row + 1].is_empty();
+                (!blank && search(rows, command, row + 1, end, memo))
+                    || ((!blank && command[end..].starts_with(' ')
+                        || command[end..].starts_with('\n'))
+                        && search(rows, command, row + 1, end + 1, memo))
+            }
+        };
+        memo.insert((row, offset), matched);
+        matched
+    }
+    !rows.is_empty() && search(rows, command, 0, 0, &mut std::collections::HashMap::new())
 }
 
 fn screen_rows(screen: &str) -> Vec<&str> {
@@ -118,7 +148,6 @@ fn detail_rows(lines: &[&str], indent: &str) -> Option<Vec<String>> {
 
 pub fn parse_claude(screen: &str, command: &str) -> Option<ApprovalDialog> {
     let lines = screen_rows(screen);
-    let expected = normalized(command);
     let mut chosen = None;
     for q in 0..lines.len() {
         if lines[q].trim() != "Do you want to proceed?" {
@@ -142,7 +171,7 @@ pub fn parse_claude(screen: &str, command: &str) -> Option<ApprovalDialog> {
             let Some(detail) = detail_rows(&lines[r1 + 1..r2], leading_whitespace(lines[q])) else {
                 continue;
             };
-            if normalized(&detail.join("\n")) != expected {
+            if !rows_match_command(&detail, command) {
                 continue;
             }
             let Some((options, selected)) = options(&lines[q + 1..footer], Agent::Claude) else {
@@ -209,7 +238,6 @@ fn codex_metadata(lines: &[&str]) -> Option<(Option<String>, Vec<String>)> {
 pub fn parse_codex(screen: &str, command: &str) -> Option<ApprovalDialog> {
     let lines = screen_rows(screen);
     let title = "Would you like to run the following command?";
-    let expected = normalized(command);
     let mut chosen = None;
     let mut body_spans = Vec::new();
     for t in 0..lines.len() {
@@ -247,7 +275,7 @@ pub fn parse_codex(screen: &str, command: &str) -> Option<ApprovalDialog> {
                 continue;
             };
             body_spans.push((s, first_option));
-            if normalized(&detail.join("\n")) != expected {
+            if !rows_match_command(&detail, command) {
                 continue;
             }
             let Some((options, selected)) = options(&lines[first_option..footer], Agent::Codex)
