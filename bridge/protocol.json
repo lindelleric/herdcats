@@ -280,7 +280,7 @@
     "Bounded source prefix reread on change, new complete records parsed incrementally.",
     "Negotiated content retrieval covers complete original records and blocks within the verified 64MiB source; only references on retained entries are readable.",
     "Claude captured2.1.296 schema coverage; no general version promise.",
-    "Optional four-platform installer and native iOS client. Bridge approval events and guarded responses support Claude and Codex; native app approval UI, prompts, questions and saved-machine routing remain gated."
+    "Optional four-platform installer and native iOS client. Bridge approval events and guarded responses support Claude and Codex in unreleased builds from main (shipping in 0.3.0; published 0.2.2 reports approvals: false); native app approval UI, prompts, questions and saved-machine routing remain gated."
   ],
   "errors": [
     "ambiguous_session",
@@ -338,6 +338,6 @@
     "eligibility": "Require all three: a spool record correlated to a still-pending native call, Herdr agent_status blocked, and exactly one dialog parsed from source visible anchored to the hook command. Never use scrollback/recent text or guess an uncorrelated request.",
     "bounds": "Keep every pending frame below wire_frame_bytes. Suppress an oversized approval instead of truncating command, metadata or labels.",
     "input_failures": "Approval spool/screen/tail read failures yield no card and do not themselves emit timeline.unavailable. Same-identity timeline source_changing retries preserve an already emitted card until verification can resume.",
-    "capability": "approvals: true advertises bridge support for Claude and Codex; cards still require installed recording hooks and verified live inputs. prompts and questions remain false."
+    "capability": "approvals: true advertises bridge support for Claude and Codex (unreleased until 0.3.0; clients must gate on this capability, not on bridge_version); cards still require installed recording hooks and verified live inputs. prompts and questions remain false."
   }
 }

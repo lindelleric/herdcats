@@ -52,7 +52,7 @@
     "Published native release builds/tests verified in CI",
     "Public installer smoke verified on Apple Silicon in a temporary directory",
     "Binaries not Developer ID signed/notarized",
-    "Bridge approval events and guarded responses support Claude and Codex; native app approval UI, questions and saved-machine routing remain gated"
+    "Approval events and guarded responses exist on main only (unreleased, shipping in bridge 0.3.0); the published and pinned 0.2.2 reports approvals: false. Native app approval UI, questions and saved-machine routing remain gated"
   ],
   "onboarding": {
     "status": "0.2.2 published and pinned; minimum compatible version 0.2.0",
