@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		03B01A98BE18ECBE68F528C5 /* HerdcatsTests+SpaceAndKeyParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = EED17C5CD76FB35981A9D96C /* HerdcatsTests+SpaceAndKeyParsing.swift */; };
+		0457B7BC4DFDD531B8EC972E /* ApprovalResponseState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88DBA9853C7313FB0D808A34 /* ApprovalResponseState.swift */; };
 		04BFEF8F00C2DBAAD2B5C701 /* AppModel+Recovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B1CD175F0F284E79DA115DD /* AppModel+Recovery.swift */; };
 		0547C6CD213BEF30079FB69B /* HerdcatsUITests+Panes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C977E3525CB493EA4D85336C /* HerdcatsUITests+Panes.swift */; };
 		059E8BD914E797E5B932DE90 /* test_attachment_storage.py in Resources */ = {isa = PBXBuildFile; fileRef = 97046A3F25D35B65A7CA7425 /* test_attachment_storage.py */; };
@@ -44,6 +45,7 @@
 		424A7E2D237F3DD78BD7DFB8 /* LaunchCatOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DAD4982D3C8C19D0E3723C5 /* LaunchCatOverlay.swift */; };
 		432F1172CA742211722777FC /* Jost-Variable.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 0B7FDB979853200806B0878B /* Jost-Variable.ttf */; };
 		435D80316CFAB773C4827855 /* HerdcatsUITests+Connections.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5E597E391503ECB4F82A34B /* HerdcatsUITests+Connections.swift */; };
+		44870A910D3FE712E51842CA /* ApprovalCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = D26C51432307495D53C949C5 /* ApprovalCard.swift */; };
 		4F60BAF0321042EAE770DE08 /* AgentBridgeLiveSSHTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B56912BC83A7EAE644E879C /* AgentBridgeLiveSSHTests.swift */; };
 		50A0DEA7145EF0ED649928E9 /* AppModel+Connection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F08939634B4BDB715233641 /* AppModel+Connection.swift */; };
 		5C9D102CC251986AED9D5DB6 /* HerdcatsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6AD0D245B62B4BA7FEEFA2 /* HerdcatsUITests.swift */; };
@@ -87,6 +89,7 @@
 		BBE717D1FC9D281A05E84276 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B2DFBC036CAD6C0FCEF7CC29 /* Assets.xcassets */; };
 		BE62C40EA8E1B66A9707BDF5 /* PaneLastUpdated.swift in Sources */ = {isa = PBXBuildFile; fileRef = 324E0765A02EFCD22169C48E /* PaneLastUpdated.swift */; };
 		C1DA263E370CFE1E08F3487B /* PanePersistentShellTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2383B8A18E364E6440F23DD /* PanePersistentShellTests.swift */; };
+		C495634352F58C7A2BC36C9C /* ApprovalCardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6C602A993C0E0FC042B1D3A /* ApprovalCardTests.swift */; };
 		C82FE02A63F71FEEF9DF666C /* PaneLiveInputQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECEE34F261F2623618C5770F /* PaneLiveInputQueue.swift */; };
 		CEC27F8163C92B00CD38EE22 /* SpaceDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 795CA6C4625F7448B13868B0 /* SpaceDetailView.swift */; };
 		D1A9C334FA2B179A16BC74A7 /* HerdrConnection+Remote.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A1137CF91FF8580175F53E3 /* HerdrConnection+Remote.swift */; };
@@ -186,6 +189,7 @@
 		82FA99D7D65E274174CC0C80 /* HerdcatsTests+PanePreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HerdcatsTests+PanePreferences.swift"; sourceTree = "<group>"; };
 		85BDAAC12F57BDD3F41B090C /* HerdrModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrModels.swift; sourceTree = "<group>"; };
 		8865B2ACCDE7337BC2481A2D /* HerdcatsTests+RecentConnections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HerdcatsTests+RecentConnections.swift"; sourceTree = "<group>"; };
+		88DBA9853C7313FB0D808A34 /* ApprovalResponseState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovalResponseState.swift; sourceTree = "<group>"; };
 		895293DDBB9E064DE802A838 /* SettingsScreen+Sections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SettingsScreen+Sections.swift"; sourceTree = "<group>"; };
 		8BC70F0B4AB3ADF429A92F00 /* QuotaModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuotaModels.swift; sourceTree = "<group>"; };
 		8D67B69724707A16FD4618DF /* LicensesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LicensesView.swift; sourceTree = "<group>"; };
@@ -215,6 +219,7 @@
 		CA0FBE0ECE4574DC348D9B4A /* MainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabView.swift; sourceTree = "<group>"; };
 		CBCEFE9A7B22D06413A9E138 /* HerdcatsTests+CredentialMigration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HerdcatsTests+CredentialMigration.swift"; sourceTree = "<group>"; };
 		D2383B8A18E364E6440F23DD /* PanePersistentShellTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanePersistentShellTests.swift; sourceTree = "<group>"; };
+		D26C51432307495D53C949C5 /* ApprovalCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovalCard.swift; sourceTree = "<group>"; };
 		D3BBC1C81C5C357BC15E166F /* AgentTimelineView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentTimelineView.swift; sourceTree = "<group>"; };
 		D59976F22DF54B5D3736EEF2 /* PaneInputSurfaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneInputSurfaceTests.swift; sourceTree = "<group>"; };
 		D664189B1C20F66BBF2260D8 /* PaneOutputPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneOutputPresentation.swift; sourceTree = "<group>"; };
@@ -227,6 +232,7 @@
 		E2D8572A8E76D0EBC40A6E1A /* AgentTimelineScreenshotFixture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentTimelineScreenshotFixture.swift; sourceTree = "<group>"; };
 		E5E597E391503ECB4F82A34B /* HerdcatsUITests+Connections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HerdcatsUITests+Connections.swift"; sourceTree = "<group>"; };
 		E6753FF3AF90C184EEA13570 /* HerdcatsTests+PaneInputCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HerdcatsTests+PaneInputCoordinator.swift"; sourceTree = "<group>"; };
+		E6C602A993C0E0FC042B1D3A /* ApprovalCardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovalCardTests.swift; sourceTree = "<group>"; };
 		ECD89630A95BF90AE6214C1A /* SettingsScreen+Replay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SettingsScreen+Replay.swift"; sourceTree = "<group>"; };
 		ECEE34F261F2623618C5770F /* PaneLiveInputQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneLiveInputQueue.swift; sourceTree = "<group>"; };
 		EE90364BE3B58ED4C550DFBE /* HerdrSetupGuideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSetupGuideView.swift; sourceTree = "<group>"; };
@@ -328,6 +334,8 @@
 			children = (
 				4A3BFF904815E2BD66B154D9 /* AgentTimelineState.swift */,
 				D3BBC1C81C5C357BC15E166F /* AgentTimelineView.swift */,
+				D26C51432307495D53C949C5 /* ApprovalCard.swift */,
+				88DBA9853C7313FB0D808A34 /* ApprovalResponseState.swift */,
 			);
 			path = AgentTimeline;
 			sourceTree = "<group>";
@@ -408,6 +416,7 @@
 				D7E08942D9153ADBB0BA2D65 /* AgentTimelineConnectionTests.swift */,
 				FA18C20C79CD1BC62B36405C /* AgentTimelineTests.swift */,
 				B880E90055367DB1DD0810BD /* AgySignInTests.swift */,
+				E6C602A993C0E0FC042B1D3A /* ApprovalCardTests.swift */,
 				171AB092CF532F87B597B771 /* ApprovalTests.swift */,
 				425BF5E146238F8C6215AFA1 /* CodexTimelineTests.swift */,
 				A9F59CB2840187527B1A6D5D /* HerdcatsTests.swift */,
@@ -617,7 +626,9 @@
 				50A0DEA7145EF0ED649928E9 /* AppModel+Connection.swift in Sources */,
 				04BFEF8F00C2DBAAD2B5C701 /* AppModel+Recovery.swift in Sources */,
 				E9F55171BA8B03A66229D51D /* AppModel.swift in Sources */,
+				44870A910D3FE712E51842CA /* ApprovalCard.swift in Sources */,
 				E7ECB28545947D0CCD8D04C9 /* ApprovalModels.swift in Sources */,
+				0457B7BC4DFDD531B8EC972E /* ApprovalResponseState.swift in Sources */,
 				7D9C0412FD3751EE593CDEB8 /* CodexQuestionInput.swift in Sources */,
 				A6D37044B994778606C7CDE6 /* Components.swift in Sources */,
 				156ACEA7131AB8EE9B09D2B0 /* ConnectView.swift in Sources */,
@@ -678,6 +689,7 @@
 				201B6E732A356623057BE685 /* AgentTimelineConnectionTests.swift in Sources */,
 				ADFC18A5AA7610891CA0ABC7 /* AgentTimelineTests.swift in Sources */,
 				84B6D5646FFDB3E086EA785A /* AgySignInTests.swift in Sources */,
+				C495634352F58C7A2BC36C9C /* ApprovalCardTests.swift in Sources */,
 				0847051B1AAE10316EF129D3 /* ApprovalTests.swift in Sources */,
 				6F35258487D002073F2EDE73 /* CodexTimelineTests.swift in Sources */,
 				228CA92864B4D7666F38530B /* HerdcatsTests+ConnectionOwnership.swift in Sources */,

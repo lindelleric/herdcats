@@ -17,10 +17,13 @@ struct AgentTimelineView: View {
     let setupTarget: ConnectionIdentity
     let onUseTerminal: () -> Void
     let onSetupComplete: () -> Void
+    var onFocusComposer: () -> Void = {}
     @Environment(AppModel.self) private var appModel
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var approvalResponse = ApprovalResponseState()
+    @State private var approvalCardHeight: CGFloat = 0
     @State private var activeClient: AgentBridgeClient?
     @State private var activeOwner: UUID?
     @State private var showsSetup = false
@@ -57,6 +60,11 @@ struct AgentTimelineView: View {
     @State private var copiedCodexConfig = false
     @State private var copiedCodexStop = false
     @State private var copiedCodexUpdaterStop = false
+
+    private var approvalInset: CGFloat { showsApproval ? approvalCardHeight + 8 : 0 }
+    private var showsApproval: Bool {
+        ApprovalResponseState.isVisible(pending: timeline.pendingApproval, approvals: bridgeCapabilities?.approvals)
+    }
 
     private var conversationItems: [TimelineConversationItem] {
         TimelineConversationItem.group(timeline.entries, showsRecords: agent == "codex")
@@ -141,7 +149,7 @@ struct AgentTimelineView: View {
                         // Clear scroll space lets the final entry sit above the
                         // floating Compose bubble without an opaque dock panel.
                         Color.clear
-                            .frame(height: bottomOverlayInset)
+                            .frame(height: bottomOverlayInset + approvalInset)
                             .padding(.bottom, DesignSystem.Spacing.base)
                             .id("timeline-bottom")
                     }
@@ -206,6 +214,11 @@ struct AgentTimelineView: View {
                         proxy.scrollTo("timeline-bottom", anchor: .bottom)
                     }
                 }
+                .onChange(of: approvalInset) { _, _ in
+                    if following && !conversationItems.isEmpty {
+                        proxy.scrollTo("timeline-bottom", anchor: .bottom)
+                    }
+                }
                 .overlay(alignment: .bottomTrailing) {
                     Group {
                     if !atBottom && timeline.phase == .ready {
@@ -221,7 +234,7 @@ struct AgentTimelineView: View {
                         .accessibilityLabel("Jump to latest messages")
                         .accessibilityIdentifier("timeline-latest")
                         .padding(.trailing, 16)
-                        .padding(.bottom, bottomOverlayInset + 8)
+                        .padding(.bottom, bottomOverlayInset + approvalInset + 8)
                         .transition(.opacity)
                     }
                     }
@@ -231,8 +244,24 @@ struct AgentTimelineView: View {
         }
         // Let messages scroll behind the pane cards, but keep them below
         // the navigation bar and status area.
+        .overlay(alignment: .bottom) {
+            if showsApproval, let pending = timeline.pendingApproval {
+                ApprovalCard(pending: pending, response: approvalResponse,
+                    maximumHeight: max(100, min(440, (viewportHeight - topOverlayInset - bottomOverlayInset) * 0.65))) { option in
+                    respondToApproval(pending, option: option)
+                }
+                .background {
+                    GeometryReader { geometry in
+                        Color.clear.onChange(of: geometry.size.height, initial: true) { _, height in approvalCardHeight = height }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, bottomOverlayInset + 8)
+            }
+        }
         .clipped()
         .background(Theme.background)
+        .onChange(of: timeline.pendingApproval, initial: true) { _, pending in approvalResponse.sync(pending) }
         .task(id: taskKey) { await run() }
         .onChange(of: timeline.revision, initial: true) { _, _ in
             switch timeline.phase {
@@ -1011,8 +1040,37 @@ struct AgentTimelineView: View {
             return "Check that the optional Herdcats Bridge is available on your host, then try again."
         }
     }
+    @MainActor private func respondToApproval(_ pending: AgentPendingApproval, option: AgentApprovalOption) {
+        guard showsApproval, let owner = activeOwner, let client = activeClient,
+            connectionState.isReady, scenePhase == .active,
+            let current = timeline.pendingApproval,
+            ApprovalResponseState.Scope(current) == ApprovalResponseState.Scope(pending),
+            current.options.contains(option) else { return }
+        approvalResponse.sync(current)
+        guard let token = approvalResponse.begin(current) else { return }
+        let ownedConnection = connectionState
+        Task { @MainActor in
+            do {
+                let result = try await client.respond(requestId: current.requestId, option: option.number, labelLines: option.labelLines)
+                guard activeOwner == owner, connectionState == ownedConnection, scenePhase == .active,
+                    timeline.phase == .ready, timeline.identity == current.identity,
+                    timeline.generation == current.generation else { return }
+                approvalResponse.sync(timeline.pendingApproval)
+                let effects = approvalResponse.succeed(token: token, confirmed: result.confirmed,
+                    focusComposer: ApprovalResponseState.focusesComposer(agent: current.agent, option: option))
+                if effects.haptic { HapticFeedback.impact(.light) }
+                if effects.focusComposer { onFocusComposer() }
+            } catch {
+                guard activeOwner == owner, connectionState == ownedConnection, scenePhase == .active else { return }
+                approvalResponse.sync(timeline.pendingApproval)
+                approvalResponse.fail(token: token, error: (error as? AgentBridgeError) ?? .closed)
+            }
+        }
+    }
+
     @MainActor private func run() async {
         historyLoader.cancel()
+        approvalResponse.reset()
         let owner = UUID()
         activeOwner = owner
         timeline.begin(owner: owner, paneId: paneId)
@@ -1200,13 +1258,14 @@ struct AgentTimelineView: View {
         bridgeVersion = version
         Self.publishBridgeVersion(version, to: bridgeUpgrade, owner: owner, activeOwner: activeOwner)
         try timeline.consume(frame, owner: owner)
+        approvalResponse.sync(timeline.pendingApproval)
     }
     @MainActor private func mergeHistoryPreservingPosition(
         _ page: AgentBridgePayload, owner: UUID, generation: UInt64
     ) throws {
         // Capture at response time so scrolling while a page is in flight is respected.
         let visible = entryFrames
-            .filter { $0.value.maxY > topOverlayInset && $0.value.minY < viewportHeight - bottomOverlayInset }
+            .filter { $0.value.maxY > topOverlayInset && $0.value.minY < viewportHeight - bottomOverlayInset - approvalInset }
             .min { $0.value.minY < $1.value.minY }
         try timeline.mergeHistory(page, owner: owner, generation: generation)
         guard activeOwner == owner, timeline.generation == generation, let visible,
