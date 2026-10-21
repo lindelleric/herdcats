@@ -11,7 +11,6 @@ fn fixtures() {
     assert_eq!(c.title, "Bash command");
     assert_eq!(c.detail, ["echo herdcats-probe > probe.txt"]);
     assert!(c.reason_lines.is_empty());
-    assert_eq!(c.description, ["Write probe text to probe.txt"]);
     assert_eq!(c.selected, Some(0));
     let labels = [
         vec!["Yes".to_string()],
@@ -123,21 +122,22 @@ fn fingerprint_tracks_content_not_selection() {
 }
 
 #[test]
-fn claude_title_and_description_rows() {
-    let screen = CLAUDE.replace(
-        "Write probe text to probe.txt",
-        "Write probe text
- to probe.txt",
-    );
+fn claude_ignores_wrapped_tip_and_description_rows() {
+    let screen = CLAUDE
+        .replace(
+            " Tip: auto mode handles these prompts for you — choose \"switch to auto mode\" below",
+            " Tip: auto mode handles these prompts for you\n choose \"switch to auto mode\" below",
+        )
+        .replace(
+            "Write probe text to probe.txt",
+            "Write probe text\n to probe.txt",
+        );
     let dialog = parse_claude(&screen).unwrap();
+    let original = parse_claude(CLAUDE).unwrap();
     assert_eq!(dialog.title, "Bash command");
-    assert_eq!(dialog.description, ["Write probe text", "to probe.txt"]);
-    assert_eq!(
-        parse_claude(&screen.replace("Bash command", "Bash command\n  "))
-            .unwrap()
-            .description,
-        ["Write probe text", "to probe.txt"]
-    );
+    assert_eq!(dialog.detail, original.detail);
+    assert_eq!(dialog.options, original.options);
+    assert_eq!(dialog.fingerprint(), original.fingerprint());
     assert_eq!(
         parse_claude(&CLAUDE.replace(
             " echo herdcats-probe > probe.txt",
@@ -183,13 +183,6 @@ fn codex_preserves_command_and_reason_rows_and_rejects_malformed_metadata() {
 #[test]
 fn fingerprints_preserve_wrap_boundaries_and_all_row_groups() {
     for (agent, screen, old, new) in [
-        (
-            Agent::Claude,
-            CLAUDE,
-            "Write probe text to probe.txt",
-            "Write probe text
- to probe.txt",
-        ),
         (
             Agent::Codex,
             CODEX,

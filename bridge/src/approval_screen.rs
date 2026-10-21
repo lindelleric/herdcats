@@ -5,7 +5,6 @@ use crate::hooks::Agent;
 pub struct ApprovalDialog {
     pub agent: Agent,
     pub title: String,
-    pub description: Vec<String>,
     pub detail: Vec<String>,
     pub reason_lines: Vec<String>,
     pub options: Vec<ApprovalOption>,
@@ -34,7 +33,7 @@ impl ApprovalDialog {
             }
         };
         field(&self.title);
-        for rows in [&self.description, &self.detail, &self.reason_lines] {
+        for rows in [&self.detail, &self.reason_lines] {
             field(&rows.len().to_string());
             for row in rows {
                 field(row);
@@ -76,19 +75,13 @@ pub fn parse_claude(screen: &str) -> Option<ApprovalDialog> {
         .rev()
         .find(|&i| KNOWN_CLAUDE_TITLES.contains(&lines[i].trim()))?;
     let title = lines[title_row].trim().to_string();
-    let description = lines[title_row + 1..start_rule]
-        .iter()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty() && !l.starts_with("Tip:"))
-        .map(str::to_string)
-        .collect();
+    // Tip and description rows cannot be distinguished reliably when wrapped.
     let footer =
         (question + 1..lines.len()).find(|&i| lines[i].trim().starts_with("Esc to cancel"))?;
     let (options, selected) = options(&lines[question + 1..footer], Agent::Claude)?;
     Some(ApprovalDialog {
         agent: Agent::Claude,
         title,
-        description,
         detail: lines[start_rule + 1..end_rule]
             .iter()
             .map(|l| l.trim().to_string())
@@ -149,7 +142,6 @@ pub fn parse_codex(screen: &str) -> Option<ApprovalDialog> {
     Some(ApprovalDialog {
         agent: Agent::Codex,
         title: title.into(),
-        description: Vec::new(),
         detail,
         reason_lines,
         options,
