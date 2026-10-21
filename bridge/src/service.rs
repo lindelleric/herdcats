@@ -6,7 +6,7 @@ use crate::{
     claude::{ClaudeAdapter, Entry},
     codex::{CodexAdapter, CodexResolver},
     follower::{Follower, MAX_RECORD},
-    herdr::Client,
+    herdr::{Client, Pane},
     hooks::Agent,
     resolver::Resolver,
     spool,
@@ -35,6 +35,23 @@ struct PendingApproval {
     dialog: ApprovalDialog,
 }
 impl PendingApproval {
+    fn response_key(&self, params: &Value) -> Result<String> {
+        let number = params["option"].as_u64().ok_or("mismatch")?;
+        let option = self.dialog.options.iter()
+            .find(|option| u64::from(option.number) == number).ok_or("mismatch")?;
+        let rows = params["label_lines"].as_array().ok_or("mismatch")?;
+        if rows.len() != option.label_lines.len()
+            || !rows.iter().zip(&option.label_lines).all(|(row, label)| row.as_str() == Some(label))
+        {
+            return Err("mismatch");
+        }
+        match (self.request.agent, &option.key) {
+            (Agent::Claude, OptionKey::Digit(n)) if *n > 0 => Ok(n.to_string()),
+            (Agent::Codex, OptionKey::Letter(c)) if c.is_ascii_alphabetic() => Ok(c.to_string()),
+            (Agent::Codex, OptionKey::Escape) => Ok("esc".into()),
+            _ => Err("mismatch"),
+        }
+    }
     fn data(&self) -> Value {
         let options: Vec<_> = self.dialog.options.iter().map(|option| {
             let key = match option.key {
@@ -107,6 +124,7 @@ struct Watch {
     last_daemon_status: Option<&'static str>,
     pending: Option<PendingApproval>,
     approval_cache: Option<ApprovalMatchCache>,
+    source_pane: Option<Pane>,
 }
 pub struct Service {
     pub client: Client,
@@ -301,6 +319,7 @@ impl Service {
         if pane.agent_status != "blocked" {
             watch.approval_cache = None;
         }
+        watch.source_pane = Some(pane.clone());
         // Clone only the descriptor. Tail reading happens after timeline work,
         // using the same adapter-verified source and no additional path lookup.
         let approval_file = if pane.agent_status == "blocked" {
@@ -354,6 +373,7 @@ impl Service {
                 }
             }
             Err(code) => {
+                watch.source_pane = None;
                 watch.approval_cache = None;
                 watch.source_changing_count = 0;
                 watch.delayed = false;
@@ -621,6 +641,76 @@ impl Service {
         }
         Ok(())
     }
+    fn respond_interaction(&self, params: &Value) -> Result<Value> {
+        let watch = self.watch.as_ref().ok_or("not_watching")?;
+        let identity = watch.identity.as_ref().filter(|_| watch.unavailable.is_none())
+            .ok_or("timeline_unavailable")?;
+        let pending = watch.pending.as_ref().ok_or("stale")?;
+        if params["request_id"].as_str() != Some(&pending.request.request_id)
+            || pending.identity != *identity || pending.generation != self.generation
+        {
+            return Err("stale");
+        }
+        let command = pending.request.tool_input["command"].as_str().ok_or("stale")?;
+        let screen = self.client.read_visible(&identity.pane_id).map_err(|_| "stale")?;
+        let current = approval_screen::parse(pending.request.agent, &screen, command).ok_or("stale")?;
+        if !pending.dialog.same_dialog(&current) {
+            return Err("stale");
+        }
+        let key = pending.response_key(params)?;
+
+        // Reopen through the adapter using the last verified pane reference.
+        // A response always bypasses the polling cache and rechecks both files.
+        let source = watch.source_pane.as_ref().ok_or("stale")?;
+        let adapter = self.adapter_for(&identity.agent).ok_or("stale")?;
+        let (session, file) = adapter.resolve_and_open(source).map_err(|_| "stale")?;
+        if session != identity.native_session_id {
+            return Err("stale");
+        }
+        let newest = self.matched_request(identity, file, &mut None, crate::follower::read_tail)
+            .ok_or("stale")?;
+        if newest.request_id != pending.request.request_id
+            || newest.tool_name != pending.request.tool_name
+            || newest.tool_input != pending.request.tool_input
+            || newest.turn_id != pending.request.turn_id
+        {
+            return Err("stale");
+        }
+
+        // Verify the live occupant as well as blocked status immediately before
+        // sending. The adapter validates the fresh session reference and cwd.
+        let snapshot = self.client.snapshot().map_err(|_| "stale")?;
+        let pane = snapshot.panes.iter().find(|p| p.pane_id == identity.pane_id)
+            .ok_or("stale")?;
+        if pane.agent_status != "blocked" || pane.terminal_id != identity.terminal_id
+            || pane.agent.as_deref() != Some(&identity.agent)
+        {
+            return Err("stale");
+        }
+        let (session, _) = adapter.resolve_and_open(pane).map_err(|_| "stale")?;
+        if session != identity.native_session_id {
+            return Err("stale");
+        }
+        self.client.send_keys(&identity.pane_id, &[key.as_str()])?;
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut confirmed = false;
+        for _ in 0..20 {
+            let Ok(screen) = self.client.read_visible(&identity.pane_id) else { break };
+            let same = approval_screen::parse(pending.request.agent, &screen, command)
+                .is_some_and(|dialog| pending.dialog.same_dialog(&dialog));
+            if !same {
+                confirmed = true;
+                break;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(100).min(remaining));
+        }
+        Ok(json!({"request_id":pending.request.request_id,"sent":key,"confirmed":confirmed}))
+    }
     pub fn request(&mut self, bytes: &[u8], out: &mut impl Write) -> io::Result<()> {
         self.request_with_refresh(bytes, out, |follower, file, session| {
             follower.refresh_file(file, session)
@@ -664,6 +754,13 @@ impl Service {
             return Self::error(out, id, "not_initialized");
         }
         match method {
+            "interaction.respond" => match self.respond_interaction(params) {
+                Ok(result) => {
+                    Self::write(out, &json!({"id":id,"result":result}))?;
+                    self.poll(out)
+                }
+                Err(code) => Self::error(out, id, code),
+            },
             "watch" => {
                 let Some(pane) = params["pane_id"]
                     .as_str()
@@ -692,6 +789,7 @@ impl Service {
                     last_daemon_status: None,
                     pending: None,
                     approval_cache: None,
+                    source_pane: None,
                 });
                 Self::write(out, &json!({"id":id,"result":{"watching":pane}}))?;
                 self.poll(out)
@@ -862,7 +960,12 @@ mod tests {
         screen: String,
         reads: usize,
         read_error: bool,
+        read_error_after_send: bool,
         keys: Vec<Value>,
+        screens_after_send: std::collections::VecDeque<String>,
+        hide_pane: bool,
+        terminal_id: Option<String>,
+        session_override: Option<String>,
     }
     type SharedHerdr = std::sync::Arc<std::sync::Mutex<HerdrState>>;
     fn fixture() -> (Service, PathBuf, std::sync::Arc<std::sync::Mutex<String>>) {
@@ -909,20 +1012,33 @@ mod tests {
                     "pane.read" => {
                         assert_eq!(request["params"], json!({"pane_id":"w1:p1","source":"visible"}));
                         state.reads += 1;
+                        if !state.keys.is_empty() {
+                            if let Some(screen) = state.screens_after_send.pop_front() {
+                                state.screen = screen;
+                            }
+                        }
                         json!({"read":{"text":state.screen}})
                     }
                     "pane.send_keys" => {
+                        let keys = request["params"]["keys"].as_array().unwrap();
+                        assert_eq!(keys.len(), 1);
+                        assert!(keys.iter().all(|key| !["enter", "\n", "\r"].contains(&key.as_str().unwrap())));
                         state.keys.push(request["params"].clone());
                         json!({})
                     }
                     "session.snapshot" => {
                         let agent = state.agent.as_deref().unwrap_or("claude");
-                        let snapshot = json!({"protocol":22,"version":"0.9.3","panes":[{"pane_id":"w1:p1","terminal_id":"terminal-one","workspace_id":"w1","tab_id":"w1:t1","agent":agent,"agent_status":state.status.as_deref().unwrap_or("idle"),"foreground_cwd":"/fixture/work","revision":1,"agent_session":{"agent":agent,"source":format!("herdr:{agent}"),"kind":"id","value":session_for_server.lock().unwrap().clone()}}]});
+                        let mut snapshot = json!({"protocol":22,"version":"0.9.3","panes":[{"pane_id":"w1:p1","terminal_id":state.terminal_id.as_deref().unwrap_or("terminal-one"),"workspace_id":"w1","tab_id":"w1:t1","agent":agent,"agent_status":state.status.as_deref().unwrap_or("idle"),"foreground_cwd":"/fixture/work","revision":1,"agent_session":{"agent":agent,"source":format!("herdr:{agent}"),"kind":"id","value":state.session_override.clone().unwrap_or_else(|| session_for_server.lock().unwrap().clone())}}]});
+                        if state.hide_pane {
+                            snapshot["panes"] = json!([]);
+                        }
                         json!({"type":"session_snapshot","snapshot":snapshot})
                     }
                     method => panic!("unexpected method: {method}"),
                 };
-                let frame = if request["method"] == "pane.read" && state.read_error {
+                let frame = if request["method"] == "pane.read"
+                    && (state.read_error || state.read_error_after_send && !state.keys.is_empty())
+                {
                     json!({"id":request["id"],"error":{"code":"pane_not_found"}})
                 } else {
                     json!({"id":request["id"],"result":result})
@@ -941,6 +1057,7 @@ mod tests {
         (service, root, session, herdr)
     }
     include!("service_approval_tests.rs");
+    include!("service_response_tests.rs");
     fn cleanup(service: &Service, root: PathBuf) {
         // Wake and terminate the fixture thread without a valid request.
         drop(std::os::unix::net::UnixStream::connect(&service.client.socket).unwrap());

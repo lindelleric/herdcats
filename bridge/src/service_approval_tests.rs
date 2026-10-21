@@ -217,6 +217,7 @@ fn test_watch() -> Watch {
         last_daemon_status: None,
         pending: None,
         approval_cache: None,
+        source_pane: None,
     }
 }
 
