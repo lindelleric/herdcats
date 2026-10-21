@@ -15,13 +15,16 @@ const INPUT_LIMIT: usize = 1024 * 1024;
 const BYTE_LIMIT: usize = 256 * 1024;
 const RECORD_LIMIT: usize = 64;
 
+fn valid_session_id(session: &str) -> bool {
+    !session.is_empty()
+        && session.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+}
+
 /// Read complete records without creating or modifying any spool state.
 /// Any unavailable, unsafe, or oversized source yields no requests.
 pub fn read_session(dir: &Path, agent: Agent, session_id: &str) -> Vec<Value> {
     fn read(dir: &Path, agent: Agent, session_id: &str) -> io::Result<Vec<Value>> {
-        if session_id.is_empty()
-            || !session_id.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
-        {
+        if !valid_session_id(session_id) {
             return Ok(Vec::new());
         }
         let metadata = fs::symlink_metadata(dir)?;
@@ -143,11 +146,7 @@ pub fn record_in_dir(
             .map(str::to_owned);
         (payload, session, event)
     };
-    if session.is_empty()
-        || !session
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
-    {
+    if !valid_session_id(&session) {
         return Ok(());
     }
     let mut record = json!({
@@ -373,11 +372,7 @@ pub fn prune(dir: &Path, now: SystemTime) -> io::Result<()> {
         else {
             continue;
         };
-        if session.is_empty()
-            || !session
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
-        {
+        if !valid_session_id(session) {
             continue;
         }
         let metadata = fs::symlink_metadata(entry.path())?;

@@ -293,6 +293,7 @@ fn match_records(
             .then(ai.cmp(bi))
     });
     let mut paired = std::collections::BTreeSet::new();
+    let mut assignments = Vec::new();
     for (_, record) in ordered {
         let Some(candidates) = matcher(record, history, false) else {
             continue;
@@ -305,10 +306,23 @@ fn match_records(
             continue;
         };
         paired.insert(request.request_id.clone());
-        if !matcher(record, history, true).is_some_and(|pending| {
-            pending.iter().any(|r| r.request_id == request.request_id)
-        }) {
-            continue;
+        let pending = matcher(record, history, true).unwrap_or_default();
+        assignments.push((request, pending));
+    }
+    // All ordinal claims must be known before recovering a record whose
+    // earlier identical call survived longer than its pruned spool record.
+    for (mut request, pending) in assignments {
+        if !pending.iter().any(|r| r.request_id == request.request_id) {
+            let mut unclaimed = pending.into_iter()
+                .filter(|r| !paired.contains(&r.request_id));
+            let Some(fallback) = unclaimed.next() else {
+                continue;
+            };
+            if unclaimed.next().is_some() {
+                continue;
+            }
+            paired.insert(fallback.request_id.clone());
+            request = fallback;
         }
         let entry = latest.entry(request.request_id.clone());
         match entry {
