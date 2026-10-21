@@ -157,9 +157,11 @@ pub fn parse_claude(screen: &str, command: &str) -> Option<ApprovalDialog> {
         if lines[q].trim() != "Do you want to proceed?" {
             continue;
         }
-        let Some(footer) =
-            (q + 1..lines.len()).find(|&i| lines[i].trim().starts_with("Esc to cancel"))
-        else {
+        let Some(footer) = (q + 1..lines.len()).find(|&i| {
+            leading_whitespace(lines[i]) == leading_whitespace(lines[q])
+                && lines[i].trim().starts_with("Esc to cancel")
+                && lines[i - 1].trim().is_empty()
+        }) else {
             continue;
         };
         let Some(r2) = (0..q).rev().find(|&i| rule(lines[i])) else {
@@ -273,9 +275,10 @@ pub fn parse_codex(screen: &str, command: &str) -> Option<ApprovalDialog> {
                 continue;
             };
             detail.insert(0, first_row.trim_end().to_string());
-            let Some(footer) = (first_option + 1..lines.len())
-                .find(|&i| lines[i].trim() == "Press enter to confirm or esc to cancel")
-            else {
+            let Some(footer) = (first_option + 1..lines.len()).find(|&i| {
+                leading_whitespace(lines[i]) == leading_whitespace(lines[t])
+                    && lines[i].trim() == "Press enter to confirm or esc to cancel"
+            }) else {
                 continue;
             };
             if !rows_match_command(&detail, command) {

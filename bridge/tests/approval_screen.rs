@@ -473,25 +473,26 @@ fn crafted_screens_have_bounded_work() {
     assert_eq!(codex.detail, expected_detail);
 
     let mut claude_rows = vec![" Bash command".to_string(), "╌╌╌╌".into()];
-    claude_rows.extend((0..393).map(|_| " ╌╌╌╌".to_string()));
+    claude_rows.extend((0..392).map(|_| " ╌╌╌╌".to_string()));
     claude_rows.extend(
         [
             "╌╌╌╌",
             " Do you want to proceed?",
             " ❯ 1. Yes",
             "   2. No",
+            "",
             " Esc to cancel",
         ]
         .map(str::to_string),
     );
     assert_eq!(claude_rows.len(), 400);
-    let command = vec!["╌╌╌╌"; 393].join("\n");
+    let command = vec!["╌╌╌╌"; 392].join("\n");
     let claude_screen = claude_rows.join("\n");
     assert_eq!(claude_screen.lines().count(), 400);
     let start = Instant::now();
     let claude = parse_claude(&claude_screen, &command).unwrap();
     assert!(start.elapsed() < Duration::from_secs(1));
-    assert_eq!(claude.detail, vec!["╌╌╌╌"; 393]);
+    assert_eq!(claude.detail, vec!["╌╌╌╌"; 392]);
 }
 
 #[test]
@@ -549,5 +550,66 @@ fn unrelated_codex_scrollback_does_not_claim_live_dialog() {
     assert_eq!(
         parse_codex(&screen, CODEX_COMMAND),
         parse_codex(CODEX, CODEX_COMMAND)
+    );
+}
+
+#[test]
+fn claude_footer_text_in_wrapped_option_is_label_text() {
+    let screen = CLAUDE.replace(
+        "   3.",
+        "      Esc to cancel this option\n      continued label\n   3.",
+    );
+    let dialog = parse_claude(&screen, CLAUDE_COMMAND).unwrap();
+    let original = parse_claude(CLAUDE, CLAUDE_COMMAND).unwrap();
+    let mut expected = original.options[1].label_lines.clone();
+    expected.extend([
+        "Esc to cancel this option".to_string(),
+        "continued label".to_string(),
+    ]);
+    assert_eq!(dialog.options[1].label_lines, expected);
+    assert_eq!(dialog.options.len(), original.options.len());
+    assert_eq!(dialog.options[2..], original.options[2..]);
+}
+
+#[test]
+fn codex_footer_text_in_wrapped_option_is_label_text() {
+    let screen = CODEX.replace(
+        " (p)",
+        "\n     Press enter to confirm or esc to cancel\n     continued label (p)",
+    );
+    let dialog = parse_codex(&screen, CODEX_COMMAND).unwrap();
+    let original = parse_codex(CODEX, CODEX_COMMAND).unwrap();
+    let mut expected = original.options[1].label_lines.clone();
+    expected.extend([
+        "Press enter to confirm or esc to cancel".to_string(),
+        "continued label".to_string(),
+    ]);
+    assert_eq!(dialog.options[1].label_lines, expected);
+    assert_eq!(dialog.options[1].key, OptionKey::Letter('p'));
+    assert_eq!(dialog.options[2], original.options[2]);
+}
+
+#[test]
+fn footer_rows_require_dialog_indent_and_claude_blank_separator() {
+    assert!(
+        parse_claude(
+            &CLAUDE.replace("\n\n Esc to cancel", "\n Esc to cancel"),
+            CLAUDE_COMMAND
+        )
+        .is_none()
+    );
+    assert!(
+        parse_claude(
+            &CLAUDE.replace("\n Esc to cancel", "\n  Esc to cancel"),
+            CLAUDE_COMMAND
+        )
+        .is_none()
+    );
+    assert!(
+        parse_codex(
+            &CODEX.replace("\n  Press enter", "\n Press enter"),
+            CODEX_COMMAND
+        )
+        .is_none()
     );
 }
