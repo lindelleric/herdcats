@@ -296,6 +296,7 @@ fn codex_records_keep_latest_hook_and_sort_by_recorded_at() {
     other["t"] = json!(2.0);
     other["payload"]["tool_input"]["command"] = json!("echo other");
     let mut rollout = pending();
+    rollout.last_mut().unwrap()["timestamp"] = json!("1970-01-01T00:00:00Z");
     let mut call = rollout.last().unwrap().clone();
     call["payload"]["call_id"] = json!("other");
     call["payload"]["input"] = json!("exec({cmd:\"echo other\"})");
@@ -451,4 +452,57 @@ fn codex_call_without_call_id_uses_id_but_outputs_require_call_id() {
             Resolution::Resolved
         );
     }
+}
+
+#[test]
+fn codex_stale_hook_does_not_attach_to_repeated_pending_call() {
+    let mut old = hook("codex", "Bash");
+    old["t"] = json!(1.0);
+    let mut rollout = pending();
+    let first = rollout.last_mut().unwrap();
+    first["timestamp"] = json!("1970-01-01T00:00:00Z");
+    first["payload"]["call_id"] = json!("completed");
+    let mut second = first.clone();
+    second["timestamp"] = json!("1970-01-01T00:00:10.123Z");
+    second["payload"]["call_id"] = json!("pending");
+    rollout.push(output("custom_tool_call_output", "completed"));
+    rollout.push(second);
+    assert!(match_codex(&old, &rollout).is_none());
+    assert!(match_codex_records(std::slice::from_ref(&old), &rollout).is_empty());
+    let mut new = old.clone();
+    new["t"] = json!(11.0);
+    new["payload"]["tool_input"]["description"] = json!("new hook");
+    let matched = match_codex_records(&[new, old], &rollout);
+    assert_eq!(matched.len(), 1);
+    assert_eq!(matched[0].request_id, "pending");
+    assert_eq!(matched[0].recorded_at, 11.0);
+    assert_eq!(matched[0].justification.as_deref(), Some("new hook"));
+}
+
+#[test]
+fn codex_timestamp_requires_valid_utc_and_allows_half_second_slack() {
+    let mut h = hook("codex", "Bash");
+    let mut rollout = pending();
+    rollout.last_mut().unwrap()["timestamp"] = json!("1970-01-01T00:00:01.123Z");
+    h["t"] = json!(0.623);
+    assert!(match_codex(&h, &rollout).is_some());
+    h["t"] = json!(0.622);
+    assert!(match_codex(&h, &rollout).is_none());
+    h["t"] = json!(2.0);
+    for timestamp in [
+        Value::Null,
+        json!("bad"),
+        json!("1970-01-01T00:00:01.Z"),
+        json!("2026-02-29T00:00:00Z"),
+    ] {
+        rollout.last_mut().unwrap()["timestamp"] = timestamp;
+        assert!(match_codex(&h, &rollout).is_none());
+    }
+    rollout
+        .last_mut()
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .remove("timestamp");
+    assert!(match_codex(&h, &rollout).is_none());
 }

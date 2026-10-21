@@ -67,9 +67,9 @@ fn tool_result(block: &Value, id: &str) -> bool {
     block["type"] == "tool_result" && block["tool_use_id"].as_str() == Some(id)
 }
 
-/// Parse the UTC timestamp shape emitted by Claude transcripts, including
+/// Parse the UTC timestamp shape emitted by transcripts and rollouts, including
 /// fractional seconds. Reject malformed dates rather than normalizing them.
-fn transcript_timestamp(value: &Value) -> Option<f64> {
+fn utc_timestamp(value: &Value) -> Option<f64> {
     fn decimal(s: &str) -> Option<i64> {
         if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
             return None;
@@ -142,7 +142,7 @@ pub fn match_claude(record: &Value, transcript: &[Value]) -> Option<PendingReque
         {
             continue;
         }
-        let Some(timestamp) = transcript_timestamp(&r["timestamp"]) else {
+        let Some(timestamp) = utc_timestamp(&r["timestamp"]) else {
             continue;
         };
         if request.recorded_at < timestamp - 0.5 {
@@ -211,6 +211,12 @@ pub fn match_codex(record: &Value, rollout: &[Value]) -> Option<PendingRequest> 
                 .as_str()
                 .is_some_and(|input| input.contains(&quoted))
         {
+            continue;
+        }
+        let Some(timestamp) = utc_timestamp(&r["timestamp"]) else {
+            continue;
+        };
+        if request.recorded_at < timestamp - 0.5 {
             continue;
         }
         let id = nonempty(&payload["call_id"]).or_else(|| nonempty(&payload["id"]))?;
