@@ -280,6 +280,11 @@ pub fn parse_codex(screen: &str, command: &str) -> Option<ApprovalDialog> {
             else {
                 continue;
             };
+            // Blank rows after the command are dialog separators. Preserve
+            // internal blank rows so the hook command must still match exactly.
+            while detail.last().is_some_and(String::is_empty) {
+                detail.pop();
+            }
             detail.insert(0, first_row.trim_end().to_string());
             let Some(footer) = (first_option + 1..lines.len()).find(|&i| {
                 leading_whitespace(lines[i]) == leading_whitespace(lines[t])
