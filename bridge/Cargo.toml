@@ -6,6 +6,6 @@ rust-version = "1.85"
 
 [dependencies]
 serde = { version = "=1.0.229", features = ["derive"] }
-serde_json = { version = "=1.0.151", features = ["raw_value"] }
+serde_json = { version = "=1.0.151", features = ["raw_value", "preserve_order"] }
 libc = "=0.2.189"
 toml_edit = { version = "=0.22.24", default-features = false, features = ["parse", "display"] }

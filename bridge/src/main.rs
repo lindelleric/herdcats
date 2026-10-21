@@ -7,16 +7,37 @@ fn run() -> std::result::Result<(), &'static str> {
         if args.next().is_some() {
             return Err("unknown_argument");
         }
+        // install.sh (including released installers) compares these bytes exactly;
+        // keep the keys in alphabetical order even with preserve_order enabled.
         println!(
             "{}",
             serde_json::json!({
-                "name": "herdcats-bridge",
-                "version": env!("CARGO_PKG_VERSION"),
-                "protocol": 1,
+                "agents": ["claude", "codex"],
                 "herdr_protocol": 22,
-                "agents": ["claude", "codex"]
+                "name": "herdcats-bridge",
+                "protocol": 1,
+                "version": env!("CARGO_PKG_VERSION")
             })
         );
+        return Ok(());
+    }
+    if command.as_deref() == Some("hooks") {
+        let args: Vec<_> = args.collect();
+        let result = match args.as_slice() {
+            [action, flag, agent] if flag == "--agent" => {
+                match herdcats_bridge::hooks::Agent::parse(agent) {
+                    Some(agent) => match action.as_str() {
+                        "install" => herdcats_bridge::hooks::install(agent),
+                        "status" => herdcats_bridge::hooks::status(agent),
+                        "uninstall" => herdcats_bridge::hooks::uninstall(agent),
+                        _ => herdcats_bridge::hooks::HooksResult::error("unknown_argument"),
+                    },
+                    None => herdcats_bridge::hooks::HooksResult::error("invalid_agent"),
+                }
+            }
+            _ => herdcats_bridge::hooks::HooksResult::error("unknown_argument"),
+        };
+        println!("{}", result.to_json());
         return Ok(());
     }
     if command.as_deref() == Some("codex-config") {
@@ -85,9 +106,19 @@ fn run() -> std::result::Result<(), &'static str> {
     if let Some(cr) = codex_root {
         service = service.with_codex_root(cr);
     }
+    if let Some(dir) = herdcats_bridge::hooks::resolve_spool_dir() {
+        let _ = herdcats_bridge::spool::prune(&dir, std::time::SystemTime::now());
+    }
     serve(service, Duration::from_millis(poll)).map_err(|_| "stream_closed")
 }
 fn main() {
+    // Recognize hooks before UTF-8 argument parsing or the normal error path.
+    // Hooks never decide permissions and must not emit even a panic diagnostic.
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("hook")) {
+        std::panic::set_hook(Box::new(|_| {}));
+        let _ = std::panic::catch_unwind(herdcats_bridge::spool::record_cli);
+        return;
+    }
     if let Err(code) = run() {
         eprintln!("{code}");
         std::process::exit(1);

@@ -10,3 +10,6 @@ pub mod service;
 
 pub mod codex_config;
 pub mod content;
+
+pub mod hooks;
+pub mod spool;
