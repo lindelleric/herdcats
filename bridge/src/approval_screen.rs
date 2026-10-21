@@ -5,6 +5,7 @@ use crate::hooks::Agent;
 pub struct ApprovalDialog {
     pub agent: Agent,
     pub title: String,
+    pub environment: Option<String>,
     pub detail: Vec<String>,
     pub reason_lines: Vec<String>,
     pub options: Vec<ApprovalOption>,
@@ -33,6 +34,14 @@ impl ApprovalDialog {
             }
         };
         field(&self.title);
+        field(if self.environment.is_some() {
+            "some"
+        } else {
+            "none"
+        });
+        if let Some(environment) = &self.environment {
+            field(environment);
+        }
         for rows in [&self.detail, &self.reason_lines] {
             field(&rows.len().to_string());
             for row in rows {
@@ -73,6 +82,15 @@ fn rule(line: &str) -> bool {
     !line.is_empty() && line.chars().all(|c| c == '╌')
 }
 
+fn leading_whitespace(line: &str) -> &str {
+    &line[..line.len() - line.trim_start().len()]
+}
+
+fn command_row(line: &str, indent: &str) -> Option<String> {
+    line.strip_prefix(indent)
+        .map(|row| row.trim_end().to_string())
+}
+
 const KNOWN_CLAUDE_TITLES: &[&str] = &["Bash command"];
 
 pub fn parse_claude(screen: &str) -> Option<ApprovalDialog> {
@@ -93,10 +111,17 @@ pub fn parse_claude(screen: &str) -> Option<ApprovalDialog> {
     Some(ApprovalDialog {
         agent: Agent::Claude,
         title,
+        environment: None,
         detail: lines[start_rule + 1..end_rule]
             .iter()
-            .map(|l| l.trim().to_string())
-            .collect(),
+            .map(|line| {
+                if line.trim().is_empty() {
+                    Some(String::new())
+                } else {
+                    command_row(line, leading_whitespace(lines[question]))
+                }
+            })
+            .collect::<Option<Vec<_>>>()?,
         reason_lines: Vec::new(),
         options,
         selected,
@@ -112,6 +137,8 @@ pub fn parse_codex(screen: &str) -> Option<ApprovalDialog> {
     let first = (start + 1..footer).find(|&i| option_line(lines[i], '›').is_some())?;
     let mut detail = Vec::new();
     let mut reason_lines = Vec::new();
+    let mut environment = None;
+    let mut command_indent = None;
     // Metadata exists only before the command starts. Afterward every row
     // belongs to the command, even when it resembles metadata or another prompt.
     let mut in_reason = false;
@@ -120,23 +147,25 @@ pub fn parse_codex(screen: &str) -> Option<ApprovalDialog> {
         if row.is_empty() {
             continue;
         }
-        if !detail.is_empty() {
-            detail.push(row.to_string());
-        } else if let Some(command) = row.strip_prefix("$ ") {
+        if let Some(indent) = command_indent {
+            detail.push(command_row(line, indent)?);
+        } else if let Some(command) = line.trim_start().strip_prefix("$ ") {
             if command.trim().is_empty() {
                 return None;
             }
-            detail.push(command.trim().to_string());
+            command_indent = Some(leading_whitespace(line));
+            detail.push(command.trim_end().to_string());
         } else if let Some(text) = row.strip_prefix("Reason: ") {
             if !reason_lines.is_empty() || text.trim().is_empty() {
                 return None;
             }
             reason_lines.push(text.trim().to_string());
             in_reason = true;
-        } else if let Some(environment) = row.strip_prefix("Environment: ") {
-            if environment.trim().is_empty() {
+        } else if let Some(value) = row.strip_prefix("Environment: ") {
+            if value.trim().is_empty() || environment.is_some() {
                 return None;
             }
+            environment = Some(value.trim().to_string());
         } else if row == "$" || row.starts_with("Reason:") || row.starts_with("Environment:") {
             return None;
         } else {
@@ -154,6 +183,7 @@ pub fn parse_codex(screen: &str) -> Option<ApprovalDialog> {
     Some(ApprovalDialog {
         agent: Agent::Codex,
         title: title.into(),
+        environment,
         detail,
         reason_lines,
         options,

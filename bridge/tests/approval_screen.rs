@@ -238,3 +238,57 @@ fn fingerprint_includes_option_keys() {
         assert_ne!(original.fingerprint(), changed.fingerprint());
     }
 }
+
+#[test]
+fn command_indentation_is_preserved_relative_to_dialog() {
+    for (agent, fixture, old, command, base_indent) in [
+        (
+            Agent::Claude,
+            CLAUDE,
+            " echo herdcats-probe > probe.txt",
+            " cat <<EOF\n EOF",
+            " ",
+        ),
+        (
+            Agent::Codex,
+            CODEX,
+            "  $ echo herdcats-probe > probe2.txt",
+            "  $ cat <<EOF\n  EOF",
+            "  ",
+        ),
+    ] {
+        let screen = fixture.replace(old, command);
+        let original = parse(agent, &screen).unwrap();
+        assert_eq!(original.detail, ["cat <<EOF", "EOF"]);
+        let indented = parse(
+            agent,
+            &screen.replace(
+                &format!("\n{base_indent}EOF"),
+                &format!("\n{base_indent}  EOF"),
+            ),
+        )
+        .unwrap();
+        assert_eq!(indented.detail, ["cat <<EOF", "  EOF"]);
+        assert_ne!(original.fingerprint(), indented.fingerprint());
+        assert!(
+            parse(
+                agent,
+                &screen.replace(&format!("\n{base_indent}EOF"), "\nEOF")
+            )
+            .is_none()
+        );
+    }
+    let screen = CODEX.replace("$ echo herdcats-probe > probe2.txt", "$   cat <<EOF\n  EOF");
+    assert_eq!(parse_codex(&screen).unwrap().detail, ["  cat <<EOF", "EOF"]);
+}
+
+#[test]
+fn fingerprint_includes_codex_environment() {
+    let local = parse_codex(CODEX).unwrap();
+    let sandbox =
+        parse_codex(&CODEX.replace("Environment: local", "Environment: sandbox")).unwrap();
+    assert_eq!(local.environment.as_deref(), Some("local"));
+    assert_eq!(sandbox.environment.as_deref(), Some("sandbox"));
+    assert_ne!(local.fingerprint(), sandbox.fingerprint());
+    assert_eq!(parse_claude(CLAUDE).unwrap().environment, None);
+}
