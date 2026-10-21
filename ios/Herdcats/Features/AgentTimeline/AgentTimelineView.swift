@@ -25,7 +25,10 @@ struct AgentTimelineView: View {
     @State private var waitingKey: WaitingTaskKey?
     @State private var phoneAnswersSelection: PhoneAnswersSelection?
     @State private var approvalResponse = ApprovalResponseState()
-    @State private var approvalCardHeight: CGFloat = 0
+    @State private var waitingRowHeight: CGFloat = 0
+    @State private var sheetState = TimelineSheetState()
+    @State private var drawerApproval: AgentPendingApproval?
+    @State private var approvalViewVisible = false
     @State private var activeClient: AgentBridgeClient?
     @State private var activeOwner: UUID?
     @State private var showsSetup = false
@@ -63,7 +66,7 @@ struct AgentTimelineView: View {
     @State private var copiedCodexStop = false
     @State private var copiedCodexUpdaterStop = false
 
-    private var approvalInset: CGFloat { (showsApproval || showsWaitingRow) ? approvalCardHeight + 8 : 0 }
+    private var approvalInset: CGFloat { showsWaitingRow ? waitingRowHeight + 8 : 0 }
     private var hooksKey: PhoneAnswersStore.Key? {
         guard let generation = connectionState.generation,
             let agent = timeline.identity?.agent, ApprovalAgent(rawValue: agent) != nil else { return nil }
@@ -273,12 +276,7 @@ struct AgentTimelineView: View {
         // the navigation bar and status area.
         .overlay(alignment: .bottom) {
             Group {
-                if showsApproval, let pending = timeline.pendingApproval {
-                    ApprovalCard(pending: pending, response: approvalResponse,
-                        maximumHeight: max(100, min(440, (viewportHeight - topOverlayInset - bottomOverlayInset) * 0.65))) { option in
-                        respondToApproval(pending, option: option)
-                    }
-                } else if showsWaitingRow, let key = hooksKey, let agent = ApprovalAgent(rawValue: key.agent) {
+                if showsWaitingRow, let key = hooksKey, let agent = ApprovalAgent(rawValue: key.agent) {
                     PhoneAnswersWaitingRow(agent: agent, result: appModel.phoneAnswers.result(for: key)) { mode in
                         phoneAnswersSelection = PhoneAnswersSelection(key: key, mode: mode)
                     }
@@ -286,7 +284,7 @@ struct AgentTimelineView: View {
             }
             .background {
                 GeometryReader { geometry in
-                    Color.clear.onChange(of: geometry.size.height, initial: true) { _, height in approvalCardHeight = height }
+                    Color.clear.onChange(of: geometry.size.height, initial: true) { _, height in waitingRowHeight = height }
                 }
             }
             .padding(.horizontal, 16)
@@ -297,9 +295,19 @@ struct AgentTimelineView: View {
         .onChange(of: timeline.pendingApproval, initial: true) { _, pending in approvalResponse.sync(pending) }
         .task(id: taskKey) { await run() }
         .task(id: waitingTaskKey) { await prepareWaitingRow() }
-        .sheet(item: $phoneAnswersSelection) { selection in
-            PhoneAnswersSheet(selection: selection, connection: connection, store: appModel.phoneAnswers,
-                isCurrent: { hooksContextIsCurrent(selection.key) })
+        .onAppear { approvalViewVisible = true; updateTimelineSheet() }
+        .onChange(of: bridgeCapabilities?.approvals) { _, _ in updateTimelineSheet() }
+        .onChange(of: phoneAnswersSelection?.id) { _, _ in updateTimelineSheet() }
+        .onChange(of: showsSetup) { _, _ in updateTimelineSheet() }
+        .onChange(of: showsCodexDaemonConfirm) { _, _ in updateTimelineSheet() }
+        .task(id: timeline.pendingApproval) {
+            // Replacement dialogs arrive as resolved followed by pending.
+            // Coalesce that burst instead of dismissing and reopening the drawer.
+            if timeline.pendingApproval == nil {
+                do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+            }
+            guard !Task.isCancelled else { return }
+            updateTimelineSheet()
         }
         .onChange(of: timeline.revision, initial: true) { _, _ in
             switch timeline.phase {
@@ -370,45 +378,80 @@ struct AgentTimelineView: View {
             historyScrollAnchor = nil
             contentFiles.reset()
         }
-        .onChange(of: taskKey) { _, _ in historyLoader.cancel() }
-        .onDisappear { historyLoader.cancel(); cancelHelperInstallation(); contentFiles.reset() }
-        .sheet(isPresented: $showsSetup, onDismiss: {
+        .onChange(of: taskKey) { _, _ in historyLoader.cancel(); updateTimelineSheet() }
+        .onDisappear {
+            approvalViewVisible = false
+            updateTimelineSheet()
+            historyLoader.cancel(); cancelHelperInstallation(); contentFiles.reset()
+        }
+        .sheet(item: timelineSheetBinding, onDismiss: timelineSheetDismissed) { sheet in timelineSheet(sheet) }
+    }
+    private var timelineSheetBinding: Binding<TimelineSheetState.Sheet?> {
+        Binding(get: { sheetState.presented }, set: { value in
+            guard value == nil else { return }
+            switch sheetState.presented {
+            case .phoneAnswers: phoneAnswersSelection = nil
+            case .helper: showsSetup = false
+            case .codexDaemon: showsCodexDaemonConfirm = false
+            default: break
+            }
+            sheetState.close()
+        })
+    }
+    @MainActor private func timelineSheetDismissed() {
+        let dismissed = sheetState.dismissing
+        if dismissed == .approval { drawerApproval = nil }
+        sheetState.didDismiss()
+        if dismissed == .helper {
             cancelHelperInstallation()
             if setupShouldUseTerminal { onUseTerminal() }
-        }) {
+        }
+        updateTimelineSheet()
+    }
+    @ViewBuilder private func timelineSheet(_ sheet: TimelineSheetState.Sheet) -> some View {
+        switch sheet {
+        case .approval:
+            if let pending = timeline.pendingApproval ?? drawerApproval {
+                ApprovalDrawer(pending: pending, response: approvalResponse) { option in
+                    respondToApproval(pending, option: option)
+                }
+                .id(pending.requestId)
+                .disabled(timeline.pendingApproval == nil)
+            }
+        case .phoneAnswers:
+            if let selection = phoneAnswersSelection {
+                PhoneAnswersSheet(selection: selection, connection: connection, store: appModel.phoneAnswers,
+                    isCurrent: { hooksContextIsCurrent(selection.key) })
+            }
+        case .helper:
             AgentBridgeSetupView(
-                reason: setupReason,
-                agent: agent,
-                installedVersion: bridgeVersion,
+                reason: setupReason, agent: agent, installedVersion: bridgeVersion,
                 isChecking: isCheckingSetup, feedback: setupFeedback,
                 stage: helperStage, target: setupTarget,
                 canInstall: connectionState.isReady && appModel.supportsHostServices && appModel.connectionIdentity == setupTarget && canPinnedInstallerSupportAgent,
                 onInstall: startHelperInstallation,
-                onCheckAgain: {
-                    setupFeedback = nil
-                    isCheckingSetup = true
-                    retry += 1
-                },
+                onCheckAgain: { setupFeedback = nil; isCheckingSetup = true; retry += 1 },
                 onUseTerminal: { cancelHelperInstallation(); showsSetup = false }
             )
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
             .presentationCornerRadius(28)
-        }
-        .sheet(isPresented: $showsCodexDaemonConfirm) {
+        case .codexDaemon:
             CodexDaemonConfirmSheet(
-                onConfirm: {
-                    showsCodexDaemonConfirm = false
-                    disableCodexDaemon()
-                },
-                onCancel: {
-                    showsCodexDaemonConfirm = false
-                }
+                onConfirm: { showsCodexDaemonConfirm = false; disableCodexDaemon() },
+                onCancel: { showsCodexDaemonConfirm = false }
             )
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
             .presentationCornerRadius(28)
         }
+    }
+    @MainActor private func updateTimelineSheet() {
+        if showsApproval { drawerApproval = timeline.pendingApproval }
+        sheetState.sync(pending: showsApproval ? timeline.pendingApproval : nil,
+            visible: approvalViewVisible && scenePhase == .active,
+            phone: phoneAnswersSelection != nil, helper: showsSetup, codex: showsCodexDaemonConfirm)
+        if sheetState.takeComposerFocus() { onFocusComposer() }
     }
     private var contentScope: String {
         "\(activeOwner?.uuidString ?? "none"):\(timeline.generation ?? 0):\(timeline.identity?.nativeSessionId ?? "")"
@@ -1106,14 +1149,17 @@ struct AgentTimelineView: View {
         Task { @MainActor in
             do {
                 let result = try await client.respond(requestId: current.requestId, option: option.number, labelLines: option.labelLines)
-                guard activeOwner == owner, connectionState == ownedConnection, scenePhase == .active,
+                guard approvalViewVisible, activeOwner == owner, connectionState == ownedConnection, scenePhase == .active,
                     timeline.phase == .ready, timeline.identity == current.identity,
                     timeline.generation == current.generation else { return }
                 approvalResponse.sync(timeline.pendingApproval)
                 let effects = approvalResponse.succeed(token: token, confirmed: result.confirmed,
                     focusComposer: ApprovalResponseState.focusesComposer(agent: current.agent, option: option))
                 if effects.haptic { HapticFeedback.impact(.light) }
-                if effects.focusComposer { onFocusComposer() }
+                if effects.focusComposer {
+                    sheetState.requestComposerFocus(for: ApprovalResponseState.Scope(current))
+                    updateTimelineSheet()
+                }
             } catch {
                 guard activeOwner == owner, connectionState == ownedConnection, scenePhase == .active else { return }
                 approvalResponse.sync(timeline.pendingApproval)

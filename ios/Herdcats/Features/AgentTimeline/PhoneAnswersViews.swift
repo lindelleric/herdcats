@@ -10,7 +10,8 @@ struct PhoneAnswersWaitingRow: View {
             Text(hint.title).font(.jost(.subheadline))
             if let detail = hint.detail { Text(detail).font(.jost(.caption)).foregroundStyle(Theme.textMuted) }
             if let action = hint.action {
-                Button(action.confirmLabel) { onSetup(action) }.font(.jost(.subheadline))
+                Button(action.confirmLabel) { onSetup(action) }
+                    .font(.jost(.subheadline)).buttonStyle(.herdrSecondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -66,6 +67,7 @@ struct PhoneAnswersSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.disabled(busy) } }
         }
+        .presentationDetents([.medium, .large])
         .interactiveDismissDisabled(busy)
     }
     @MainActor private func run() {

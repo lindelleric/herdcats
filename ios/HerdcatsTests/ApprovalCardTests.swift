@@ -92,3 +92,61 @@ import Testing
         #expect(ApprovalResponseState.isVisible(pending: pending, approvals: true))
     }
 }
+
+@Suite("Approval drawer presentation")
+@MainActor struct ApprovalDrawerTests {
+    @Test func approvalWaitsForExistingSheetToFinishDismissing() throws {
+        for sheet in [TimelineSheetState.Sheet.phoneAnswers, .helper, .codexDaemon] {
+            let state = TimelineSheetState(), pending = try ApprovalCardTests().approval()
+            state.sync(pending: nil, visible: true, phone: sheet == .phoneAnswers, helper: sheet == .helper, codex: sheet == .codexDaemon)
+            #expect(state.presented == sheet)
+            state.sync(pending: pending, visible: true, phone: sheet == .phoneAnswers, helper: sheet == .helper, codex: sheet == .codexDaemon)
+            #expect(state.presented == sheet)
+            state.sync(pending: pending, visible: true)
+            #expect(state.presented == nil)
+            #expect(state.dismissing == sheet)
+            state.sync(pending: pending, visible: true)
+            #expect(state.presented == nil)
+            state.didDismiss()
+            state.sync(pending: pending, visible: true)
+            #expect(state.presented == .approval)
+        }
+    }
+    @Test func replacementChangesContentWithoutDismissalAndResolutionCloses() throws {
+        let state = TimelineSheetState()
+        state.sync(pending: try ApprovalCardTests().approval(), visible: true)
+        state.sync(pending: try ApprovalCardTests().approval("next"), visible: true)
+        #expect(state.presented == .approval)
+        #expect(state.dismissing == nil)
+        state.sync(pending: nil, visible: true)
+        #expect(state.presented == nil)
+        #expect(state.dismissing == .approval)
+    }
+    @Test func escFocusWaitsForResolutionAndDismissalIncludingLateReply() throws {
+        let pending = try ApprovalCardTests().approval(agent: "codex")
+        for late in [false, true] {
+            let state = TimelineSheetState()
+            state.sync(pending: pending, visible: true)
+            if !late { state.requestComposerFocus(for: ApprovalResponseState.Scope(pending)) }
+            #expect(!state.takeComposerFocus())
+            state.sync(pending: nil, visible: true)
+            #expect(!state.takeComposerFocus())
+            state.didDismiss()
+            state.sync(pending: nil, visible: true)
+            if late { state.requestComposerFocus(for: ApprovalResponseState.Scope(pending)) }
+            #expect(state.takeComposerFocus())
+            #expect(!state.takeComposerFocus())
+        }
+    }
+    @Test func leavingOrReplacementDiscardsOldFocusAndDeferredApproval() throws {
+        let state = TimelineSheetState(), pending = try ApprovalCardTests().approval()
+        state.sync(pending: pending, visible: true)
+        state.requestComposerFocus(for: ApprovalResponseState.Scope(pending))
+        state.sync(pending: try ApprovalCardTests().approval("next"), visible: true)
+        state.sync(pending: nil, visible: true)
+        state.didDismiss()
+        #expect(!state.takeComposerFocus())
+        state.sync(pending: pending, visible: false, helper: true)
+        #expect(state.presented == nil)
+    }
+}

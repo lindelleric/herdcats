@@ -1,11 +1,13 @@
 import SwiftUI
+import UIKit
 
 struct ApprovalCard: View {
     let pending: AgentPendingApproval
     let response: ApprovalResponseState
-    let maximumHeight: CGFloat
     let onRespond: (AgentApprovalOption) -> Void
-    @State private var contentHeight: CGFloat = 360
+    var onMeasure: (CGFloat, CGFloat) -> Void = { _, _ in }
+    @State private var contentHeight: CGFloat = 0
+    @State private var peekHeight: CGFloat = 0
     @State private var commandHeight: CGFloat = 60
 
     private var toolTitle: String {
@@ -41,22 +43,34 @@ struct ApprovalCard: View {
                     Text(verbatim: environment).font(.jost(.caption)).foregroundStyle(Theme.textMuted)
                 }
                 ForEach(Array(pending.options.enumerated()), id: \.element.number) { index, option in
-                    if ApprovalResponseState.requiresSwipe(index: index, count: pending.options.count) {
-                        SwipeToConfirm(labelLines: option.labelLines) { onRespond(option) }
-                    } else {
-                        Button { onRespond(option) } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                ForEach(Array(option.labelLines.enumerated()), id: \.offset) { _, line in
-                                    Text(verbatim: line).frame(maxWidth: .infinity, alignment: .leading)
+                    Group {
+                        if ApprovalResponseState.requiresSwipe(index: index, count: pending.options.count) {
+                            SwipeToConfirm(labelLines: option.labelLines) { onRespond(option) }
+                        } else {
+                            Button { onRespond(option) } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    ForEach(Array(option.labelLines.enumerated()), id: \.offset) { _, line in
+                                        Text(verbatim: line).frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                }
+                                .font(.jost(.subheadline))
+                                .padding(12)
+                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                                .background(Theme.fieldBackground, in: RoundedRectangle(cornerRadius: 12))
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(option.labelLines.joined(separator: "\n"))
+                        }
+                    }
+                    .background {
+                        GeometryReader { geometry in
+                            if index == 0 {
+                                Color.clear.onChange(of: geometry.frame(in: .named("approval-content")).maxY, initial: true) { _, bottom in
+                                    peekHeight = bottom + 16
+                                    onMeasure(contentHeight, peekHeight)
                                 }
                             }
-                            .font(.jost(.subheadline))
-                            .padding(12)
-                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                            .background(Theme.fieldBackground, in: RoundedRectangle(cornerRadius: 12))
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(option.labelLines.joined(separator: "\n"))
                     }
                 }
                 .disabled(response.isDisabled)
@@ -67,16 +81,65 @@ struct ApprovalCard: View {
                 }
             }
             .padding(16)
+            .coordinateSpace(name: "approval-content")
             .background {
                 GeometryReader { geometry in
-                    Color.clear.onChange(of: geometry.size.height, initial: true) { _, height in contentHeight = height }
+                    Color.clear.onChange(of: geometry.size.height, initial: true) { _, height in
+                        contentHeight = height
+                        onMeasure(contentHeight, peekHeight)
+                    }
                 }
             }
         }
-        .frame(height: min(maximumHeight, contentHeight))
         .foregroundStyle(Theme.text)
-        .herdrCard()
+        .background(Theme.background)
         .accessibilityIdentifier("timeline-approval-card")
+    }
+}
+
+struct ApprovalDrawer: View {
+    let pending: AgentPendingApproval
+    let response: ApprovalResponseState
+    let onRespond: (AgentApprovalOption) -> Void
+    @State private var contentHeight: CGFloat = 0
+    @State private var peekHeight: CGFloat = 0
+    @State private var availableHeight: CGFloat = 0
+    @State private var selected: PresentationDetent = .large
+    @State private var userSelected = false
+
+    private var fitted: CGFloat { contentHeight + 32 }
+    private var peek: CGFloat { min(max(180, peekHeight + 32), max(180, availableHeight - 80)) }
+    private var detents: Set<PresentationDetent> {
+        var values: Set<PresentationDetent> = [.large]
+        if availableHeight > 260, peekHeight > 0 { values.insert(.height(peek)) }
+        if contentHeight > 0, fitted < availableHeight { values.insert(.height(fitted)) }
+        return values
+    }
+    var body: some View {
+        GeometryReader { geometry in
+            ApprovalCard(pending: pending, response: response, onRespond: onRespond) { full, first in
+                contentHeight = full; peekHeight = first
+                fitInitially()
+            }
+            .padding(.top, 20)
+            .onChange(of: geometry.size.height, initial: true) { _, height in
+                availableHeight = max(availableHeight, height)
+                fitInitially()
+            }
+        }
+        .presentationDetents(detents, selection: Binding(get: { selected }, set: { selected = $0; userSelected = true }))
+        .presentationDragIndicator(.visible)
+        .presentationBackground(Theme.background)
+        .presentationBackgroundInteraction(.enabled)
+        .presentationCornerRadius(28)
+        .interactiveDismissDisabled()
+        .onAppear {
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        }
+    }
+    private func fitInitially() {
+        guard !userSelected else { return }
+        selected = contentHeight > 0 && fitted < availableHeight ? .height(fitted) : .large
     }
 }
 
@@ -108,7 +171,7 @@ struct SwipeToConfirm: View {
                     .frame(width: 44, height: max(44, geometry.size.height - 8))
                     .background(Theme.accentFill, in: RoundedRectangle(cornerRadius: 8))
                     .offset(x: 4 + offset, y: 4)
-                    .gesture(DragGesture(minimumDistance: 12)
+                    .simultaneousGesture(DragGesture(minimumDistance: 12)
                         .onChanged { value in
                             guard isEnabled, abs(value.translation.width) > abs(value.translation.height) else { return }
                             offset = min(travel, max(0, value.translation.width))
