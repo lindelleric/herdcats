@@ -135,7 +135,10 @@ pub fn match_codex(record: &Value, rollout: &[Value]) -> Option<PendingRequest> 
                 current_turn = Some(turn);
             }
         }
-        if current_turn != Some(turn)
+        // A call's own attribution remains authoritative when turns interleave.
+        let call_turn = nonempty(&payload["internal_chat_message_metadata_passthrough"]["turn_id"])
+            .or(current_turn);
+        if call_turn != Some(turn)
             || r["type"] != "response_item"
             || payload["type"] != "custom_tool_call"
             || !payload["input"]

@@ -127,8 +127,10 @@ fn codex_turns_ambiguity_and_outputs() {
     let mut p = pending();
     let call = p.last().unwrap().clone();
     p.push(json!({"type":"event_msg","payload":{"type":"item_completed","turn_id":"other"}}));
-    p.push(call.clone());
-    // A matching call in another turn must not introduce ambiguity.
+    let mut other_turn = call.clone();
+    other_turn["payload"]["internal_chat_message_metadata_passthrough"]["turn_id"] = json!("other");
+    p.push(other_turn);
+    // A matching call attributed to another turn must not introduce ambiguity.
     assert!(match_codex(&h, &p).is_some());
     assert!(match_codex(&h, &p[p.len() - 2..]).is_none());
     let mut p = pending();
@@ -209,7 +211,12 @@ fn only_later_outputs_exclude_candidates() {
         ),
     );
     assert!(match_codex(&h, &p).is_some());
-    // Without a preceding turn-bearing event, the call cannot be attributed.
+    // Embedded metadata suffices even without preceding turn-bearing events.
+    assert!(match_codex(&h, &p[p.len() - 1..]).is_some());
+    p.last_mut().unwrap()["payload"]
+        .as_object_mut()
+        .unwrap()
+        .remove("internal_chat_message_metadata_passthrough");
     assert!(match_codex(&h, &p[p.len() - 1..]).is_none());
 }
 
@@ -218,6 +225,10 @@ fn codex_event_turns_fall_back_to_root_turn_id() {
     let h = hook("codex", "Bash");
     let turn = h["payload"]["turn_id"].as_str().unwrap();
     let mut p = pending();
+    p.last_mut().unwrap()["payload"]
+        .as_object_mut()
+        .unwrap()
+        .remove("internal_chat_message_metadata_passthrough");
     for record in &mut p {
         if record["type"] == "event_msg" {
             let payload = record["payload"].as_object_mut().unwrap();
@@ -308,4 +319,39 @@ fn codex_records_keep_latest_hook_and_sort_by_recorded_at() {
     );
     assert!(match_claude_records(&[], &[]).is_empty());
     assert!(match_codex_records(&[], &[]).is_empty());
+}
+
+#[test]
+fn codex_embedded_turn_overrides_interleaved_event_position() {
+    let h = hook("codex", "Bash");
+    let mut rollout = pending();
+    rollout.insert(
+        rollout.len() - 1,
+        json!({"type":"event_msg","payload":{"type":"item_completed","turn_id":"other"}}),
+    );
+    assert_eq!(
+        match_codex(&h, &rollout).unwrap().request_id,
+        "a9716926-1865-55d2-9159-819c0fb40697"
+    );
+
+    let mut rollout = pending();
+    rollout.last_mut().unwrap()["payload"]["internal_chat_message_metadata_passthrough"]["turn_id"] =
+        json!("other");
+    assert!(match_codex(&h, &rollout).is_none());
+}
+
+#[test]
+fn codex_calls_without_embedded_turn_use_position() {
+    let h = hook("codex", "Bash");
+    for metadata in [Value::Null, json!({}), json!({"turn_id":""})] {
+        let mut rollout = pending();
+        rollout.last_mut().unwrap()["payload"]["internal_chat_message_metadata_passthrough"] =
+            metadata;
+        assert!(match_codex(&h, &rollout).is_some());
+        rollout.insert(
+            rollout.len() - 1,
+            json!({"type":"event_msg","payload":{"type":"item_completed","turn_id":"other"}}),
+        );
+        assert!(match_codex(&h, &rollout).is_none());
+    }
 }
