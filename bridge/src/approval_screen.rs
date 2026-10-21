@@ -70,10 +70,10 @@ impl ApprovalDialog {
     }
 }
 
-pub fn parse(agent: Agent, screen: &str) -> Option<ApprovalDialog> {
+pub fn parse(agent: Agent, screen: &str, command: &str) -> Option<ApprovalDialog> {
     match agent {
-        Agent::Claude => parse_claude(screen),
-        Agent::Codex => parse_codex(screen),
+        Agent::Claude => parse_claude(screen, command),
+        Agent::Codex => parse_codex(screen, command),
     }
 }
 
@@ -93,102 +93,182 @@ fn command_row(line: &str, indent: &str) -> Option<String> {
 
 const KNOWN_CLAUDE_TITLES: &[&str] = &["Bash command"];
 
-pub fn parse_claude(screen: &str) -> Option<ApprovalDialog> {
-    let lines: Vec<_> = screen.lines().collect();
-    let question = lines
-        .iter()
-        .rposition(|l| l.trim() == "Do you want to proceed?")?;
-    let end_rule = (0..question).rev().find(|&i| rule(lines[i]))?;
-    let start_rule = (0..end_rule).rev().find(|&i| rule(lines[i]))?;
-    let title_row = (0..start_rule)
-        .rev()
-        .find(|&i| KNOWN_CLAUDE_TITLES.contains(&lines[i].trim()))?;
-    let title = lines[title_row].trim().to_string();
-    // Tip and description rows cannot be distinguished reliably when wrapped.
-    let footer =
-        (question + 1..lines.len()).find(|&i| lines[i].trim().starts_with("Esc to cancel"))?;
-    let (options, selected) = options(&lines[question + 1..footer], Agent::Claude)?;
-    Some(ApprovalDialog {
-        agent: Agent::Claude,
-        title,
-        environment: None,
-        detail: lines[start_rule + 1..end_rule]
-            .iter()
-            .map(|line| {
-                if line.trim().is_empty() {
-                    Some(String::new())
-                } else {
-                    command_row(line, leading_whitespace(lines[question]))
-                }
-            })
-            .collect::<Option<Vec<_>>>()?,
-        reason_lines: Vec::new(),
-        options,
-        selected,
-    })
+fn normalized(s: &str) -> String {
+    s.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
-pub fn parse_codex(screen: &str) -> Option<ApprovalDialog> {
-    let lines: Vec<_> = screen.lines().collect();
-    let title = "Would you like to run the following command?";
-    let start = lines.iter().rposition(|l| l.trim() == title)?;
-    let footer = (start + 1..lines.len())
-        .find(|&i| lines[i].trim() == "Press enter to confirm or esc to cancel")?;
-    let first = (start + 1..footer).find(|&i| option_line(lines[i], '›').is_some())?;
-    let mut detail = Vec::new();
-    let mut reason_lines = Vec::new();
+fn screen_rows(screen: &str) -> Vec<&str> {
+    let mut rows: Vec<_> = screen.lines().rev().take(400).collect();
+    rows.reverse();
+    rows
+}
+
+fn detail_rows(lines: &[&str], indent: &str) -> Option<Vec<String>> {
+    lines
+        .iter()
+        .map(|line| {
+            if line.trim().is_empty() {
+                Some(String::new())
+            } else {
+                command_row(line, indent)
+            }
+        })
+        .collect()
+}
+
+pub fn parse_claude(screen: &str, command: &str) -> Option<ApprovalDialog> {
+    let lines = screen_rows(screen);
+    let expected = normalized(command);
+    let mut chosen = None;
+    for q in 0..lines.len() {
+        if lines[q].trim() != "Do you want to proceed?" {
+            continue;
+        }
+        let Some(footer) =
+            (q + 1..lines.len()).find(|&i| lines[i].trim().starts_with("Esc to cancel"))
+        else {
+            continue;
+        };
+        let Some(r2) = (0..q).rev().find(|&i| rule(lines[i])) else {
+            continue;
+        };
+        if lines[r2 + 1..q].iter().any(|l| !l.trim().is_empty()) {
+            continue;
+        }
+        for r1 in 0..r2 {
+            if !rule(lines[r1]) {
+                continue;
+            }
+            let Some(detail) = detail_rows(&lines[r1 + 1..r2], leading_whitespace(lines[q])) else {
+                continue;
+            };
+            if normalized(&detail.join("\n")) != expected {
+                continue;
+            }
+            let Some((options, selected)) = options(&lines[q + 1..footer], Agent::Claude) else {
+                continue;
+            };
+            for title in 0..r1 {
+                if !KNOWN_CLAUDE_TITLES.contains(&lines[title].trim()) {
+                    continue;
+                }
+                // A rule already following this title starts its body;
+                // a rule printed inside that body cannot start it again.
+                if lines[title + 1..r1].iter().any(|l| rule(l)) {
+                    continue;
+                }
+                let dialog = ApprovalDialog {
+                    agent: Agent::Claude,
+                    title: lines[title].trim().into(),
+                    environment: None,
+                    detail: detail.clone(),
+                    reason_lines: Vec::new(),
+                    options: options.clone(),
+                    selected,
+                };
+                if chosen.replace(dialog).is_some() {
+                    return None;
+                }
+            }
+        }
+    }
+    chosen
+}
+
+fn codex_metadata(lines: &[&str]) -> Option<(Option<String>, Vec<String>)> {
     let mut environment = None;
-    let mut command_indent = None;
-    // Metadata exists only before the command starts. Afterward every row
-    // belongs to the command, even when it resembles metadata or another prompt.
-    let mut in_reason = false;
-    for line in &lines[start + 1..first] {
+    let mut reason = Vec::new();
+    for line in lines {
         let row = line.trim();
         if row.is_empty() {
             continue;
         }
-        if let Some(indent) = command_indent {
-            detail.push(command_row(line, indent)?);
-        } else if let Some(command) = line.trim_start().strip_prefix("$ ") {
-            if command.trim().is_empty() {
-                return None;
-            }
-            command_indent = Some(leading_whitespace(line));
-            detail.push(command.trim_end().to_string());
-        } else if let Some(text) = row.strip_prefix("Reason: ") {
-            if !reason_lines.is_empty() || text.trim().is_empty() {
-                return None;
-            }
-            reason_lines.push(text.trim().to_string());
-            in_reason = true;
-        } else if let Some(value) = row.strip_prefix("Environment: ") {
+        if let Some(value) = row.strip_prefix("Environment: ") {
             if value.trim().is_empty() || environment.is_some() {
                 return None;
             }
             environment = Some(value.trim().to_string());
-        } else if row == "$" || row.starts_with("Reason:") || row.starts_with("Environment:") {
+        } else if let Some(text) = row.strip_prefix("Reason: ") {
+            if text.trim().is_empty() || !reason.is_empty() {
+                return None;
+            }
+            reason.push(text.trim().to_string());
+        } else if row.starts_with('$')
+            || row.starts_with("Environment:")
+            || row.starts_with("Reason:")
+            || reason.is_empty()
+        {
             return None;
         } else {
-            if in_reason {
-                reason_lines.push(row.to_string());
-            } else {
+            reason.push(row.to_string());
+        }
+    }
+    Some((environment, reason))
+}
+
+pub fn parse_codex(screen: &str, command: &str) -> Option<ApprovalDialog> {
+    let lines = screen_rows(screen);
+    let title = "Would you like to run the following command?";
+    let expected = normalized(command);
+    let mut chosen = None;
+    let mut body_spans = Vec::new();
+    for t in 0..lines.len() {
+        if lines[t].trim() != title {
+            continue;
+        }
+        // A title printed in a previously recognized command body is body text.
+        if body_spans.iter().any(|&(start, end)| start < t && t < end) {
+            continue;
+        }
+        for s in t + 1..lines.len() {
+            let Some(first_row) = lines[s].trim_start().strip_prefix("$ ") else {
+                continue;
+            };
+            if first_row.trim().is_empty() {
+                continue;
+            }
+            let Some((environment, reason_lines)) = codex_metadata(&lines[t + 1..s]) else {
+                continue;
+            };
+            let Some(first_option) =
+                (s + 1..lines.len()).find(|&i| option_line(lines[i], '›').is_some())
+            else {
+                continue;
+            };
+            let Some(mut detail) =
+                detail_rows(&lines[s + 1..first_option], leading_whitespace(lines[s]))
+            else {
+                continue;
+            };
+            detail.insert(0, first_row.trim_end().to_string());
+            let Some(footer) = (first_option + 1..lines.len())
+                .find(|&i| lines[i].trim() == "Press enter to confirm or esc to cancel")
+            else {
+                continue;
+            };
+            body_spans.push((s, first_option));
+            if normalized(&detail.join("\n")) != expected {
+                continue;
+            }
+            let Some((options, selected)) = options(&lines[first_option..footer], Agent::Codex)
+            else {
+                continue;
+            };
+            let dialog = ApprovalDialog {
+                agent: Agent::Codex,
+                title: title.into(),
+                environment,
+                detail,
+                reason_lines,
+                options,
+                selected,
+            };
+            if chosen.replace(dialog).is_some() {
                 return None;
             }
         }
     }
-    if detail.is_empty() {
-        return None;
-    }
-    let (options, selected) = options(&lines[first..footer], Agent::Codex)?;
-    Some(ApprovalDialog {
-        agent: Agent::Codex,
-        title: title.into(),
-        environment,
-        detail,
-        reason_lines,
-        options,
-        selected,
-    })
+    chosen
 }
 
 fn option_line(line: &str, marker: char) -> Option<(u32, &str, bool, usize)> {

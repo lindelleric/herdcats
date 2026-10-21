@@ -2,11 +2,21 @@ use herdcats_bridge::approval_screen::{OptionKey, parse, parse_claude, parse_cod
 use herdcats_bridge::hooks::Agent;
 
 const CLAUDE: &str = include_str!("../../compatibility/phase1/fixtures/claude-approval-screen.txt");
+const CLAUDE_COMMAND: &str = "echo herdcats-probe > probe.txt";
+const CODEX_COMMAND: &str = "echo herdcats-probe > probe2.txt";
+
+fn fixture_command(agent: Agent) -> &'static str {
+    match agent {
+        Agent::Claude => CLAUDE_COMMAND,
+        Agent::Codex => CODEX_COMMAND,
+    }
+}
+
 const CODEX: &str = include_str!("../../compatibility/phase1/fixtures/codex-approval-screen.txt");
 
 #[test]
 fn fixtures() {
-    let c = parse(Agent::Claude, CLAUDE).unwrap();
+    let c = parse(Agent::Claude, CLAUDE, fixture_command(Agent::Claude)).unwrap();
     assert_eq!(c.agent, Agent::Claude);
     assert_eq!(c.title, "Bash command");
     assert_eq!(c.detail, ["echo herdcats-probe > probe.txt"]);
@@ -30,7 +40,7 @@ fn fixtures() {
         assert_eq!(option.key, OptionKey::Digit(i as u32 + 1));
     }
     assert_eq!(c.options.len(), 4);
-    let c = parse(Agent::Codex, CODEX).unwrap();
+    let c = parse(Agent::Codex, CODEX, fixture_command(Agent::Codex)).unwrap();
     assert_eq!(c.agent, Agent::Codex);
     assert_eq!(c.title, "Would you like to run the following command?");
     assert_eq!(c.detail, ["echo herdcats-probe > probe2.txt"]);
@@ -64,17 +74,27 @@ fn rejects_incomplete_or_ambiguous_screens() {
                 .collect::<Vec<_>>()
                 .join("\n"),
         ] {
-            assert!(parse(agent, &invalid).is_none(), "{invalid}");
+            assert!(
+                parse(agent, &invalid, fixture_command(agent)).is_none(),
+                "{invalid}"
+            );
         }
         let footer = if agent == Agent::Claude {
             "Esc to cancel"
         } else {
             "Press enter to confirm or esc to cancel"
         };
-        assert!(parse(agent, screen.split(footer).next().unwrap()).is_none());
+        assert!(
+            parse(
+                agent,
+                screen.split(footer).next().unwrap(),
+                fixture_command(agent)
+            )
+            .is_none()
+        );
     }
-    assert!(parse_codex(&CODEX.replace(" (y)", "")).is_none());
-    assert!(parse_codex(&CODEX.replace("(y)", "(yes)")).is_none());
+    assert!(parse_codex(&CODEX.replace(" (y)", ""), CODEX_COMMAND).is_none());
+    assert!(parse_codex(&CODEX.replace("(y)", "(yes)"), CODEX_COMMAND).is_none());
 }
 
 #[test]
@@ -88,14 +108,17 @@ fn ignores_surrounding_output_and_whitespace() {
                 .collect::<Vec<_>>()
                 .join("\n")
         );
-        assert_eq!(parse(agent, &padded), parse(agent, screen));
+        assert_eq!(
+            parse(agent, &padded, fixture_command(agent)),
+            parse(agent, screen, fixture_command(agent))
+        );
     }
 }
 
 #[test]
 fn codex_wrapped_labels_and_no_selection() {
     let screen = CODEX.replace("› 1. Yes, proceed (y)", "  1. Yes,\n     proceed (y)");
-    let c = parse_codex(&screen).unwrap();
+    let c = parse_codex(&screen, CODEX_COMMAND).unwrap();
     assert_eq!(c.options[0].label_lines, ["Yes,", "proceed"]);
     assert_eq!(c.options[0].key, OptionKey::Letter('y'));
     assert_eq!(c.selected, None);
@@ -104,21 +127,32 @@ fn codex_wrapped_labels_and_no_selection() {
 #[test]
 fn fingerprint_tracks_content_not_selection() {
     for (agent, screen, marker) in [(Agent::Claude, CLAUDE, '❯'), (Agent::Codex, CODEX, '›')] {
-        let original = parse(agent, screen).unwrap().fingerprint();
+        let original = parse(agent, screen, fixture_command(agent))
+            .unwrap()
+            .fingerprint();
         assert_eq!(
             original,
-            parse(agent, &screen.replace(marker, " "))
+            parse(agent, &screen.replace(marker, " "), fixture_command(agent))
                 .unwrap()
                 .fingerprint()
         );
-        for changed in [
-            screen.replace("Yes", "Absolutely"),
-            screen.replace("echo herdcats-probe", "echo changed"),
+        for (changed, command) in [
+            (
+                screen.replace("Yes", "Absolutely"),
+                fixture_command(agent).to_string(),
+            ),
+            (
+                screen.replace("echo herdcats-probe", "echo changed"),
+                fixture_command(agent).replace("echo herdcats-probe", "echo changed"),
+            ),
         ] {
-            assert_ne!(original, parse(agent, &changed).unwrap().fingerprint());
+            assert_ne!(
+                original,
+                parse(agent, &changed, &command).unwrap().fingerprint()
+            );
         }
     }
-    assert!(parse_claude(CODEX).is_none());
+    assert!(parse_claude(CODEX, CLAUDE_COMMAND).is_none());
 }
 
 #[test]
@@ -132,22 +166,25 @@ fn claude_ignores_wrapped_tip_and_description_rows() {
             "Write probe text to probe.txt",
             "Write probe text\n to probe.txt",
         );
-    let dialog = parse_claude(&screen).unwrap();
-    let original = parse_claude(CLAUDE).unwrap();
+    let dialog = parse_claude(&screen, CLAUDE_COMMAND).unwrap();
+    let original = parse_claude(CLAUDE, CLAUDE_COMMAND).unwrap();
     assert_eq!(dialog.title, "Bash command");
     assert_eq!(dialog.detail, original.detail);
     assert_eq!(dialog.options, original.options);
     assert_eq!(dialog.fingerprint(), original.fingerprint());
     assert_eq!(
-        parse_claude(&CLAUDE.replace(
-            " echo herdcats-probe > probe.txt",
-            " echo herdcats-probe > probe.txt\n\n"
-        ))
+        parse_claude(
+            &CLAUDE.replace(
+                " echo herdcats-probe > probe.txt",
+                " echo herdcats-probe > probe.txt\n\n"
+            ),
+            CLAUDE_COMMAND
+        )
         .unwrap()
         .detail,
         ["echo herdcats-probe > probe.txt", "", ""]
     );
-    assert!(parse_claude(&CLAUDE.replace("Bash command", "Edit file")).is_none());
+    assert!(parse_claude(&CLAUDE.replace("Bash command", "Edit file"), CLAUDE_COMMAND).is_none());
 }
 
 #[test]
@@ -163,13 +200,19 @@ fn codex_preserves_command_and_reason_rows_and_rejects_malformed_metadata() {
             "Reason: Allow the exact requested
   command to write probe2.txt?",
         );
-    let dialog = parse_codex(&screen).unwrap();
+    let dialog = parse_codex(&screen, CODEX_COMMAND).unwrap();
     assert_eq!(dialog.detail, ["echo herdcats-", "probe > probe2.txt"]);
     assert_eq!(
         dialog.reason_lines,
         ["Allow the exact requested", "command to write probe2.txt?"]
     );
-    assert!(parse_codex(&CODEX.replace("  Environment: local", "  unexplained header")).is_none());
+    assert!(
+        parse_codex(
+            &CODEX.replace("  Environment: local", "  unexplained header"),
+            CODEX_COMMAND
+        )
+        .is_none()
+    );
 }
 
 #[test]
@@ -195,8 +238,10 @@ fn fingerprints_preserve_wrap_boundaries_and_all_row_groups() {
         ),
     ] {
         assert_ne!(
-            parse(agent, screen).unwrap().fingerprint(),
-            parse(agent, &screen.replacen(old, new, 1))
+            parse(agent, screen, fixture_command(agent))
+                .unwrap()
+                .fingerprint(),
+            parse(agent, &screen.replacen(old, new, 1), fixture_command(agent))
                 .unwrap()
                 .fingerprint()
         );
@@ -206,7 +251,7 @@ fn fingerprints_preserve_wrap_boundaries_and_all_row_groups() {
 #[test]
 fn codex_command_rows_never_become_metadata() {
     let screen = CODEX.replace("$ echo herdcats-probe > probe2.txt", "$ echo herdcats-probe > probe2.txt\n  Environment: rm -rf\n  Reason: command text\n  $ second row\n  Reason:");
-    let dialog = parse_codex(&screen).unwrap();
+    let dialog = parse_codex(&screen, "echo herdcats-probe > probe2.txt\nEnvironment: rm -rf\nReason: command text\n$ second row\nReason:").unwrap();
     assert_eq!(
         dialog.detail,
         [
@@ -219,14 +264,14 @@ fn codex_command_rows_never_become_metadata() {
     );
     assert_eq!(
         dialog.reason_lines,
-        parse_codex(CODEX).unwrap().reason_lines
+        parse_codex(CODEX, CODEX_COMMAND).unwrap().reason_lines
     );
 }
 
 #[test]
 fn fingerprint_includes_option_keys() {
-    let original = parse_codex(CODEX).unwrap();
-    let changed = parse_codex(&CODEX.replace("(y)", "(n)")).unwrap();
+    let original = parse_codex(CODEX, CODEX_COMMAND).unwrap();
+    let changed = parse_codex(&CODEX.replace("(y)", "(n)"), CODEX_COMMAND).unwrap();
     assert_eq!(
         original.options[0].label_lines,
         changed.options[0].label_lines
@@ -258,7 +303,7 @@ fn command_indentation_is_preserved_relative_to_dialog() {
         ),
     ] {
         let screen = fixture.replace(old, command);
-        let original = parse(agent, &screen).unwrap();
+        let original = parse(agent, &screen, "cat <<EOF\nEOF").unwrap();
         assert_eq!(original.detail, ["cat <<EOF", "EOF"]);
         let indented = parse(
             agent,
@@ -266,6 +311,7 @@ fn command_indentation_is_preserved_relative_to_dialog() {
                 &format!("\n{base_indent}EOF"),
                 &format!("\n{base_indent}  EOF"),
             ),
+            "cat <<EOF\nEOF",
         )
         .unwrap();
         assert_eq!(indented.detail, ["cat <<EOF", "  EOF"]);
@@ -273,22 +319,178 @@ fn command_indentation_is_preserved_relative_to_dialog() {
         assert!(
             parse(
                 agent,
-                &screen.replace(&format!("\n{base_indent}EOF"), "\nEOF")
+                &screen.replace(&format!("\n{base_indent}EOF"), "\nEOF"),
+                "cat <<EOF\nEOF"
             )
             .is_none()
         );
     }
     let screen = CODEX.replace("$ echo herdcats-probe > probe2.txt", "$   cat <<EOF\n  EOF");
-    assert_eq!(parse_codex(&screen).unwrap().detail, ["  cat <<EOF", "EOF"]);
+    assert_eq!(
+        parse_codex(&screen, "  cat <<EOF\nEOF").unwrap().detail,
+        ["  cat <<EOF", "EOF"]
+    );
 }
 
 #[test]
 fn fingerprint_includes_codex_environment() {
-    let local = parse_codex(CODEX).unwrap();
-    let sandbox =
-        parse_codex(&CODEX.replace("Environment: local", "Environment: sandbox")).unwrap();
+    let local = parse_codex(CODEX, CODEX_COMMAND).unwrap();
+    let sandbox = parse_codex(
+        &CODEX.replace("Environment: local", "Environment: sandbox"),
+        CODEX_COMMAND,
+    )
+    .unwrap();
     assert_eq!(local.environment.as_deref(), Some("local"));
     assert_eq!(sandbox.environment.as_deref(), Some("sandbox"));
     assert_ne!(local.fingerprint(), sandbox.fingerprint());
-    assert_eq!(parse_claude(CLAUDE).unwrap().environment, None);
+    assert_eq!(
+        parse_claude(CLAUDE, CLAUDE_COMMAND).unwrap().environment,
+        None
+    );
+}
+
+#[test]
+fn hook_command_anchors_dialog_and_rejects_ambiguity() {
+    for (agent, screen) in [(Agent::Claude, CLAUDE), (Agent::Codex, CODEX)] {
+        assert!(parse(agent, screen, "different command").is_none());
+        // Scrollback and the live screen are indistinguishable: fail closed.
+        assert!(
+            parse(
+                agent,
+                &format!("{screen}\n{screen}"),
+                fixture_command(agent)
+            )
+            .is_none()
+        );
+    }
+}
+
+#[test]
+fn codex_embedded_title_and_prompt_cannot_hide_command_prefix() {
+    let command = "cat <<EOF\nWould you like to run the following command?\n$ echo suffix\nEOF";
+    let screen = CODEX.replacen(
+        "$ echo herdcats-probe > probe2.txt",
+        "$ cat <<EOF\n  Would you like to run the following command?\n  $ echo suffix\n  EOF",
+        1,
+    );
+    let dialog = parse_codex(&screen, command).unwrap();
+    assert_eq!(dialog.detail, command.lines().collect::<Vec<_>>());
+    assert!(parse_codex(&screen, "echo suffix\nEOF").is_none());
+}
+
+#[test]
+fn claude_embedded_rule_cannot_hide_command_prefix() {
+    let command = "cat <<EOF\n╌╌╌╌\necho suffix\nEOF";
+    let screen = CLAUDE.replacen(
+        " echo herdcats-probe > probe.txt",
+        " cat <<EOF\n ╌╌╌╌\n echo suffix\n EOF",
+        1,
+    );
+    let dialog = parse_claude(&screen, command).unwrap();
+    assert_eq!(dialog.detail, command.lines().collect::<Vec<_>>());
+    assert!(parse_claude(&screen, "echo suffix\nEOF").is_none());
+}
+
+#[test]
+fn codex_blank_command_rows_are_retained_and_fingerprinted() {
+    let command = "cat <<EOF\nbody\nEOF";
+    let blank_command = "cat <<EOF\n\nbody\nEOF";
+    let screen = CODEX.replacen(
+        "$ echo herdcats-probe > probe2.txt",
+        "$ cat <<EOF\n  body\n  EOF",
+        1,
+    );
+    let blank_screen = screen.replace("  body", "\n  body");
+    let plain = parse_codex(&screen, command).unwrap();
+    let blank = parse_codex(&blank_screen, blank_command).unwrap();
+    assert_eq!(plain.detail, ["cat <<EOF", "body", "EOF"]);
+    assert_eq!(blank.detail, ["cat <<EOF", "", "body", "EOF"]);
+    assert_ne!(plain.fingerprint(), blank.fingerprint());
+    // Normalization intentionally ignores whitespace, including blank rows.
+    assert!(parse_codex(&screen, blank_command).is_some());
+    assert!(parse_codex(&blank_screen, command).is_some());
+}
+
+#[test]
+fn wrapped_commands_match_the_unwrapped_hook() {
+    for (agent, screen, command) in [
+        (Agent::Claude, CLAUDE, CLAUDE_COMMAND),
+        (Agent::Codex, CODEX, CODEX_COMMAND),
+    ] {
+        let indent = if agent == Agent::Claude { " " } else { "  " };
+        for wrapped in [
+            format!(
+                "echo herdcats-\n{indent}probe > {}",
+                if agent == Agent::Claude {
+                    "probe.txt"
+                } else {
+                    "probe2.txt"
+                }
+            ),
+            command.replace(" > ", &format!("\n{indent}> ")),
+        ] {
+            assert!(parse(agent, &screen.replacen(command, &wrapped, 1), command).is_some());
+        }
+    }
+}
+
+#[test]
+fn crafted_screens_have_bounded_work() {
+    use std::time::{Duration, Instant};
+    let title = "  Would you like to run the following command?";
+    let mut codex_rows: Vec<String> = (0..394)
+        .map(|i| {
+            if i % 2 == 0 {
+                title.into()
+            } else {
+                "  $ unrelated".into()
+            }
+        })
+        .collect();
+    codex_rows.extend(
+        [
+            title,
+            "  $ echo target",
+            "› 1. Yes (y)",
+            "  2. No (esc)",
+            "  Press enter to confirm or esc to cancel",
+            "pane output",
+        ]
+        .map(str::to_string),
+    );
+    assert_eq!(codex_rows.len(), 400);
+    let mut expected_detail = vec!["unrelated".to_string()];
+    expected_detail.extend(
+        codex_rows[2..396]
+            .iter()
+            .map(|row| row.strip_prefix("  ").unwrap().to_string()),
+    );
+    let command = expected_detail.join("\n");
+    let codex_screen = codex_rows.join("\n");
+    assert_eq!(codex_screen.lines().count(), 400);
+    let start = Instant::now();
+    let codex = parse_codex(&codex_screen, &command).unwrap();
+    assert!(start.elapsed() < Duration::from_secs(1));
+    assert_eq!(codex.detail, expected_detail);
+
+    let mut claude_rows = vec![" Bash command".to_string(), "╌╌╌╌".into()];
+    claude_rows.extend((0..393).map(|_| " ╌╌╌╌".to_string()));
+    claude_rows.extend(
+        [
+            "╌╌╌╌",
+            " Do you want to proceed?",
+            " ❯ 1. Yes",
+            "   2. No",
+            " Esc to cancel",
+        ]
+        .map(str::to_string),
+    );
+    assert_eq!(claude_rows.len(), 400);
+    let command = vec!["╌╌╌╌"; 393].join("\n");
+    let claude_screen = claude_rows.join("\n");
+    assert_eq!(claude_screen.lines().count(), 400);
+    let start = Instant::now();
+    let claude = parse_claude(&claude_screen, &command).unwrap();
+    assert!(start.elapsed() < Duration::from_secs(1));
+    assert_eq!(claude.detail, vec!["╌╌╌╌"; 393]);
 }
