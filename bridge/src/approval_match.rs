@@ -67,6 +67,66 @@ fn tool_result(block: &Value, id: &str) -> bool {
     block["type"] == "tool_result" && block["tool_use_id"].as_str() == Some(id)
 }
 
+/// Parse the UTC timestamp shape emitted by Claude transcripts, including
+/// fractional seconds. Reject malformed dates rather than normalizing them.
+fn transcript_timestamp(value: &Value) -> Option<f64> {
+    fn decimal(s: &str) -> Option<i64> {
+        if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        s.parse().ok()
+    }
+    let utc = value.as_str()?.strip_suffix('Z')?;
+    let (whole, fraction) = if let Some((whole, fraction)) = utc.split_once('.') {
+        if fraction.is_empty() || !fraction.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        (whole, format!("0.{fraction}").parse::<f64>().ok()?)
+    } else {
+        (utc, 0.0)
+    };
+    if whole.len() != 19
+        || whole.get(4..5)? != "-"
+        || whole.get(7..8)? != "-"
+        || whole.get(10..11)? != "T"
+        || whole.get(13..14)? != ":"
+        || whole.get(16..17)? != ":"
+    {
+        return None;
+    }
+    let year = decimal(whole.get(0..4)?)?;
+    let month = decimal(whole.get(5..7)?)?;
+    let day = decimal(whole.get(8..10)?)?;
+    let hour = decimal(whole.get(11..13)?)?;
+    let minute = decimal(whole.get(14..16)?)?;
+    let second = decimal(whole.get(17..19)?)?;
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if leap {
+                29
+            } else {
+                28
+            }
+        }
+        _ => return None,
+    };
+    if !(1..=days_in_month).contains(&day) || hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+    // Gregorian days-from-civil, the inverse of codex::civil_from_days.
+    let adjusted_year = year - i64::from(month <= 2);
+    let era = adjusted_year.div_euclid(400);
+    let year_of_era = adjusted_year - era * 400;
+    let march_month = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * march_month + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146097 + day_of_era - 719468;
+    Some((days * 86400 + hour * 3600 + minute * 60 + second) as f64 + fraction)
+}
+
 pub fn match_claude(record: &Value, transcript: &[Value]) -> Option<PendingRequest> {
     let mut request = request(record, Agent::Claude)?;
     let content: Vec<_> = transcript
@@ -80,6 +140,12 @@ pub fn match_claude(record: &Value, transcript: &[Value]) -> Option<PendingReque
             || block["name"].as_str() != Some(&request.tool_name)
             || block.get("input") != Some(&request.tool_input)
         {
+            continue;
+        }
+        let Some(timestamp) = transcript_timestamp(&r["timestamp"]) else {
+            continue;
+        };
+        if request.recorded_at < timestamp - 0.5 {
             continue;
         }
         let id = nonempty(&block["id"])?;
@@ -147,7 +213,7 @@ pub fn match_codex(record: &Value, rollout: &[Value]) -> Option<PendingRequest> 
         {
             continue;
         }
-        let id = nonempty(&payload["call_id"])?;
+        let id = nonempty(&payload["call_id"]).or_else(|| nonempty(&payload["id"]))?;
         if rollout[i + 1..].iter().any(|r| call_output(r, id)) {
             continue;
         }

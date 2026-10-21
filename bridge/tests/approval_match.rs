@@ -34,7 +34,7 @@ fn pending() -> Vec<Value> {
     ))
 }
 fn tool_use(id: &str, h: &Value) -> Value {
-    json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":id,"name":h["payload"]["tool_name"],"input":h["payload"]["tool_input"]}]}})
+    json!({"type":"assistant","timestamp":"1970-01-01T00:00:00Z","message":{"role":"assistant","content":[{"type":"tool_use","id":id,"name":h["payload"]["tool_name"],"input":h["payload"]["tool_input"]}]}})
 }
 fn output(kind: &str, id: &str) -> Value {
     json!({"type":"response_item","payload":{"type":kind,"call_id":id,"output":"done"}})
@@ -353,5 +353,102 @@ fn codex_calls_without_embedded_turn_use_position() {
             json!({"type":"event_msg","payload":{"type":"item_completed","turn_id":"other"}}),
         );
         assert!(match_codex(&h, &rollout).is_none());
+    }
+}
+
+#[test]
+fn claude_stale_hook_does_not_attach_to_repeated_pending_call() {
+    let mut h = hook("claude", "Bash");
+    h["t"] = json!(1.0);
+    let mut newer_call = tool_use("pending", &h);
+    newer_call["timestamp"] = json!("1970-01-01T00:00:10Z");
+    let transcript = [
+        tool_use("old", &h),
+        json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"old"}]}}),
+        newer_call,
+    ];
+    assert!(match_claude(&h, &transcript).is_none());
+    assert!(match_claude_records(std::slice::from_ref(&h), &transcript).is_empty());
+    h["t"] = json!(10.0);
+    assert_eq!(match_claude(&h, &transcript).unwrap().request_id, "pending");
+}
+
+#[test]
+fn claude_timestamp_fraction_and_half_second_slack() {
+    let mut h = hook("claude", "Bash");
+    let mut call = tool_use("pending", &h);
+    call["timestamp"] = json!("1970-01-01T00:00:01.123Z");
+    h["t"] = json!(0.623);
+    assert!(match_claude(&h, std::slice::from_ref(&call)).is_some());
+    h["t"] = json!(0.622);
+    assert!(match_claude(&h, std::slice::from_ref(&call)).is_none());
+    h["t"] = json!(2.0);
+    for timestamp in [
+        Value::Null,
+        json!("bad"),
+        json!("1970-01-01T00:00:01.Z"),
+        json!("1970-01-01T00:00:01.1xZ"),
+        json!("1970-01-01T24:00:00Z"),
+        json!("1970-01-01T00:60:00Z"),
+        json!("2026-02-29T00:00:00Z"),
+        json!("2026-13-01T00:00:00Z"),
+        json!("2026-01-00T00:00:00Z"),
+        json!("é970-01-01T00:00:00Z"),
+    ] {
+        call["timestamp"] = timestamp;
+        assert!(match_claude(&h, std::slice::from_ref(&call)).is_none());
+    }
+    call.as_object_mut().unwrap().remove("timestamp");
+    assert!(match_claude(&h, &[call]).is_none());
+}
+
+#[test]
+fn claude_timestamp_calendar_conversion() {
+    let mut h = hook("claude", "Bash");
+    for (timestamp, seconds) in [
+        ("2000-02-29T00:00:00Z", 951782400.0),
+        ("1900-03-01T00:00:00Z", -2203891200.0),
+        ("1970-01-02T01:02:03.25Z", 90123.25),
+    ] {
+        let mut call = tool_use("pending", &h);
+        call["timestamp"] = json!(timestamp);
+        h["t"] = json!(seconds - 0.5);
+        assert!(
+            match_claude(&h, std::slice::from_ref(&call)).is_some(),
+            "{timestamp}"
+        );
+        h["t"] = json!(seconds - 0.501);
+        assert!(match_claude(&h, &[call]).is_none(), "{timestamp}");
+    }
+}
+
+#[test]
+fn codex_call_without_call_id_uses_id_but_outputs_require_call_id() {
+    let h = hook("codex", "Bash");
+    let mut rollout = pending();
+    let payload = rollout.last_mut().unwrap()["payload"]
+        .as_object_mut()
+        .unwrap();
+    payload.remove("call_id");
+    let id = payload["id"].as_str().unwrap().to_string();
+    assert_eq!(match_codex(&h, &rollout).unwrap().request_id, id);
+    assert_eq!(codex_resolution(&id, "turn", &rollout), Resolution::Pending);
+    let mut id_only_output = output("custom_tool_call_output", &id);
+    id_only_output["payload"]
+        .as_object_mut()
+        .unwrap()
+        .remove("call_id");
+    id_only_output["payload"]["id"] = json!(id);
+    rollout.push(id_only_output);
+    assert!(match_codex(&h, &rollout).is_some());
+    assert_eq!(codex_resolution(&id, "turn", &rollout), Resolution::Pending);
+    for kind in ["custom_tool_call_output", "function_call_output"] {
+        let mut resolved = rollout.clone();
+        resolved.push(output(kind, &id));
+        assert!(match_codex(&h, &resolved).is_none());
+        assert_eq!(
+            codex_resolution(&id, "turn", &resolved),
+            Resolution::Resolved
+        );
     }
 }
