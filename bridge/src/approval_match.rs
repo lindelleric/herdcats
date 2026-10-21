@@ -145,7 +145,7 @@ pub fn match_claude(record: &Value, transcript: &[Value]) -> Option<PendingReque
         let Some(timestamp) = utc_timestamp(&r["timestamp"]) else {
             continue;
         };
-        if request.recorded_at < timestamp - 0.5 {
+        if request.recorded_at < timestamp {
             continue;
         }
         let id = nonempty(&block["id"])?;
@@ -216,7 +216,7 @@ pub fn match_codex(record: &Value, rollout: &[Value]) -> Option<PendingRequest> 
         let Some(timestamp) = utc_timestamp(&r["timestamp"]) else {
             continue;
         };
-        if request.recorded_at < timestamp - 0.5 {
+        if request.recorded_at < timestamp {
             continue;
         }
         let id = nonempty(&payload["call_id"]).or_else(|| nonempty(&payload["id"]))?;

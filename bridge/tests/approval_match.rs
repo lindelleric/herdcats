@@ -375,14 +375,18 @@ fn claude_stale_hook_does_not_attach_to_repeated_pending_call() {
 }
 
 #[test]
-fn claude_timestamp_fraction_and_half_second_slack() {
+fn claude_timestamp_fraction_requires_hook_at_or_after_call() {
     let mut h = hook("claude", "Bash");
     let mut call = tool_use("pending", &h);
     call["timestamp"] = json!("1970-01-01T00:00:01.123Z");
-    h["t"] = json!(0.623);
-    assert!(match_claude(&h, std::slice::from_ref(&call)).is_some());
-    h["t"] = json!(0.622);
-    assert!(match_claude(&h, std::slice::from_ref(&call)).is_none());
+    for t in [0.723, 1.122] {
+        h["t"] = json!(t);
+        assert!(match_claude(&h, std::slice::from_ref(&call)).is_none());
+    }
+    for t in [1.123, 1.124] {
+        h["t"] = json!(t);
+        assert!(match_claude(&h, std::slice::from_ref(&call)).is_some());
+    }
     h["t"] = json!(2.0);
     for timestamp in [
         Value::Null,
@@ -413,12 +417,12 @@ fn claude_timestamp_calendar_conversion() {
     ] {
         let mut call = tool_use("pending", &h);
         call["timestamp"] = json!(timestamp);
-        h["t"] = json!(seconds - 0.5);
+        h["t"] = json!(seconds);
         assert!(
             match_claude(&h, std::slice::from_ref(&call)).is_some(),
             "{timestamp}"
         );
-        h["t"] = json!(seconds - 0.501);
+        h["t"] = json!(seconds - 0.001);
         assert!(match_claude(&h, &[call]).is_none(), "{timestamp}");
     }
 }
@@ -480,14 +484,18 @@ fn codex_stale_hook_does_not_attach_to_repeated_pending_call() {
 }
 
 #[test]
-fn codex_timestamp_requires_valid_utc_and_allows_half_second_slack() {
+fn codex_timestamp_requires_valid_utc_and_hook_at_or_after_call() {
     let mut h = hook("codex", "Bash");
     let mut rollout = pending();
     rollout.last_mut().unwrap()["timestamp"] = json!("1970-01-01T00:00:01.123Z");
-    h["t"] = json!(0.623);
-    assert!(match_codex(&h, &rollout).is_some());
-    h["t"] = json!(0.622);
-    assert!(match_codex(&h, &rollout).is_none());
+    for t in [0.723, 1.122] {
+        h["t"] = json!(t);
+        assert!(match_codex(&h, &rollout).is_none());
+    }
+    for t in [1.123, 1.124] {
+        h["t"] = json!(t);
+        assert!(match_codex(&h, &rollout).is_some());
+    }
     h["t"] = json!(2.0);
     for timestamp in [
         Value::Null,
