@@ -333,6 +333,7 @@
   "transient_read_behavior": "source_changing retries without clearing verified cache for the same identity; after repeated retries (threshold 10), emits timeline.updated with delayed: true while keeping verified history until recovery clears it. A changed occupant still clears old state.",
   "approval_policy": {
     "data_sources": "Options come from the visible screen; command/description come from the hook. Codex justification also comes from the hook. Keep command, description and justification verbatim; preserve option label_lines as separate rows.",
+    "dialog_notices": "Between the Claude command border and approval prompt, accept only blank rows or exact known notices after trimming whitespace (currently: This command requires approval). Retain notice rows in dialog identity so notice changes invalidate a response; they do not replace the hook description or justification.",
     "authority": "The terminal dialog stays in charge. The bridge mirrors it and answers only with guarded shortcuts; it never sends Enter.",
     "eligibility": "Require all three: a spool record correlated to a still-pending native call, Herdr agent_status blocked, and exactly one dialog parsed from source visible anchored to the hook command. Never use scrollback/recent text or guess an uncorrelated request.",
     "bounds": "Keep every pending frame below wire_frame_bytes. Suppress an oversized approval instead of truncating command, metadata or labels.",

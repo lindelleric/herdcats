@@ -613,3 +613,85 @@ fn footer_rows_require_dialog_indent_and_claude_blank_separator() {
         .is_none()
     );
 }
+
+// Captured Claude Code 2.1.306 visible screen; generated fixtures stay untouched.
+const CLAUDE_LIVE_NOTICE: &str = r##"
+ ▐▛███▛█   Claude Code v2.1.306
+▝▜██████▀  Opus 5.5 with medium effort · Claude Pro
+ ▝▝   ▝▝   /private/tmp/claude-501/-Users-zhiyaochan-Projects-ios-app-herdcats/34eb7120-3b5c-423d-9a9b-f92901911409/scratchpad/live/claude
+
+
+❯ Use the Bash tool to run exactly this one command and nothing else: python3 -c "open('probe.txt','w').write('one')"
+
+  Ran 1 shell command
+
+⏺ I ran the command and it finished with no errors. It should have written one to probe.txt in the working directory
+  (/private/tmp/claude-501/-Users-zhiyaochan-Projects-ios-app-herdcats/34eb7120-3b5c-423d-9a9b-f92901911409/scratchpad/live/claude/probe.txt). I didn't open the file to check, since you asked for
+  that one command only.
+
+✻ Cooked for 11s · done 3:50 PM
+
+❯ Use the Bash tool to run exactly: python3 -c "open('probe2.txt','w').write('two')"
+
+  Writing "two" to probe2.txt
+  ⎿  $ python3 -c "open('probe2.txt','w').write('two')"
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Bash command
+ Tip: auto mode handles these prompts for you — choose "switch to auto mode" below
+ Write "two" to probe2.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ python3 -c "open('probe2.txt','w').write('two')"
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ This command requires approval
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don’t ask again for: python3 *
+   3. Yes, and switch to auto mode · auto mode handles these prompts for you
+   4. No
+
+ Esc to cancel · Tab to amend
+"##;
+
+const CLAUDE_LIVE_COMMAND: &str = "python3 -c \"open('probe2.txt','w').write('two')\"";
+
+#[test]
+fn claude_live_known_notice_is_retained_in_dialog_identity() {
+    let dialog = parse_claude(CLAUDE_LIVE_NOTICE, CLAUDE_LIVE_COMMAND).unwrap();
+    assert_eq!(dialog.selected, Some(0));
+    assert_eq!(dialog.detail, [CLAUDE_LIVE_COMMAND]);
+    assert_eq!(dialog.reason_lines, ["This command requires approval"]);
+    let labels = [
+        vec!["Yes"],
+        vec!["Yes, and don’t ask again for: python3 *"],
+        vec!["Yes, and switch to auto mode · auto mode handles these prompts for you"],
+        vec!["No"],
+    ];
+    assert_eq!(dialog.options.len(), 4);
+    for (index, (option, labels)) in dialog.options.iter().zip(labels).enumerate() {
+        assert_eq!(option.number, index as u32 + 1);
+        assert_eq!(option.label_lines, labels);
+        assert_eq!(option.key, OptionKey::Digit(index as u32 + 1));
+    }
+    let without_notice = CLAUDE_LIVE_NOTICE.replace(" This command requires approval", "");
+    let plain = parse_claude(&without_notice, CLAUDE_LIVE_COMMAND).unwrap();
+    assert!(plain.reason_lines.is_empty());
+    assert_ne!(dialog.canonical(), plain.canonical());
+    assert!(!dialog.same_dialog(&plain));
+    let padded = CLAUDE_LIVE_NOTICE.replace(" This command requires approval", "   This command requires approval   ");
+    assert!(dialog.same_dialog(&parse_claude(&padded, CLAUDE_LIVE_COMMAND).unwrap()));
+}
+
+#[test]
+fn claude_live_unknown_notice_is_still_rejected() {
+    for notice in [
+        "Unrecognized approval notice",
+        "This command requires approval.",
+        "This command requires approval from an administrator",
+        "This command requires approval\n Unexpected additional row",
+    ] {
+        let screen = CLAUDE_LIVE_NOTICE.replace("This command requires approval", notice);
+        assert!(parse_claude(&screen, CLAUDE_LIVE_COMMAND).is_none(), "{notice}");
+    }
+}

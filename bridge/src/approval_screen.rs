@@ -96,6 +96,7 @@ fn command_row(line: &str, indent: &str) -> Option<String> {
 }
 
 const KNOWN_CLAUDE_TITLES: &[&str] = &["Bash command"];
+const KNOWN_CLAUDE_NOTICES: &[&str] = &["This command requires approval"];
 
 /// Match exact row text, allowing only one visual-wrap separator per boundary.
 fn rows_match_command(rows: &[String], command: &str) -> bool {
@@ -167,7 +168,12 @@ pub fn parse_claude(screen: &str, command: &str) -> Option<ApprovalDialog> {
         let Some(r2) = (0..q).rev().find(|&i| rule(lines[i])) else {
             continue;
         };
-        if lines[r2 + 1..q].iter().any(|l| !l.trim().is_empty()) {
+        let reason_lines: Vec<_> = lines[r2 + 1..q].iter()
+            .map(|line| line.trim())
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect();
+        if reason_lines.iter().any(|line| !KNOWN_CLAUDE_NOTICES.contains(&line.as_str())) {
             continue;
         }
         for r1 in 0..r2 {
@@ -197,7 +203,7 @@ pub fn parse_claude(screen: &str, command: &str) -> Option<ApprovalDialog> {
                     title: lines[title].trim().into(),
                     environment: None,
                     detail: detail.clone(),
-                    reason_lines: Vec::new(),
+                    reason_lines: reason_lines.clone(),
                     options: options.clone(),
                     selected,
                 };
