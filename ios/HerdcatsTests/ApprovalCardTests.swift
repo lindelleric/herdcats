@@ -150,3 +150,30 @@ import Testing
         #expect(state.presented == nil)
     }
 }
+
+#if DEBUG && targetEnvironment(simulator)
+@Suite("Approval screenshot fixtures")
+@MainActor struct ApprovalScreenshotTests {
+    @Test func codexLiveDialogKeepsWrappedRowsAndShortcuts() throws {
+        let frame = try AgentTimelineScreenshotFixture.approvalFrame(paneId: "p0", agent: "codex")
+        let pending = try AgentPendingApproval.decode(#require(frame.data))
+        #expect(frame.seq == 2)
+        #expect(pending.title == "Would you like to run the following command?")
+        #expect(pending.command == "touch herdcats-live-4.txt")
+        #expect(pending.environment == "local")
+        #expect(pending.justification == "Allow creating herdcats-live-4.txt in this read-only workspace?")
+        #expect(pending.options.map(\.key) == ["y", "p", "esc"])
+        #expect(pending.options[0].labelLines == ["Yes, proceed"])
+        #expect(pending.options[1].labelLines.count == 2)
+    }
+    @Test func claudeFixtureUsesBashDescriptionAndDigitOptions() throws {
+        let frame = try AgentTimelineScreenshotFixture.approvalFrame(paneId: "p0", agent: "claude")
+        let pending = try AgentPendingApproval.decode(#require(frame.data))
+        #expect(pending.agent == "claude")
+        #expect(pending.toolName == "Bash")
+        #expect(pending.description != nil)
+        #expect(pending.justification == nil)
+        #expect(pending.options.map(\.key) == ["1", "2", "3"])
+    }
+}
+#endif
