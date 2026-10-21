@@ -164,8 +164,8 @@ impl Peer {
         assert_eq!(x["result"]["capabilities"]["claude_timeline"], true);
         assert_eq!(x["result"]["capabilities"]["codex_daemon_stop"], true);
         assert_eq!(x["result"]["capabilities"]["codex_daemon_config"], true);
-        assert_eq!(x["result"]["capabilities"]["approvals"], false);
-        for capability in ["git", "prompts", "approvals", "questions", "routed_hosts"] {
+        assert_eq!(x["result"]["capabilities"]["approvals"], true);
+        for capability in ["git", "prompts", "questions", "routed_hosts"] {
             assert_eq!(x["result"]["capabilities"][capability], false);
         }
     }
@@ -738,4 +738,35 @@ fn assert_daemon_status_uses_configured_home(symlink_sessions: bool) {
         unavailable["data"]["codex_daemon"], "running",
         "daemon status must come from the configured home, not the symlink target"
     );
+}
+
+#[test]
+fn protocol_documents_approval_capability_request_and_event_fields() {
+    let protocol: Value = serde_json::from_str(include_str!("../protocol.json")).unwrap();
+    assert_eq!(protocol["protocol"], 1);
+    assert_eq!(protocol["bridge_version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(protocol["capabilities"]["approvals"], true);
+    for capability in ["prompts", "questions"] {
+        assert_eq!(protocol["capabilities"][capability], false);
+    }
+    let respond = protocol["requests"].as_array().unwrap().iter()
+        .find(|request| request["method"] == "interaction.respond").unwrap();
+    for field in ["request_id", "option", "label_lines"] {
+        assert!(respond["params"].get(field).is_some(), "missing response param: {field}");
+    }
+    assert_eq!(respond["result_fields"], json!(["request_id", "sent", "confirmed"]));
+    assert_eq!(protocol["events"]["interaction.pending"]["fields"], json!([
+        "identity", "generation", "kind", "request_id", "agent", "tool_name", "command",
+        "description", "justification", "environment", "title", "options", "selected"
+    ]));
+    assert_eq!(protocol["events"]["interaction.resolved"]["fields"], json!([
+        "identity", "generation", "request_id"
+    ]));
+    for field in ["number", "label_lines", "key"] {
+        assert!(protocol["events"]["interaction.pending"]["option_fields"].get(field).is_some());
+    }
+    for error in ["stale", "mismatch"] {
+        assert!(protocol["errors"].as_array().unwrap().contains(&json!(error)));
+        assert!(respond["errors"].get(error).is_some());
+    }
 }

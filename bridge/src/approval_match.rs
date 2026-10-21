@@ -10,6 +10,7 @@ pub struct PendingRequest {
     pub tool_name: String,
     pub tool_input: Value,
     pub justification: Option<String>,
+    pub turn_id: Option<String>,
     pub suggestions: Option<Value>,
     pub recorded_at: f64,
 }
@@ -44,6 +45,11 @@ fn request(record: &Value, agent: Agent) -> Option<PendingRequest> {
         tool_name: nonempty(&payload["tool_name"])?.into(),
         justification: if agent == Agent::Codex {
             tool_input["description"].as_str().map(str::to_string)
+        } else {
+            None
+        },
+        turn_id: if agent == Agent::Codex {
+            nonempty(&payload["turn_id"]).map(str::to_owned)
         } else {
             None
         },
@@ -128,12 +134,25 @@ fn utc_timestamp(value: &Value) -> Option<f64> {
 }
 
 pub fn match_claude(record: &Value, transcript: &[Value]) -> Option<PendingRequest> {
+    let mut candidates = claude_candidates(record, transcript, true)?;
+    if candidates.len() == 1 {
+        candidates.pop()
+    } else {
+        None
+    }
+}
+
+fn claude_candidates(
+    record: &Value,
+    transcript: &[Value],
+    pending_only: bool,
+) -> Option<Vec<PendingRequest>> {
     let mut request = request(record, Agent::Claude)?;
     let content: Vec<_> = transcript
         .iter()
         .flat_map(|r| blocks(r).map(move |b| (r, b)))
         .collect();
-    let mut candidate = None;
+    let mut candidates = Vec::new();
     for (i, (r, block)) in content.iter().enumerate() {
         if r["type"] != "assistant"
             || block["type"] != "tool_use"
@@ -149,15 +168,13 @@ pub fn match_claude(record: &Value, transcript: &[Value]) -> Option<PendingReque
             continue;
         }
         let id = nonempty(&block["id"])?;
-        if content[i + 1..].iter().any(|(_, b)| tool_result(b, id)) {
+        if pending_only && content[i + 1..].iter().any(|(_, b)| tool_result(b, id)) {
             continue;
         }
-        if candidate.replace(id).is_some() {
-            return None;
-        }
+        request.request_id = id.into();
+        candidates.push(request.clone());
     }
-    request.request_id = candidate?.into();
-    Some(request)
+    Some(candidates)
 }
 
 pub fn claude_resolution(request_id: &str, transcript: &[Value]) -> Resolution {
@@ -188,12 +205,25 @@ fn event_turn(payload: &Value) -> Option<&str> {
 }
 
 pub fn match_codex(record: &Value, rollout: &[Value]) -> Option<PendingRequest> {
+    let mut candidates = codex_candidates(record, rollout, true)?;
+    if candidates.len() == 1 {
+        candidates.pop()
+    } else {
+        None
+    }
+}
+
+fn codex_candidates(
+    record: &Value,
+    rollout: &[Value],
+    pending_only: bool,
+) -> Option<Vec<PendingRequest>> {
     let mut request = request(record, Agent::Codex)?;
     let turn = nonempty(&record["payload"]["turn_id"])?;
     let command = request.tool_input["command"].as_str()?;
     let quoted = serde_json::to_string(command).ok()?;
     let mut current_turn = None;
-    let mut candidate = None;
+    let mut candidates = Vec::new();
     for (i, r) in rollout.iter().enumerate() {
         let payload = &r["payload"];
         if r["type"] == "event_msg" {
@@ -220,15 +250,13 @@ pub fn match_codex(record: &Value, rollout: &[Value]) -> Option<PendingRequest> 
             continue;
         }
         let id = nonempty(&payload["call_id"]).or_else(|| nonempty(&payload["id"]))?;
-        if rollout[i + 1..].iter().any(|r| call_output(r, id)) {
+        if pending_only && rollout[i + 1..].iter().any(|r| call_output(r, id)) {
             continue;
         }
-        if candidate.replace(id).is_some() {
-            return None;
-        }
+        request.request_id = id.into();
+        candidates.push(request.clone());
     }
-    request.request_id = candidate?.into();
-    Some(request)
+    Some(candidates)
 }
 
 pub fn codex_resolution(request_id: &str, turn_id: &str, rollout: &[Value]) -> Resolution {
@@ -248,24 +276,60 @@ pub fn codex_resolution(request_id: &str, turn_id: &str, rollout: &[Value]) -> R
 
 /// Correlate a session's spool records, retaining the newest metadata per call.
 pub fn match_claude_records(records: &[Value], transcript: &[Value]) -> Vec<PendingRequest> {
-    match_records(records, transcript, match_claude)
+    match_records(records, transcript, claude_candidates)
 }
 
 /// Correlate a session's spool records, retaining the newest metadata per call.
 pub fn match_codex_records(records: &[Value], rollout: &[Value]) -> Vec<PendingRequest> {
-    match_records(records, rollout, match_codex)
+    match_records(records, rollout, codex_candidates)
 }
 
 fn match_records(
     records: &[Value],
     history: &[Value],
-    matcher: fn(&Value, &[Value]) -> Option<PendingRequest>,
+    matcher: fn(&Value, &[Value], bool) -> Option<Vec<PendingRequest>>,
 ) -> Vec<PendingRequest> {
     let mut latest = std::collections::BTreeMap::<String, PendingRequest>::new();
-    for record in records {
-        let Some(request) = matcher(record, history) else {
+    // Pair in recording order before discarding resolved calls. Timestamp
+    // eligibility alone cannot distinguish parallel identical calls.
+    let mut ordered: Vec<_> = records.iter().enumerate().collect();
+    ordered.sort_by(|(ai, a), (bi, b)| {
+        a["t"].as_f64().unwrap_or(f64::NEG_INFINITY)
+            .total_cmp(&b["t"].as_f64().unwrap_or(f64::NEG_INFINITY))
+            .then(ai.cmp(bi))
+    });
+    let mut paired = std::collections::BTreeSet::new();
+    let mut assignments = Vec::new();
+    for (_, record) in ordered {
+        let Some(candidates) = matcher(record, history, false) else {
             continue;
         };
+        let Some(request) = candidates.iter()
+            .find(|r| !paired.contains(&r.request_id))
+            .or_else(|| candidates.last())
+            .cloned()
+        else {
+            continue;
+        };
+        paired.insert(request.request_id.clone());
+        let pending = matcher(record, history, true).unwrap_or_default();
+        assignments.push((request, pending));
+    }
+    // All ordinal claims must be known before recovering a record whose
+    // earlier identical call survived longer than its pruned spool record.
+    for (mut request, pending) in assignments {
+        if !pending.iter().any(|r| r.request_id == request.request_id) {
+            let mut unclaimed = pending.into_iter()
+                .filter(|r| !paired.contains(&r.request_id));
+            let Some(fallback) = unclaimed.next() else {
+                continue;
+            };
+            if unclaimed.next().is_some() {
+                continue;
+            }
+            paired.insert(fallback.request_id.clone());
+            request = fallback;
+        }
         let entry = latest.entry(request.request_id.clone());
         match entry {
             std::collections::btree_map::Entry::Vacant(entry) => {

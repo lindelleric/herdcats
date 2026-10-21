@@ -13,12 +13,12 @@
   },
   "capabilities": {
     "claude_timeline": "true when transcript root is available; per-pane source validation still required",
-    "codex_timeline": "true when the Codex root exists; prompts/approvals/questions/routed_hosts stay false",
+    "codex_timeline": "true when the Codex root exists; per-pane source validation still required; prompts/questions/routed_hosts stay false",
     "codex_daemon_config": true,
     "codex_daemon_stop": true,
     "git": false,
     "prompts": false,
-    "approvals": false,
+    "approvals": true,
     "questions": false,
     "routed_hosts": false,
     "record_content": "true; rich entries and bounded content retrieval are enabled only when initialize params.record_content is true"
@@ -92,6 +92,39 @@
         "hex"
       ],
       "effect": "Revalidates native occupant and source; returns at most64KiB raw bytes encoded as lowercase hex. Only current retained entry references are readable; no host paths accepted."
+    },
+    {
+      "method": "interaction.respond",
+      "params": {
+        "request_id": "string from the last interaction.pending event",
+        "option": "one-based u32 option number, not the zero-based selected index",
+        "label_lines": "array of strings copied exactly from that option; preserve row boundaries and order"
+      },
+      "result_fields": [
+        "request_id",
+        "sent",
+        "confirmed"
+      ],
+      "result_types": {
+        "request_id": "string; echoed approval request ID",
+        "sent": "string; exactly one Claude digit shortcut, Codex letter shortcut, or esc; never Enter",
+        "confirmed": "boolean; true when the visible screen no longer parses as the same dialog; false if it remains or confirmation reads fail"
+      },
+      "requires": "initialize and a watch with a resolved native identity; approvals capability is true for both Claude and Codex",
+      "validation": [
+        "The request_id must equal the last emitted pending approval for the current watch identity and generation.",
+        "Re-read the visible screen and parse with the same hook command; dialog content and option keys must match the emitted dialog. A highlight-only change is allowed.",
+        "The option number must exist and its complete label_lines array must equal the echoed rows.",
+        "Re-read the spool and adapter-verified transcript/rollout, bypassing the polling match cache. The same call must still be Pending and the newest pending request in the session, with unchanged tool name, input and Codex turn attribution.",
+        "A fresh Herdr snapshot must still show the same native occupant blocked in the same pane and terminal."
+      ],
+      "errors": {
+        "not_watching": "No active watch.",
+        "timeline_unavailable": "The watch has no resolved identity or its timeline is unavailable.",
+        "stale": "No matching emitted request, changed/unreadable dialog or source, resolved/aborted or superseded call, or changed/unblocked/missing pane. No keys are sent.",
+        "mismatch": "The option number is invalid or its label_lines differ from the exact rows shown. No keys are sent."
+      },
+      "effect": "After validation, send exactly one shortcut without Enter. Re-read the visible screen for up to about 2 seconds with short waits. Return confirmed: false rather than an error if the key was sent but disappearance could not be confirmed; do not automatically resend. Write the result, then poll so interaction.resolved can follow promptly."
     }
   ],
   "envelopes": {
@@ -160,6 +193,57 @@
         "codex_daemon"
       ],
       "effect": "clear selected timeline and invalidate cursors. For Codex panes with session_reference_unavailable, ambiguous_session or invalid_session_reference, data carries codex_daemon ('running' | 'not_running' | 'unknown'). Stopping the daemon disconnects active sessions attached to it, which must be restarted."
+    },
+    "interaction.pending": {
+      "fields": [
+        "identity",
+        "generation",
+        "kind",
+        "request_id",
+        "agent",
+        "tool_name",
+        "command",
+        "description",
+        "justification",
+        "environment",
+        "title",
+        "options",
+        "selected"
+      ],
+      "field_types": {
+        "identity": "object with pane_id, terminal_id, agent and native_session_id; same identity as the watched timeline",
+        "generation": "u64; timeline generation for this approval",
+        "kind": "approval",
+        "request_id": "string; Claude tool_use_id or Codex rollout call_id; uncorrelated hook records produce no event",
+        "agent": "claude or codex",
+        "tool_name": "string from the hook, for example Bash",
+        "command": "string from hook tool_input.command, verbatim",
+        "description": "string from Claude hook tool_input.description, verbatim, or null; null for Codex",
+        "justification": "string from the Codex hook justification (tool_input.description), verbatim, or null; null for Claude",
+        "environment": "string parsed from the visible screen, or null",
+        "title": "string parsed from the visible screen",
+        "options": "array of option objects, in visible screen order",
+        "selected": "zero-based index into options, or null when no highlight is visible"
+      },
+      "option_fields": {
+        "number": "one-based u32 displayed option number; echo as interaction.respond params.option",
+        "label_lines": "array of visible label rows, preserving row boundaries; never join rows when echoing a response",
+        "key": "string parsed from the screen: Claude digit shortcut, Codex letter shortcut, or esc; the client echoes number and label_lines, not a key"
+      },
+      "effect": "Show only the newest correlated Pending request when the pane is blocked and exactly one visible dialog matches its hook command. Emit only on a changed request, dialog content/keys, or selection (and after identity/generation reset). A replacement request emits interaction.resolved for the old request first."
+    },
+    "interaction.resolved": {
+      "fields": [
+        "identity",
+        "generation",
+        "request_id"
+      ],
+      "field_types": {
+        "identity": "object; identity of the previously emitted approval, including on occupant replacement",
+        "generation": "u64; generation of the previously emitted approval",
+        "request_id": "string; previously emitted Claude tool_use_id or Codex rollout call_id"
+      },
+      "effect": "Clear the matching pending approval once when the call resolves/aborts, the pane leaves blocked, the dialog disappears or becomes uncertain, or the identity changes. initialize and unwatch reset pending state without emitting this event. Same-identity source_changing retries preserve the existing approval without emitting interaction.resolved."
     }
   },
   "entry_fields": {
@@ -190,13 +274,13 @@
     "oversized_source_record_behavior": "Complete source lines exceeding the parsed record limit use bounded typed deserialization for text/tools. Negotiated rich mode additionally emits image descriptors and unfamiliar-record bubbles with complete source references, without embedding bulky image bytes in live frames. Incomplete lines wait for newline; the 64MiB source bound remains hard.",
     "evicted_ids_per_update": 1000
   },
-  "source_policy": "Herdr22 Claude reference source herdr:claude; native UUID exact filename/path beneath pinned transcript root; ambiguity, symlinks, missing reference or foreign main-session records fail closed.",
+  "source_policy": "Herdr22 references use herdr:claude or herdr:codex. Claude native UUID filenames/paths stay beneath the pinned transcript root; Codex rollouts stay beneath the pinned sessions root and verify session metadata and pane cwd. Ambiguous references, symlinks below pinned roots, missing references or foreign main-session records fail closed.",
   "implementation_limits": [
     "Polling-only fallback; no subscriptions.",
     "Bounded source prefix reread on change, new complete records parsed incrementally.",
     "Negotiated content retrieval covers complete original records and blocks within the verified 64MiB source; only references on retained entries are readable.",
     "Claude captured2.1.296 schema coverage; no general version promise.",
-    "Optional four-platform installer and native iOS client; Codex and native approval/question actions remain unavailable."
+    "Optional four-platform installer and native iOS client. Bridge approval events and guarded responses support Claude and Codex in unreleased builds from main (shipping in 0.3.0; published 0.2.2 reports approvals: false); native app approval UI, prompts, questions and saved-machine routing remain gated."
   ],
   "errors": [
     "ambiguous_session",
@@ -216,6 +300,7 @@
     "invalid_request_id",
     "invalid_session_reference",
     "invalid_transcript",
+    "mismatch",
     "missing_argument",
     "not_initialized",
     "not_watching",
@@ -229,6 +314,7 @@
     "socket_required",
     "source_changing",
     "source_too_large",
+    "stale",
     "stale_cursor",
     "stream_closed",
     "timeline_unavailable",
@@ -244,5 +330,14 @@
     "unsupported_herdr_protocol",
     "unsupported_session_source"
   ],
-  "transient_read_behavior": "source_changing retries without clearing verified cache for the same identity; after repeated retries (threshold 10), emits timeline.updated with delayed: true while keeping verified history until recovery clears it. A changed occupant still clears old state."
+  "transient_read_behavior": "source_changing retries without clearing verified cache for the same identity; after repeated retries (threshold 10), emits timeline.updated with delayed: true while keeping verified history until recovery clears it. A changed occupant still clears old state.",
+  "approval_policy": {
+    "data_sources": "Options come from the visible screen; command/description come from the hook. Codex justification also comes from the hook. Keep command, description and justification verbatim; preserve option label_lines as separate rows.",
+    "dialog_notices": "Between the Claude command border and approval prompt, accept only blank rows or exact known notices after trimming whitespace (currently: This command requires approval). Retain notice rows in dialog identity so notice changes invalidate a response; they do not replace the hook description or justification.",
+    "authority": "The terminal dialog stays in charge. The bridge mirrors it and answers only with guarded shortcuts; it never sends Enter.",
+    "eligibility": "Require all three: a spool record correlated to a still-pending native call, Herdr agent_status blocked, and exactly one dialog parsed from source visible anchored to the hook command. Never use scrollback/recent text or guess an uncorrelated request.",
+    "bounds": "Keep every pending frame below wire_frame_bytes. Suppress an oversized approval instead of truncating command, metadata or labels.",
+    "input_failures": "Approval spool/screen/tail read failures yield no card and do not themselves emit timeline.unavailable. Same-identity timeline source_changing retries preserve an already emitted card until verification can resume.",
+    "capability": "approvals: true advertises bridge support for Claude and Codex (unreleased until 0.3.0; clients must gate on this capability, not on bridge_version); cards still require installed recording hooks and verified live inputs. prompts and questions remain false."
+  }
 }

@@ -1,5 +1,6 @@
 //! Best-effort, bounded storage for non-deciding agent hook requests.
-use crate::hooks::{Agent, resolve_spool_dir};
+use crate::hooks::Agent;
+pub use crate::hooks::resolve_spool_dir;
 use serde::de::{IgnoredAny, MapAccess, Visitor};
 use serde_json::{Value, json};
 use std::{
@@ -13,6 +14,56 @@ use std::{
 const INPUT_LIMIT: usize = 1024 * 1024;
 const BYTE_LIMIT: usize = 256 * 1024;
 const RECORD_LIMIT: usize = 64;
+
+fn valid_session_id(session: &str) -> bool {
+    !session.is_empty()
+        && session.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+}
+
+/// Read complete records without creating or modifying any spool state.
+/// Any unavailable, unsafe, or oversized source yields no requests.
+pub fn read_session(dir: &Path, agent: Agent, session_id: &str) -> Vec<Value> {
+    fn read(dir: &Path, agent: Agent, session_id: &str) -> io::Result<Vec<Value>> {
+        if !valid_session_id(session_id) {
+            return Ok(Vec::new());
+        }
+        let metadata = fs::symlink_metadata(dir)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Ok(Vec::new());
+        }
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        let file = options.open(dir.join(format!("{}-{session_id}.jsonl", agent.name())))?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.len() > BYTE_LIMIT as u64 {
+            return Ok(Vec::new());
+        }
+        let mut bytes = Vec::new();
+        file.take((BYTE_LIMIT + 1) as u64).read_to_end(&mut bytes)?;
+        if bytes.len() > BYTE_LIMIT {
+            return Ok(Vec::new());
+        }
+        let mut records = std::collections::VecDeque::new();
+        for line in bytes.split_inclusive(|b| *b == b'\n') {
+            if line.last() != Some(&b'\n') {
+                continue;
+            }
+            if let Ok(record) = serde_json::from_slice(line) {
+                if records.len() == RECORD_LIMIT {
+                    records.pop_front();
+                }
+                records.push_back(record);
+            }
+        }
+        Ok(records.into_iter().collect())
+    }
+    read(dir, agent, session_id).unwrap_or_default()
+}
 
 /// Called only behind the binary's silent panic boundary. Bad arguments and
 /// non-Herdr sessions still consume stdin, but never create spool files.
@@ -95,11 +146,7 @@ pub fn record_in_dir(
             .map(str::to_owned);
         (payload, session, event)
     };
-    if session.is_empty()
-        || !session
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
-    {
+    if !valid_session_id(&session) {
         return Ok(());
     }
     let mut record = json!({
@@ -325,11 +372,7 @@ pub fn prune(dir: &Path, now: SystemTime) -> io::Result<()> {
         else {
             continue;
         };
-        if session.is_empty()
-            || !session
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
-        {
+        if !valid_session_id(session) {
             continue;
         }
         let metadata = fs::symlink_metadata(entry.path())?;

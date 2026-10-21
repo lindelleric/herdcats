@@ -1,7 +1,35 @@
 use crate::{Result, claude::Transcript};
-use std::{fs, io::Read, os::unix::fs::MetadataExt, path::Path};
+use std::{
+    fs,
+    io::{Read, Seek, SeekFrom},
+    os::unix::fs::MetadataExt,
+    path::Path,
+};
 pub const MAX_SOURCE: u64 = 64 * 1024 * 1024;
 pub const MAX_RECORD: usize = 1024 * 1024;
+/// Tail the already resolved and verified adapter file; no path lookup occurs.
+/// Ignore the first possibly partial line and any unfinished final record.
+pub fn read_tail(mut file: fs::File) -> Result<Vec<serde_json::Value>> {
+    const LIMIT: u64 = 4 * 1024 * 1024;
+    let metadata = file.metadata().map_err(|_| "transcript_unavailable")?;
+    if !metadata.is_file() {
+        return Err("transcript_unavailable");
+    }
+    let start = metadata.len().saturating_sub(LIMIT);
+    file.seek(SeekFrom::Start(start))
+        .map_err(|_| "transcript_unavailable")?;
+    let mut bytes = Vec::new();
+    file.take(LIMIT).read_to_end(&mut bytes)
+        .map_err(|_| "transcript_unavailable")?;
+    let mut lines = bytes.split_inclusive(|b| *b == b'\n');
+    if start > 0 {
+        lines.next();
+    }
+    Ok(lines.filter(|line| line.last() == Some(&b'\n'))
+        .filter_map(|line| serde_json::from_slice(line).ok())
+        .collect())
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct Stamp {
     dev: u64,
