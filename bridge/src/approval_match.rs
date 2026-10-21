@@ -10,6 +10,7 @@ pub struct PendingRequest {
     pub tool_name: String,
     pub tool_input: Value,
     pub justification: Option<String>,
+    pub turn_id: Option<String>,
     pub suggestions: Option<Value>,
     pub recorded_at: f64,
 }
@@ -44,6 +45,11 @@ fn request(record: &Value, agent: Agent) -> Option<PendingRequest> {
         tool_name: nonempty(&payload["tool_name"])?.into(),
         justification: if agent == Agent::Codex {
             tool_input["description"].as_str().map(str::to_string)
+        } else {
+            None
+        },
+        turn_id: if agent == Agent::Codex {
+            nonempty(&payload["turn_id"]).map(str::to_owned)
         } else {
             None
         },

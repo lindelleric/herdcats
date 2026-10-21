@@ -1,11 +1,15 @@
 use crate::{
     Result,
     adapter::Adapter,
+    approval_match::{self, PendingRequest, Resolution},
+    approval_screen::{self, ApprovalDialog, OptionKey},
     claude::{ClaudeAdapter, Entry},
     codex::{CodexAdapter, CodexResolver},
     follower::{Follower, MAX_RECORD},
     herdr::Client,
+    hooks::Agent,
     resolver::Resolver,
+    spool,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -23,6 +27,62 @@ struct Identity {
     terminal_id: String,
     agent: String,
     native_session_id: String,
+}
+struct PendingApproval {
+    identity: Identity,
+    generation: u64,
+    request: PendingRequest,
+    dialog: ApprovalDialog,
+}
+impl PendingApproval {
+    fn data(&self) -> Value {
+        let options: Vec<_> = self.dialog.options.iter().map(|option| {
+            let key = match option.key {
+                OptionKey::Digit(n) => n.to_string(),
+                OptionKey::Letter(c) => c.to_string(),
+                OptionKey::Escape => "esc".into(),
+            };
+            json!({"number":option.number,"label_lines":option.label_lines,"key":key})
+        }).collect();
+        json!({
+            "identity":self.identity,"generation":self.generation,"kind":"approval",
+            "request_id":self.request.request_id,"agent":self.request.agent.name(),
+            "tool_name":self.request.tool_name,"command":self.request.tool_input["command"],
+            "description":if self.request.agent == Agent::Claude {
+                self.request.tool_input.get("description").and_then(Value::as_str)
+            } else { None },
+            "justification":self.request.justification,"environment":self.dialog.environment,
+            "title":self.dialog.title,"options":options,"selected":self.dialog.selected
+        })
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ApprovalFileStamp {
+    dev: u64,
+    ino: u64,
+    len: u64,
+    mtime: (i64, i64),
+    ctime: (i64, i64),
+}
+impl ApprovalFileStamp {
+    fn of(metadata: &std::fs::Metadata) -> Self {
+        use std::os::unix::fs::MetadataExt;
+        Self {
+            dev: metadata.dev(), ino: metadata.ino(), len: metadata.len(),
+            mtime: (metadata.mtime(), metadata.mtime_nsec()),
+            ctime: (metadata.ctime(), metadata.ctime_nsec()),
+        }
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ApprovalInputStamp {
+    spool: ApprovalFileStamp,
+    transcript: ApprovalFileStamp,
+}
+struct ApprovalMatchCache {
+    identity: Identity,
+    stamp: ApprovalInputStamp,
+    request: Option<PendingRequest>,
 }
 struct Watch {
     pane_id: String,
@@ -45,6 +105,8 @@ struct Watch {
     // would not reset the generation for the new occupant.
     unavailable_agent: Option<String>,
     last_daemon_status: Option<&'static str>,
+    pending: Option<PendingApproval>,
+    approval_cache: Option<ApprovalMatchCache>,
 }
 pub struct Service {
     pub client: Client,
@@ -65,6 +127,7 @@ pub struct Service {
     // app-server-daemon/daemon.pid — reporting not_running while the real
     // daemon runs under the configured home.
     codex_home: Option<PathBuf>,
+    spool_dir: Option<PathBuf>,
 }
 pub fn page(entries: &[Entry], before: usize) -> Value {
     let mut start = before.saturating_sub(100);
@@ -128,6 +191,7 @@ impl Service {
             watch: None,
             codex_daemon_cache: None,
             codex_home: None,
+            spool_dir: spool::resolve_spool_dir(),
         }
     }
     pub fn invalidate_codex_daemon_cache(&mut self) {
@@ -204,7 +268,7 @@ impl Service {
         &self,
         watch: &mut Watch,
         refresh: &mut impl FnMut(&mut Follower, std::fs::File, &str) -> Result<bool>,
-    ) -> Result<(Identity, bool, String)> {
+    ) -> Result<(Identity, bool, String, Option<std::fs::File>)> {
         let snapshot = self.client.snapshot()?;
         let pane = snapshot
             .panes
@@ -232,12 +296,23 @@ impl Service {
             // A transient read of a new occupant cannot authorize serving the
             // previous occupant's cached transcript.
             watch.identity = None;
+            watch.approval_cache = None;
         }
+        if pane.agent_status != "blocked" {
+            watch.approval_cache = None;
+        }
+        // Clone only the descriptor. Tail reading happens after timeline work,
+        // using the same adapter-verified source and no additional path lookup.
+        let approval_file = if pane.agent_status == "blocked" {
+            file.try_clone().ok()
+        } else {
+            None
+        };
         refresh(&mut watch.follower, file, &session)?;
         let reset = watch.identity.as_ref() != Some(&identity)
             || watch.unavailable.is_some()
             || watch.follower.generation != watch.generation;
-        Ok((identity, reset, pane.agent_status.clone()))
+        Ok((identity, reset, pane.agent_status.clone(), approval_file))
     }
     pub fn poll(&mut self, out: &mut impl Write) -> io::Result<()> {
         self.poll_with_refresh(out, |follower, file, session| {
@@ -252,8 +327,11 @@ impl Service {
         let Some(mut watch) = self.watch.take() else {
             return Ok(());
         };
+        let mut pending = None;
+        let mut preserve_pending = false;
         match self.poll_inner(&mut watch, &mut refresh) {
             Err("source_changing") if watch.identity.is_some() && watch.unavailable.is_none() => {
+                preserve_pending = true;
                 watch.source_changing_count += 1;
                 if watch.source_changing_count >= 10 && !watch.delayed {
                     watch.delayed = true;
@@ -276,6 +354,7 @@ impl Service {
                 }
             }
             Err(code) => {
+                watch.approval_cache = None;
                 watch.source_changing_count = 0;
                 watch.delayed = false;
                 let is_codex_no_session = watch.agent.as_deref() == Some("codex")
@@ -322,7 +401,7 @@ impl Service {
                     self.event(out, "timeline.unavailable", data)?;
                 }
             }
-            Ok((identity, reset, status)) => {
+            Ok((identity, reset, status, approval_file)) => {
                 let was_delayed = watch.delayed;
                 watch.source_changing_count = 0;
                 watch.delayed = false;
@@ -334,6 +413,7 @@ impl Service {
                     .map(|old| old.id.clone())
                     .collect();
                 if reset {
+                    watch.approval_cache = None;
                     self.generation += 1;
                     let mut body = page(&data.entries, data.entries.len());
                     body["identity"] = json!(identity);
@@ -393,6 +473,11 @@ impl Service {
                 watch.unknown_records = data.unknown_records;
                 watch.dropped_entries = data.dropped_entries;
                 watch.previous = data.entries.clone();
+                if status == "blocked" {
+                    pending = approval_file.and_then(|file| {
+                        self.read_pending(&identity, file, &mut watch.approval_cache)
+                    });
+                }
                 watch.identity = Some(identity);
                 watch.status = status;
                 watch.unavailable = None;
@@ -401,7 +486,139 @@ impl Service {
                 watch.generation = watch.follower.generation;
             }
         }
+        if !preserve_pending {
+            self.update_pending(out, &mut watch, pending)?;
+        }
         self.watch = Some(watch);
+        Ok(())
+    }
+    fn approval_input_stamp(
+        &self,
+        identity: &Identity,
+        file: &std::fs::File,
+    ) -> Option<ApprovalInputStamp> {
+        let dir = self.spool_dir.as_deref()?;
+        let directory = std::fs::symlink_metadata(dir).ok()?;
+        if !directory.is_dir() || directory.file_type().is_symlink() {
+            return None;
+        }
+        let path = dir.join(format!("{}-{}.jsonl", identity.agent, identity.native_session_id));
+        let spool = std::fs::symlink_metadata(path).ok()?;
+        let transcript = file.metadata().ok()?;
+        if !spool.is_file() || !transcript.is_file() {
+            return None;
+        }
+        Some(ApprovalInputStamp {
+            spool: ApprovalFileStamp::of(&spool),
+            transcript: ApprovalFileStamp::of(&transcript),
+        })
+    }
+    // Match only when the source files changed; the visible dialog remains a
+    // live read in read_pending. The tail I/O boundary mirrors poll's refresh
+    // boundary so tests can verify that cache hits do no tail reading.
+    fn matched_request(
+        &self,
+        identity: &Identity,
+        file: std::fs::File,
+        cache: &mut Option<ApprovalMatchCache>,
+        mut read_tail: impl FnMut(std::fs::File) -> Result<Vec<Value>>,
+    ) -> Option<PendingRequest> {
+        let stamp = match self.approval_input_stamp(identity, &file) {
+            Some(stamp) => stamp,
+            None => {
+                *cache = None;
+                return None;
+            }
+        };
+        if let Some(cached) = cache.as_ref().filter(|c| c.identity == *identity && c.stamp == stamp) {
+            return cached.request.clone();
+        }
+        *cache = None;
+        let agent = Agent::parse(&identity.agent)?;
+        let mut records = spool::read_session(
+            self.spool_dir.as_deref()?, agent, &identity.native_session_id,
+        );
+        records.retain(|record| {
+            record["session_id"] == identity.native_session_id
+                && record["payload"]["session_id"] == identity.native_session_id
+        });
+        if records.is_empty() {
+            return None;
+        }
+        let history = read_tail(file.try_clone().ok()?).ok()?;
+        let requests = match agent {
+            Agent::Claude => approval_match::match_claude_records(&records, &history),
+            Agent::Codex => approval_match::match_codex_records(&records, &history),
+        };
+        let request = requests.into_iter().rfind(|request| {
+            let resolution = match agent {
+                Agent::Claude => approval_match::claude_resolution(&request.request_id, &history),
+                Agent::Codex => match request.turn_id.as_deref() {
+                    Some(turn) => approval_match::codex_resolution(&request.request_id, turn, &history),
+                    None => return false,
+                },
+            };
+            resolution == Resolution::Pending
+        });
+        // Never retain a result assembled while either input was changing.
+        if self.approval_input_stamp(identity, &file).as_ref() != Some(&stamp) {
+            return None;
+        }
+        *cache = Some(ApprovalMatchCache {
+            identity: identity.clone(), stamp, request: request.clone(),
+        });
+        request
+    }
+    fn read_pending(
+        &self,
+        identity: &Identity,
+        file: std::fs::File,
+        cache: &mut Option<ApprovalMatchCache>,
+    ) -> Option<PendingApproval> {
+        let request = self.matched_request(identity, file, cache, crate::follower::read_tail)?;
+        let agent = request.agent;
+        let command = request.tool_input["command"].as_str()?;
+        let screen = self.client.read_visible(&identity.pane_id).ok()?;
+        let dialog = approval_screen::parse(agent, &screen, command)?;
+        Some(PendingApproval {
+            identity: identity.clone(), generation: self.generation, request, dialog,
+        })
+    }
+    fn update_pending(
+        &mut self,
+        out: &mut impl Write,
+        watch: &mut Watch,
+        pending: Option<PendingApproval>,
+    ) -> io::Result<()> {
+        // Include the actual event envelope and a possible preceding resolved
+        // event's sequence increment when checking the bounded wire frame.
+        let pending = pending.filter(|pending| {
+            let frame = json!({"event":"interaction.pending","epoch":self.epoch,
+                "seq":self.sequence.saturating_add(2),"data":pending.data()});
+            serde_json::to_vec(&frame).is_ok_and(|bytes| bytes.len() < MAX_RECORD)
+        });
+        let same_request = match (&watch.pending, &pending) {
+            (Some(old), Some(new)) => old.identity == new.identity
+                && old.generation == new.generation
+                && old.request.request_id == new.request.request_id,
+            _ => false,
+        };
+        if !same_request {
+            if let Some(old) = watch.pending.take() {
+                self.event(out, "interaction.resolved", json!({"identity":old.identity,
+                    "generation":old.generation,"request_id":old.request.request_id}))?;
+            }
+        }
+        if let Some(new) = pending {
+            let changed = watch.pending.as_ref().is_none_or(|old| {
+                old.dialog.canonical() != new.dialog.canonical()
+                    || old.dialog.selected != new.dialog.selected
+            });
+            if changed {
+                self.event(out, "interaction.pending", new.data())?;
+                watch.pending = Some(new);
+            }
+        }
         Ok(())
     }
     pub fn request(&mut self, bytes: &[u8], out: &mut impl Write) -> io::Result<()> {
@@ -473,6 +690,8 @@ impl Service {
                     agent: None,
                     unavailable_agent: None,
                     last_daemon_status: None,
+                    pending: None,
+                    approval_cache: None,
                 });
                 Self::write(out, &json!({"id":id,"result":{"watching":pane}}))?;
                 self.poll(out)
@@ -636,7 +855,21 @@ mod tests {
 
     // Return snapshots synchronously for each explicit poll. The injected
     // refresh boundary makes source_changing independent of timing/file races.
+    #[derive(Default)]
+    struct HerdrState {
+        agent: Option<String>,
+        status: Option<String>,
+        screen: String,
+        reads: usize,
+        read_error: bool,
+        keys: Vec<Value>,
+    }
+    type SharedHerdr = std::sync::Arc<std::sync::Mutex<HerdrState>>;
     fn fixture() -> (Service, PathBuf, std::sync::Arc<std::sync::Mutex<String>>) {
+        let (service, root, session, _) = fixture_with_herdr();
+        (service, root, session)
+    }
+    fn fixture_with_herdr() -> (Service, PathBuf, std::sync::Arc<std::sync::Mutex<String>>, SharedHerdr) {
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let root = std::env::temp_dir().join(format!(
             "service-test-{}-{}-{}",
@@ -655,7 +888,9 @@ mod tests {
         let socket = root.join("h.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         let session = std::sync::Arc::new(std::sync::Mutex::new(SESSION.to_owned()));
-        let state = session.clone();
+        let session_for_server = session.clone();
+        let herdr = SharedHerdr::default();
+        let server_state = herdr.clone();
         // Cleanup wakes this blocking listener with an empty request.
         thread::spawn(move || {
             for stream in listener.incoming() {
@@ -669,8 +904,30 @@ mod tests {
                     break;
                 }
                 let request: Value = serde_json::from_str(&line).unwrap();
-                let snapshot = json!({"protocol":22,"version":"0.9.3","panes":[{"pane_id":"w1:p1","terminal_id":"terminal-one","workspace_id":"w1","tab_id":"w1:t1","agent":"claude","agent_status":"idle","revision":1,"agent_session":{"agent":"claude","source":"herdr:claude","kind":"id","value":state.lock().unwrap().clone()}}]});
-                writeln!(stream, "{}", json!({"id":request["id"],"result":{"type":"session_snapshot","snapshot":snapshot}})).unwrap();
+                let mut state = server_state.lock().unwrap();
+                let result = match request["method"].as_str().unwrap() {
+                    "pane.read" => {
+                        assert_eq!(request["params"], json!({"pane_id":"w1:p1","source":"visible"}));
+                        state.reads += 1;
+                        json!({"read":{"text":state.screen}})
+                    }
+                    "pane.send_keys" => {
+                        state.keys.push(request["params"].clone());
+                        json!({})
+                    }
+                    "session.snapshot" => {
+                        let agent = state.agent.as_deref().unwrap_or("claude");
+                        let snapshot = json!({"protocol":22,"version":"0.9.3","panes":[{"pane_id":"w1:p1","terminal_id":"terminal-one","workspace_id":"w1","tab_id":"w1:t1","agent":agent,"agent_status":state.status.as_deref().unwrap_or("idle"),"foreground_cwd":"/fixture/work","revision":1,"agent_session":{"agent":agent,"source":format!("herdr:{agent}"),"kind":"id","value":session_for_server.lock().unwrap().clone()}}]});
+                        json!({"type":"session_snapshot","snapshot":snapshot})
+                    }
+                    method => panic!("unexpected method: {method}"),
+                };
+                let frame = if request["method"] == "pane.read" && state.read_error {
+                    json!({"id":request["id"],"error":{"code":"pane_not_found"}})
+                } else {
+                    json!({"id":request["id"],"result":result})
+                };
+                writeln!(stream, "{frame}").unwrap();
             }
         });
         let mut service = Service::new(socket, root.join("projects"));
@@ -681,8 +938,9 @@ mod tests {
                 &mut Vec::new(),
             )
             .unwrap();
-        (service, root, session)
+        (service, root, session, herdr)
     }
+    include!("service_approval_tests.rs");
     fn cleanup(service: &Service, root: PathBuf) {
         // Wake and terminate the fixture thread without a valid request.
         drop(std::os::unix::net::UnixStream::connect(&service.client.socket).unwrap());
