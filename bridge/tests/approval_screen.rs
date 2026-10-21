@@ -125,17 +125,16 @@ fn codex_wrapped_labels_and_no_selection() {
 }
 
 #[test]
-fn fingerprint_tracks_content_not_selection() {
+fn canonical_tracks_content_not_selection() {
     for (agent, screen, marker) in [(Agent::Claude, CLAUDE, '❯'), (Agent::Codex, CODEX, '›')] {
         let original = parse(agent, screen, fixture_command(agent))
             .unwrap()
-            .fingerprint();
-        assert_eq!(
-            original,
-            parse(agent, &screen.replace(marker, " "), fixture_command(agent))
-                .unwrap()
-                .fingerprint()
-        );
+            .canonical();
+        let dialog = parse(agent, screen, fixture_command(agent)).unwrap();
+        let unselected =
+            parse(agent, &screen.replace(marker, " "), fixture_command(agent)).unwrap();
+        assert!(dialog.same_dialog(&unselected));
+        assert_eq!(original, unselected.canonical());
         for (changed, command) in [
             (
                 screen.replace("Yes", "Absolutely"),
@@ -148,7 +147,7 @@ fn fingerprint_tracks_content_not_selection() {
         ] {
             assert_ne!(
                 original,
-                parse(agent, &changed, &command).unwrap().fingerprint()
+                parse(agent, &changed, &command).unwrap().canonical()
             );
         }
     }
@@ -171,7 +170,7 @@ fn claude_ignores_wrapped_tip_and_description_rows() {
     assert_eq!(dialog.title, "Bash command");
     assert_eq!(dialog.detail, original.detail);
     assert_eq!(dialog.options, original.options);
-    assert_eq!(dialog.fingerprint(), original.fingerprint());
+    assert!(dialog.same_dialog(&original));
     assert_eq!(
         parse_claude(
             &CLAUDE.replace(
@@ -216,7 +215,7 @@ fn codex_preserves_command_and_reason_rows_and_rejects_malformed_metadata() {
 }
 
 #[test]
-fn fingerprints_preserve_wrap_boundaries_and_all_row_groups() {
+fn canonical_preserves_wrap_boundaries_and_all_row_groups() {
     for (agent, screen, old, new) in [
         (
             Agent::Codex,
@@ -240,10 +239,10 @@ fn fingerprints_preserve_wrap_boundaries_and_all_row_groups() {
         assert_ne!(
             parse(agent, screen, fixture_command(agent))
                 .unwrap()
-                .fingerprint(),
+                .canonical(),
             parse(agent, &screen.replacen(old, new, 1), fixture_command(agent))
                 .unwrap()
-                .fingerprint()
+                .canonical()
         );
     }
 }
@@ -269,18 +268,18 @@ fn codex_command_rows_never_become_metadata() {
 }
 
 #[test]
-fn fingerprint_includes_option_keys() {
+fn canonical_includes_option_keys() {
     let original = parse_codex(CODEX, CODEX_COMMAND).unwrap();
     let changed = parse_codex(&CODEX.replace("(y)", "(n)"), CODEX_COMMAND).unwrap();
     assert_eq!(
         original.options[0].label_lines,
         changed.options[0].label_lines
     );
-    assert_ne!(original.fingerprint(), changed.fingerprint());
+    assert!(!original.same_dialog(&changed));
     for key in [OptionKey::Digit(1), OptionKey::Digit(2), OptionKey::Escape] {
         let mut changed = original.clone();
         changed.options[0].key = key;
-        assert_ne!(original.fingerprint(), changed.fingerprint());
+        assert!(!original.same_dialog(&changed));
     }
 }
 
@@ -315,7 +314,7 @@ fn command_indentation_is_preserved_relative_to_dialog() {
         )
         .unwrap();
         assert_eq!(indented.detail, ["cat <<EOF", "  EOF"]);
-        assert_ne!(original.fingerprint(), indented.fingerprint());
+        assert_ne!(original.canonical(), indented.canonical());
         assert!(
             parse(
                 agent,
@@ -333,7 +332,7 @@ fn command_indentation_is_preserved_relative_to_dialog() {
 }
 
 #[test]
-fn fingerprint_includes_codex_environment() {
+fn canonical_includes_codex_environment() {
     let local = parse_codex(CODEX, CODEX_COMMAND).unwrap();
     let sandbox = parse_codex(
         &CODEX.replace("Environment: local", "Environment: sandbox"),
@@ -342,7 +341,7 @@ fn fingerprint_includes_codex_environment() {
     .unwrap();
     assert_eq!(local.environment.as_deref(), Some("local"));
     assert_eq!(sandbox.environment.as_deref(), Some("sandbox"));
-    assert_ne!(local.fingerprint(), sandbox.fingerprint());
+    assert_ne!(local.canonical(), sandbox.canonical());
     assert_eq!(
         parse_claude(CLAUDE, CLAUDE_COMMAND).unwrap().environment,
         None
@@ -392,7 +391,7 @@ fn claude_embedded_rule_cannot_hide_command_prefix() {
 }
 
 #[test]
-fn codex_blank_command_rows_are_retained_and_fingerprinted() {
+fn canonical_distinguishes_blank_command_rows() {
     let command = "cat <<EOF\nbody\nEOF";
     let blank_command = "cat <<EOF\n\nbody\nEOF";
     let screen = CODEX.replacen(
@@ -405,7 +404,7 @@ fn codex_blank_command_rows_are_retained_and_fingerprinted() {
     let blank = parse_codex(&blank_screen, blank_command).unwrap();
     assert_eq!(plain.detail, ["cat <<EOF", "body", "EOF"]);
     assert_eq!(blank.detail, ["cat <<EOF", "", "body", "EOF"]);
-    assert_ne!(plain.fingerprint(), blank.fingerprint());
+    assert_ne!(plain.canonical(), blank.canonical());
     assert!(parse_codex(&screen, blank_command).is_none());
     assert!(parse_codex(&blank_screen, command).is_none());
 }
@@ -515,4 +514,30 @@ fn command_matching_preserves_internal_whitespace() {
         assert!(parse(agent, &screen, "cat <<EOF\n  EOF").is_some());
         assert!(parse(agent, fixture, &format!("{old}\n \t")).is_some());
     }
+}
+
+#[test]
+fn canonical_preserves_field_boundaries_and_agent() {
+    let mut original = parse_codex(CODEX, CODEX_COMMAND).unwrap();
+    original.detail = vec!["ab".into(), "c".into()];
+    let mut changed = original.clone();
+    changed.detail = vec!["a".into(), "bc".into()];
+    assert!(!original.same_dialog(&changed));
+
+    let mut changed = original.clone();
+    changed.agent = Agent::Claude;
+    assert!(!original.same_dialog(&changed));
+
+    original.options[0].label_lines = vec!["a".into(), "b".into()];
+    original.options[1].label_lines = vec!["c".into()];
+    let mut changed = original.clone();
+    changed.options[0].label_lines = vec!["a".into()];
+    changed.options[1].label_lines = vec!["b".into(), "c".into()];
+    assert!(!original.same_dialog(&changed));
+
+    let mut changed = original.clone();
+    changed.environment = None;
+    let mut empty_environment = changed.clone();
+    empty_environment.environment = Some(String::new());
+    assert!(!changed.same_dialog(&empty_environment));
 }

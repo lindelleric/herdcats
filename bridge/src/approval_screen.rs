@@ -24,15 +24,15 @@ pub enum OptionKey {
     Escape,
 }
 impl ApprovalDialog {
-    /// FNV-1a over length-delimited UTF-8 fields; independent of selection and
-    /// Rust's unspecified default hasher. Field boundaries cannot alias.
-    pub fn fingerprint(&self) -> String {
-        let mut hash = 0xcbf29ce484222325u64;
+    /// Lossless length-delimited encoding of dialog content and selection keys.
+    /// Selection is excluded so moving the highlight preserves dialog identity.
+    pub fn canonical(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
         let mut field = |s: &str| {
-            for byte in (s.len() as u64).to_le_bytes().iter().chain(s.as_bytes()) {
-                hash = (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3);
-            }
+            bytes.extend_from_slice(&(s.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(s.as_bytes());
         };
+        field(self.agent.name());
         field(&self.title);
         field(if self.environment.is_some() {
             "some"
@@ -66,7 +66,11 @@ impl ApprovalDialog {
                 field(row);
             }
         }
-        format!("{hash:016x}")
+        bytes
+    }
+
+    pub fn same_dialog(&self, other: &ApprovalDialog) -> bool {
+        self.canonical() == other.canonical()
     }
 }
 
