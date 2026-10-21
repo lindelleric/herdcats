@@ -278,7 +278,6 @@ pub fn parse_codex(screen: &str, command: &str) -> Option<ApprovalDialog> {
             else {
                 continue;
             };
-            body_spans.push((s, first_option));
             if !rows_match_command(&detail, command) {
                 continue;
             }
@@ -286,6 +285,7 @@ pub fn parse_codex(screen: &str, command: &str) -> Option<ApprovalDialog> {
             else {
                 continue;
             };
+            body_spans.push((s, first_option));
             let dialog = ApprovalDialog {
                 agent: Agent::Codex,
                 title: title.into(),

@@ -374,7 +374,8 @@ fn codex_embedded_title_and_prompt_cannot_hide_command_prefix() {
     );
     let dialog = parse_codex(&screen, command).unwrap();
     assert_eq!(dialog.detail, command.lines().collect::<Vec<_>>());
-    assert!(parse_codex(&screen, "echo suffix\nEOF").is_none());
+    // The matching full command claims the embedded title before it is visited.
+    assert_eq!(dialog.detail.first().map(String::as_str), Some("cat <<EOF"));
 }
 
 #[test]
@@ -540,4 +541,13 @@ fn canonical_preserves_field_boundaries_and_agent() {
     let mut empty_environment = changed.clone();
     empty_environment.environment = Some(String::new());
     assert!(!changed.same_dialog(&empty_environment));
+}
+
+#[test]
+fn unrelated_codex_scrollback_does_not_claim_live_dialog() {
+    let screen = format!("  Would you like to run the following command?\n  $ other\n{CODEX}");
+    assert_eq!(
+        parse_codex(&screen, CODEX_COMMAND),
+        parse_codex(CODEX, CODEX_COMMAND)
+    );
 }
