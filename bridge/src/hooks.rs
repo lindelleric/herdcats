@@ -348,6 +348,9 @@ fn install_inner(agent: Agent, dir: &Path, spool: &Path) -> Result<HooksResult> 
         .find(|(_, group, h)| repairable(group) && h["command"].as_str() == Some(&command))
         .or_else(|| owned.iter().find(|(_, group, _)| repairable(group)))
         .map(|(position, _, _)| *position);
+    let invalidate_selected = owned.iter().any(|(position, group, handler)| {
+        Some(*position) == selected && !recorder_valid(agent, group, handler, &command)
+    });
     let hooks = doc
         .as_object_mut()
         .ok_or("hooks_invalid_json")?
@@ -362,6 +365,7 @@ fn install_inner(agent: Agent, dir: &Path, spool: &Path) -> Result<HooksResult> 
         .ok_or("hooks_invalid_json")?;
     let mut replaced = false;
     let mut positions = Vec::new();
+    let mut invalidated = Vec::new();
     let mut old_group = 0;
     let mut new_group = 0;
     groups.retain_mut(|group| {
@@ -376,6 +380,9 @@ fn install_inner(agent: Agent, dir: &Path, spool: &Path) -> Result<HooksResult> 
             let keep = if !ours(handler, agent) {
                 true
             } else if selected == Some(old) {
+                if invalidate_selected {
+                    invalidated.push((new_group, new_handler));
+                }
                 *handler = recorder_handler(&command);
                 replaced = true;
                 true
@@ -403,7 +410,7 @@ fn install_inner(agent: Agent, dir: &Path, spool: &Path) -> Result<HooksResult> 
         repair_matcher(agent, &mut group);
         groups.push(group);
     }
-    let backup = write_hook_edit(agent, &path, &doc, meta.as_ref(), &positions)?;
+    let backup = write_hook_edit(agent, &path, &doc, meta.as_ref(), &positions, &invalidated)?;
     let mut result = HooksResult::state("installed", spool_confirmed(agent, spool));
     if let Some(backup) = backup {
         result.0["backup"] = json!(backup);
@@ -466,7 +473,7 @@ fn uninstall_inner(agent: Agent, dir: &Path, spool: &Path) -> Result<HooksResult
         }
     }
     let backup = if changed {
-        write_hook_edit(agent, &path, &doc, meta.as_ref(), &positions)?
+        write_hook_edit(agent, &path, &doc, meta.as_ref(), &positions, &[])?
     } else {
         None
     };
@@ -491,6 +498,7 @@ fn write_hook_edit(
     doc: &Value,
     meta: Option<&fs::Metadata>,
     positions: &[PositionChange],
+    invalidated: &[Position],
 ) -> Result<Option<String>> {
     if agent != Agent::Codex {
         return write_document(agent, path, doc, meta);
@@ -508,7 +516,10 @@ fn write_hook_edit(
         })
         .filter(|position| !positions.iter().any(|(_, new)| *new == Some(*position)))
         .collect();
-    if fresh.is_empty() && positions.iter().all(|(old, new)| Some(*old) == *new) {
+    if fresh.is_empty()
+        && invalidated.is_empty()
+        && positions.iter().all(|(old, new)| Some(*old) == *new)
+    {
         return write_document(agent, path, doc, meta);
     }
     let config_path = path
@@ -558,7 +569,15 @@ fn write_hook_edit(
         state.remove(&key(position));
     }
     for (new, value) in values {
-        if let (Some(new), Some(value)) = (new, value) {
+        if let (Some(new), Some(mut value)) = (new, value) {
+            if invalidated.contains(&new) {
+                // Trust fingerprints the handler definition and matcher. Keep
+                // enabled/disabled and other state, but require fresh trust.
+                if let Some(table) = value.as_table_like_mut() {
+                    table.remove("trusted_hash");
+                    table.remove("trusted_content_hash");
+                }
+            }
             state.insert(&key(new), value);
         }
     }
@@ -566,7 +585,8 @@ fn write_hook_edit(
     if updated == original {
         return write_document(agent, path, doc, meta);
     }
-    // Both files retain backups; if the hooks update fails, restore the config.
+    // Both files retain backups. Roll back config only if hooks were not
+    // replaced; post-rename verification failure must retain the new layout.
     write_bytes_document(
         Agent::Claude,
         &config_path,
@@ -575,6 +595,7 @@ fn write_hook_edit(
     )?;
     match write_document(agent, path, doc, meta) {
         Ok(backup) => Ok(backup),
+        Err("hooks_verification_failed") => Err("hooks_verification_failed"),
         Err(error) => {
             write_bytes_document(
                 Agent::Claude,

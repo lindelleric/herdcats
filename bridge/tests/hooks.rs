@@ -717,6 +717,7 @@ fn prune_deletes_only_spool_files_strictly_older_than_one_day() {
         std::os::unix::fs::symlink(dir.join("notes.txt"), dir.join("claude-link.jsonl")).unwrap();
     }
     herdcats_bridge::spool::prune(&dir, now).unwrap();
+    assert!(!dir.join(".spool.tmp-1-0").exists());
     assert!(!dir.join("claude-old.jsonl").exists());
     assert!(!dir.join("codex-old.jsonl").exists());
     for name in [
@@ -726,7 +727,6 @@ fn prune_deletes_only_spool_files_strictly_older_than_one_day() {
         "unknown-old.jsonl",
         "claude-bad.name.jsonl",
         "claude-.jsonl",
-        ".spool.tmp-1-0",
         "claude-future.jsonl",
         "claude-directory.jsonl",
     ] {
@@ -1207,4 +1207,98 @@ fn repair_restrictive_group_preserves_unrelated_matcher() {
             }
         );
     }
+}
+
+#[test]
+fn codex_repair_clears_only_changed_recorder_trust() {
+    for damage in ["command", "timeout", "matcher", "type", "async"] {
+        for moved in [false, true] {
+            if damage == "command" && moved {
+                continue;
+            }
+            for enabled in [false, true] {
+                let t = Temp::new();
+                t.run("install", "codex");
+                let path = t.file("codex");
+                let mut doc: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                let group = &mut doc["hooks"]["PermissionRequest"][0];
+                match damage {
+                    "command" => {
+                        group["hooks"][0]["command"] =
+                            json!("/old/bridge hook record --agent codex")
+                    }
+                    "timeout" => group["hooks"][0]["timeout"] = json!(1),
+                    "matcher" => group["matcher"] = json!("Bash"),
+                    "type" => group["hooks"][0]["type"] = json!("prompt"),
+                    _ => group["hooks"][0]["async"] = json!(true),
+                }
+                if moved {
+                    doc["hooks"]["PermissionRequest"].as_array_mut().unwrap().insert(0,json!({"hooks":[{"type":"command","command":"/duplicate/bridge hook record --agent codex","timeout":10}]}));
+                }
+                doc["hooks"]["PermissionRequest"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"hooks":[{"type":"command","command":"echo foreign"}]}));
+                fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+                let key = |g| format!("{}:permission_request:{g}:0", path.display());
+                let old = usize::from(moved);
+                let config_path = path.parent().unwrap().join("config.toml");
+                fs::write(&config_path,format!("# preserve\n[hooks.state.{}]\nenabled = {enabled}\ntrusted_hash = 'old'\ntrusted_content_hash = 'content'\n[hooks.state.{}]\nenabled = false\ntrusted_hash = 'foreign'\n",serde_json::to_string(&key(old)).unwrap(),serde_json::to_string(&key(old+1)).unwrap())).unwrap();
+                t.run("install", "codex");
+                let config: toml_edit::DocumentMut =
+                    fs::read_to_string(&config_path).unwrap().parse().unwrap();
+                let state = &config["hooks"]["state"];
+                assert!(
+                    state[&key(0)].get("trusted_hash").is_none(),
+                    "{damage}/{moved}/{enabled}"
+                );
+                assert!(state[&key(0)].get("trusted_content_hash").is_none());
+                assert_eq!(state[&key(0)]["enabled"].as_bool(), Some(enabled));
+                assert_eq!(state[&key(1)]["trusted_hash"].as_str(), Some("foreign"));
+                assert_eq!(state[&key(1)]["enabled"].as_bool(), Some(false));
+                assert_eq!(
+                    t.run("status", "codex")["status"],
+                    if enabled { "needs_trust" } else { "disabled" }
+                );
+                // Re-trusting a repaired, canonical entry survives idempotent install.
+                let text = fs::read_to_string(&config_path).unwrap().replace(
+                    &format!("[hooks.state.{}]", serde_json::to_string(&key(0)).unwrap()),
+                    &format!(
+                        "[hooks.state.{}]\ntrusted_hash = 'new'",
+                        serde_json::to_string(&key(0)).unwrap()
+                    ),
+                );
+                fs::write(&config_path, &text).unwrap();
+                t.run("install", "codex");
+                assert_eq!(fs::read_to_string(config_path).unwrap(), text);
+            }
+        }
+    }
+}
+
+#[test]
+fn prune_reclaims_only_regular_abandoned_trim_files() {
+    let t = Temp::new();
+    let dir = t.spool();
+    fs::create_dir_all(&dir).unwrap();
+    let temp = dir.join(".spool.tmp-42-0");
+    fs::write(&temp, "left by interrupted trim").unwrap();
+    fs::write(dir.join("unrelated.tmp"), "keep").unwrap();
+    fs::create_dir(dir.join(".spool.tmp-42-1")).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(dir.join("unrelated.tmp"), dir.join(".spool.tmp-42-2")).unwrap();
+    herdcats_bridge::spool::prune(&dir, std::time::SystemTime::now()).unwrap();
+    assert!(!temp.exists());
+    assert_eq!(
+        fs::read_to_string(dir.join("unrelated.tmp")).unwrap(),
+        "keep"
+    );
+    assert!(dir.join(".spool.tmp-42-1").is_dir());
+    #[cfg(unix)]
+    assert!(
+        fs::symlink_metadata(dir.join(".spool.tmp-42-2"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
 }

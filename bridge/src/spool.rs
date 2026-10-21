@@ -310,6 +310,14 @@ pub fn prune(dir: &Path, now: SystemTime) -> io::Result<()> {
         let entry = entry?;
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
+        // Every trim holds this same lock while its temporary file exists.
+        // Thus any regular trim temporary visible here is abandoned.
+        if name.starts_with(".spool.tmp-") {
+            if entry.file_type()?.is_file() {
+                fs::remove_file(entry.path())?;
+            }
+            continue;
+        }
         let Some(session) = name
             .strip_prefix("claude-")
             .or_else(|| name.strip_prefix("codex-"))
