@@ -514,3 +514,40 @@ fn codex_timestamp_requires_valid_utc_and_hook_at_or_after_call() {
         .remove("timestamp");
     assert!(match_codex(&h, &rollout).is_none());
 }
+
+#[test]
+fn identical_parallel_calls_bind_hooks_before_resolution() {
+    for agent in ["claude", "codex"] {
+        let mut first = hook(agent, "Bash");
+        first["t"] = json!(2000000000.0);
+        first["payload"]["permission_suggestions"] = json!(["first"]);
+        let mut second = first.clone();
+        second["t"] = json!(2000000001.0);
+        second["payload"]["permission_suggestions"] = json!(["second"]);
+        if agent == "claude" {
+            let mut message = tool_use("first", &first);
+            let b = tool_use("second", &first)["message"]["content"][0].clone();
+            message["message"]["content"].as_array_mut().unwrap().push(b);
+            assert_eq!(match_claude_records(&[first.clone(), second.clone()], &[message.clone()]).len(), 2);
+            let history = [message, json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"first"}]}})];
+            assert!(match_claude_records(std::slice::from_ref(&first), &history).is_empty());
+            let matched = match_claude_records(&[first, second], &history);
+            assert_eq!(matched.len(), 1);
+            assert_eq!(matched[0].request_id, "second");
+            assert_eq!(matched[0].suggestions, Some(json!(["second"])));
+        } else {
+            let mut history = pending();
+            history.last_mut().unwrap()["payload"]["call_id"] = json!("first");
+            let mut call = history.last().unwrap().clone();
+            call["payload"]["call_id"] = json!("second");
+            history.push(call);
+            assert_eq!(match_codex_records(&[first.clone(), second.clone()], &history).len(), 2);
+            history.push(output("custom_tool_call_output", "first"));
+            assert!(match_codex_records(std::slice::from_ref(&first), &history).is_empty());
+            let matched = match_codex_records(&[first, second], &history);
+            assert_eq!(matched.len(), 1);
+            assert_eq!(matched[0].request_id, "second");
+            assert_eq!(matched[0].recorded_at, 2000000001.0);
+        }
+    }
+}

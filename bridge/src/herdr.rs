@@ -37,6 +37,37 @@ pub struct Client {
 }
 impl Client {
     pub fn snapshot(&self) -> Result<Snapshot> {
+        let frame = self.request(
+            "snapshot", "session.snapshot", json!({}), "herdr_snapshot_too_large",
+        )?;
+        if frame["result"]["type"] != "session_snapshot" {
+            return Err("invalid_herdr_response");
+        }
+        let snapshot: Snapshot = serde_json::from_value(frame["result"]["snapshot"].clone())
+            .map_err(|_| "invalid_herdr_response")?;
+        if snapshot.protocol != 22 {
+            return Err("unsupported_herdr_protocol");
+        }
+        Ok(snapshot)
+    }
+    pub fn read_visible(&self, pane_id: &str) -> Result<String> {
+        let frame = self.request(
+            "pane.read", "pane.read", json!({"pane_id":pane_id,"source":"visible"}),
+            "invalid_herdr_response",
+        )?;
+        frame["result"]["read"]["text"].as_str()
+            .map(str::to_owned).ok_or("invalid_herdr_response")
+    }
+
+    pub fn send_keys(&self, pane_id: &str, keys: &[&str]) -> Result<()> {
+        self.request(
+            "pane.send_keys", "pane.send_keys", json!({"pane_id":pane_id,"keys":keys}),
+            "invalid_herdr_response",
+        )?;
+        Ok(())
+    }
+
+    fn request(&self, id: &str, method: &str, params: Value, too_large: &'static str) -> Result<Value> {
         let mut stream = UnixStream::connect(&self.socket).map_err(|_| "herdr_unavailable")?;
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
@@ -47,7 +78,7 @@ impl Client {
         writeln!(
             stream,
             "{}",
-            json!({"id":"snapshot","method":"session.snapshot","params":{}})
+            json!({"id":id,"method":method,"params":params})
         )
         .map_err(|_| "herdr_unavailable")?;
         let mut bytes = Vec::new();
@@ -56,20 +87,25 @@ impl Client {
             .read_until(b'\n', &mut bytes)
             .map_err(|_| "herdr_unavailable")?;
         if bytes.len() > MAX_RECORD {
-            return Err("herdr_snapshot_too_large");
+            return Err(too_large);
         }
         if bytes.last() != Some(&b'\n') {
             return Err("invalid_herdr_response");
         }
         let frame: Value = serde_json::from_slice(&bytes).map_err(|_| "invalid_herdr_response")?;
-        if frame["id"] != "snapshot" || frame["result"]["type"] != "session_snapshot" {
+        if frame["id"] != id {
             return Err("invalid_herdr_response");
         }
-        let snapshot: Snapshot = serde_json::from_value(frame["result"]["snapshot"].clone())
-            .map_err(|_| "invalid_herdr_response")?;
-        if snapshot.protocol != 22 {
-            return Err("unsupported_herdr_protocol");
+        if let Some(error) = frame.get("error") {
+            return Err(match error["code"].as_str() {
+                Some("pane_not_found") => "pane_unavailable",
+                Some(_) => "herdr_unavailable",
+                None => "invalid_herdr_response",
+            });
         }
-        Ok(snapshot)
+        if !frame.get("result").is_some_and(Value::is_object) {
+            return Err("invalid_herdr_response");
+        }
+        Ok(frame)
     }
 }
