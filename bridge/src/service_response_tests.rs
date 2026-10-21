@@ -25,6 +25,8 @@ fn respond(service: &mut Service, params: Value) -> Vec<Value> {
 fn response_requires_watch_identity_and_emitted_request() {
     let mut service = Service::with_resolvers(PathBuf::from("unused.sock"), None, None);
     service.initialized = true;
+    assert_eq!(respond(&mut service, json!({}))[0]["error"]["code"], "unsupported_capability");
+    service.include_approvals = true;
     assert_eq!(
         respond(&mut service, json!({}))[0]["error"]["code"],
         "not_watching"

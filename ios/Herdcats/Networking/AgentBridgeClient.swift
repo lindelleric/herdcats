@@ -10,10 +10,14 @@ struct AgentBridgeParams: Encodable, Sendable {
     var recordContent: Bool? = nil
     var contentRef: String? = nil
     var offset: Int? = nil
+    var approvals: Bool? = nil
+    var requestId: String? = nil
+    var option: UInt32? = nil
+    var labelLines: [String]? = nil
 }
-enum AgentBridgeMethod: String, Sendable { case initialize, watch, history, content }
+enum AgentBridgeMethod: String, Sendable { case initialize, watch, history, content; case respond = "interaction.respond" }
 
-/// One non-PTY channel, with bounded request correlation and no agent mutations.
+/// One non-PTY channel, with bounded requests and guarded approval responses.
 /// Cancellation closes this channel explicitly: canceling an async iterator
 /// alone cannot be relied upon to wake an idle SSH read.
 actor AgentBridgeClient {
@@ -59,7 +63,7 @@ actor AgentBridgeClient {
         agent: String? = nil,
         onHandshake: (@Sendable (AgentBridgeCapabilities?, String?) async -> Void)? = nil
     ) async throws {
-        let handshake = try await request(.initialize, params: AgentBridgeParams(protocol: 1, recordContent: true))
+        let handshake = try await request(.initialize, params: AgentBridgeParams(protocol: 1, recordContent: true, approvals: true))
         guard handshake.protocol == 1, handshake.epoch?.isEmpty == false else {
             throw AgentBridgeError.protocolMismatch
         }
@@ -80,6 +84,13 @@ actor AgentBridgeClient {
         }
         _ = try await request(.watch, params: AgentBridgeParams(paneId: paneId))
         try Task.checkCancellation()
+    }
+
+    func respond(requestId: String, option: UInt32, labelLines: [String]) async throws -> AgentApprovalResponse {
+        let reply = try await request(.respond, params: AgentBridgeParams(requestId: requestId, option: option, labelLines: labelLines))
+        guard reply.requestId == requestId, let sent = reply.sent, AgentApprovalOption.validKey(sent),
+            let confirmed = reply.confirmed else { throw AgentBridgeError.invalidFrame }
+        return AgentApprovalResponse(requestId: requestId, sent: sent, confirmed: confirmed)
     }
 
     func open(
@@ -734,5 +745,43 @@ extension HerdrConnection {
 
     static var codexDisableDaemonStopCommand: String {
         "exec /bin/sh -c \(shellSafeArgument(codexDisableDaemonStopScript))"
+    }
+}
+
+extension HerdrConnection {
+    func hooksStatus(agent: ApprovalAgent, target: ConnectionIdentity, owned: ConnectionGeneration) async throws -> AgentHooksResult {
+        try await runHooks(agent: agent, operation: .status, target: target, owned: owned)
+    }
+    func installHooks(agent: ApprovalAgent, target: ConnectionIdentity, owned: ConnectionGeneration) async throws -> AgentHooksResult {
+        try await runHooks(agent: agent, operation: .install, target: target, owned: owned)
+    }
+    func uninstallHooks(agent: ApprovalAgent, target: ConnectionIdentity, owned: ConnectionGeneration) async throws -> AgentHooksResult {
+        try await runHooks(agent: agent, operation: .uninstall, target: target, owned: owned)
+    }
+    private func runHooks(agent: ApprovalAgent, operation: AgentHooksOperation, target: ConnectionIdentity, owned: ConnectionGeneration) async throws -> AgentHooksResult {
+        guard route == nil else { throw AgentBridgeError.routedHostUnsupported }
+        try requireGeneration(owned)
+        guard identity == target else { throw HerdrError.notConnected }
+        let client = try slot.ownedClient(owned)
+        guard helperSetupOperation == nil else { throw HostHelperSetupError.busy }
+        let token = UUID()
+        helperSetupOperation = token
+        defer { if helperSetupOperation == token { helperSetupOperation = nil } }
+        try Task.checkCancellation()
+        try requireGeneration(owned)
+        guard identity == target else { throw HerdrError.notConnected }
+        let output = try await HostHelperCommand().run(client: client, script: Self.hooksScript(agent: agent, operation: operation), timeout: 15)
+        try Task.checkCancellation()
+        try requireGeneration(owned)
+        guard identity == target else { throw HerdrError.notConnected }
+        return try AgentHooksResult.parse(output)
+    }
+    static func hooksScript(agent: ApprovalAgent, operation: AgentHooksOperation) -> String {
+        helperScript(
+            exec: "exec \"$B\" hooks \(operation.rawValue) --agent \(agent.rawValue)",
+            missingPayload: "{\"error\":\"helper_missing\"}",
+            readStdinOnMissing: false,
+            missingExitCode: 0
+        )
     }
 }

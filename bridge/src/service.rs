@@ -136,6 +136,7 @@ pub struct Service {
     generation: u64,
     initialized: bool,
     include_content: bool,
+    include_approvals: bool,
     watch: Option<Watch>,
     codex_daemon_cache: Option<(std::time::Instant, &'static str)>,
     // The CONFIGURED (never canonicalized) Codex home. CodexResolver::new
@@ -206,6 +207,7 @@ impl Service {
             generation: 0,
             initialized: false,
             include_content: false,
+            include_approvals: false,
             watch: None,
             codex_daemon_cache: None,
             codex_home: None,
@@ -322,7 +324,7 @@ impl Service {
         watch.source_pane = Some(pane.clone());
         // Clone only the descriptor. Tail reading happens after timeline work,
         // using the same adapter-verified source and no additional path lookup.
-        let approval_file = if pane.agent_status == "blocked" {
+        let approval_file = if self.include_approvals && pane.agent_status == "blocked" {
             file.try_clone().ok()
         } else {
             None
@@ -493,7 +495,7 @@ impl Service {
                 watch.unknown_records = data.unknown_records;
                 watch.dropped_entries = data.dropped_entries;
                 watch.previous = data.entries.clone();
-                if status == "blocked" {
+                if self.include_approvals && status == "blocked" {
                     pending = approval_file.and_then(|file| {
                         self.read_pending(&identity, file, &mut watch.approval_cache)
                     });
@@ -506,7 +508,7 @@ impl Service {
                 watch.generation = watch.follower.generation;
             }
         }
-        if !preserve_pending {
+        if self.include_approvals && !preserve_pending {
             self.update_pending(out, &mut watch, pending)?;
         }
         self.watch = Some(watch);
@@ -642,6 +644,9 @@ impl Service {
         Ok(())
     }
     fn respond_interaction(&self, params: &Value) -> Result<Value> {
+        if !self.include_approvals {
+            return Err("unsupported_capability");
+        }
         let watch = self.watch.as_ref().ok_or("not_watching")?;
         let identity = watch.identity.as_ref().filter(|_| watch.unavailable.is_none())
             .ok_or("timeline_unavailable")?;
@@ -735,6 +740,7 @@ impl Service {
         if method == "initialize" {
             self.initialized = false;
             self.include_content = params["record_content"] == true;
+            self.include_approvals = params["approvals"] == true;
             self.watch = None;
             if params["protocol"] != 1 {
                 return Self::error(out, id, "protocol_mismatch");
