@@ -169,14 +169,6 @@ fn codex_preserves_command_and_reason_rows_and_rejects_malformed_metadata() {
         dialog.reason_lines,
         ["Allow the exact requested", "command to write probe2.txt?"]
     );
-    assert!(
-        parse_codex(&CODEX.replace(
-            "› 1.",
-            "  Reason:
-› 1."
-        ))
-        .is_none()
-    );
     assert!(parse_codex(&CODEX.replace("  Environment: local", "  unexplained header")).is_none());
 }
 
@@ -208,5 +200,41 @@ fn fingerprints_preserve_wrap_boundaries_and_all_row_groups() {
                 .unwrap()
                 .fingerprint()
         );
+    }
+}
+
+#[test]
+fn codex_command_rows_never_become_metadata() {
+    let screen = CODEX.replace("$ echo herdcats-probe > probe2.txt", "$ echo herdcats-probe > probe2.txt\n  Environment: rm -rf\n  Reason: command text\n  $ second row\n  Reason:");
+    let dialog = parse_codex(&screen).unwrap();
+    assert_eq!(
+        dialog.detail,
+        [
+            "echo herdcats-probe > probe2.txt",
+            "Environment: rm -rf",
+            "Reason: command text",
+            "$ second row",
+            "Reason:"
+        ]
+    );
+    assert_eq!(
+        dialog.reason_lines,
+        parse_codex(CODEX).unwrap().reason_lines
+    );
+}
+
+#[test]
+fn fingerprint_includes_option_keys() {
+    let original = parse_codex(CODEX).unwrap();
+    let changed = parse_codex(&CODEX.replace("(y)", "(n)")).unwrap();
+    assert_eq!(
+        original.options[0].label_lines,
+        changed.options[0].label_lines
+    );
+    assert_ne!(original.fingerprint(), changed.fingerprint());
+    for key in [OptionKey::Digit(1), OptionKey::Digit(2), OptionKey::Escape] {
+        let mut changed = original.clone();
+        changed.options[0].key = key;
+        assert_ne!(original.fingerprint(), changed.fingerprint());
     }
 }

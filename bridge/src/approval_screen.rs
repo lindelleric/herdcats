@@ -41,6 +41,17 @@ impl ApprovalDialog {
         }
         field(&self.options.len().to_string());
         for option in &self.options {
+            match option.key {
+                OptionKey::Digit(n) => {
+                    field("digit");
+                    field(&n.to_string());
+                }
+                OptionKey::Letter(c) => {
+                    field("letter");
+                    field(&c.to_string());
+                }
+                OptionKey::Escape => field("escape"),
+            }
             field(&option.label_lines.len().to_string());
             for row in &option.label_lines {
                 field(row);
@@ -101,26 +112,27 @@ pub fn parse_codex(screen: &str) -> Option<ApprovalDialog> {
     let first = (start + 1..footer).find(|&i| option_line(lines[i], '›').is_some())?;
     let mut detail = Vec::new();
     let mut reason_lines = Vec::new();
-    // A body row belongs to the most recently introduced reason or command.
-    // Environment metadata does not contribute body rows.
-    let mut context = None;
+    // Metadata exists only before the command starts. Afterward every row
+    // belongs to the command, even when it resembles metadata or another prompt.
+    let mut in_reason = false;
     for line in &lines[start + 1..first] {
         let row = line.trim();
         if row.is_empty() {
             continue;
         }
-        if let Some(command) = row.strip_prefix("$ ") {
-            if !detail.is_empty() || command.trim().is_empty() {
+        if !detail.is_empty() {
+            detail.push(row.to_string());
+        } else if let Some(command) = row.strip_prefix("$ ") {
+            if command.trim().is_empty() {
                 return None;
             }
             detail.push(command.trim().to_string());
-            context = Some(false);
         } else if let Some(text) = row.strip_prefix("Reason: ") {
             if !reason_lines.is_empty() || text.trim().is_empty() {
                 return None;
             }
             reason_lines.push(text.trim().to_string());
-            context = Some(true);
+            in_reason = true;
         } else if let Some(environment) = row.strip_prefix("Environment: ") {
             if environment.trim().is_empty() {
                 return None;
@@ -128,10 +140,10 @@ pub fn parse_codex(screen: &str) -> Option<ApprovalDialog> {
         } else if row == "$" || row.starts_with("Reason:") || row.starts_with("Environment:") {
             return None;
         } else {
-            match context {
-                Some(true) => reason_lines.push(row.to_string()),
-                Some(false) => detail.push(row.to_string()),
-                None => return None,
+            if in_reason {
+                reason_lines.push(row.to_string());
+            } else {
+                return None;
             }
         }
     }

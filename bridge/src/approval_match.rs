@@ -115,6 +115,12 @@ fn call_output(record: &Value, id: &str) -> bool {
         && record["payload"]["call_id"].as_str() == Some(id)
 }
 
+fn event_turn(payload: &Value) -> Option<&str> {
+    payload["turn_id"]
+        .as_str()
+        .or_else(|| payload["root_turn_id"].as_str())
+}
+
 pub fn match_codex(record: &Value, rollout: &[Value]) -> Option<PendingRequest> {
     let mut request = request(record, Agent::Codex)?;
     let turn = nonempty(&record["payload"]["turn_id"])?;
@@ -125,7 +131,7 @@ pub fn match_codex(record: &Value, rollout: &[Value]) -> Option<PendingRequest> 
     for (i, r) in rollout.iter().enumerate() {
         let payload = &r["payload"];
         if r["type"] == "event_msg" {
-            if let Some(turn) = payload["turn_id"].as_str() {
+            if let Some(turn) = event_turn(payload) {
                 current_turn = Some(turn);
             }
         }
@@ -157,7 +163,7 @@ pub fn codex_resolution(request_id: &str, turn_id: &str, rollout: &[Value]) -> R
     } else if rollout.iter().any(|r| {
         r["type"] == "event_msg"
             && r["payload"]["type"] == "turn_aborted"
-            && r["payload"]["turn_id"].as_str() == Some(turn_id)
+            && event_turn(&r["payload"]) == Some(turn_id)
     }) {
         Resolution::Aborted
     } else {

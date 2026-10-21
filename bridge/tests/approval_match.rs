@@ -211,3 +211,39 @@ fn only_later_outputs_exclude_candidates() {
     // Without a preceding turn-bearing event, the call cannot be attributed.
     assert!(match_codex(&h, &p[p.len() - 1..]).is_none());
 }
+
+#[test]
+fn codex_event_turns_fall_back_to_root_turn_id() {
+    let h = hook("codex", "Bash");
+    let turn = h["payload"]["turn_id"].as_str().unwrap();
+    let mut p = pending();
+    for record in &mut p {
+        if record["type"] == "event_msg" {
+            let payload = record["payload"].as_object_mut().unwrap();
+            if let Some(id) = payload.remove("turn_id") {
+                payload.insert("root_turn_id".into(), id);
+            }
+        }
+    }
+    assert!(match_codex(&h, &p).is_some());
+    let abort = json!({"type":"event_msg","payload":{"type":"turn_aborted","root_turn_id":turn}});
+    assert_eq!(
+        codex_resolution("pending", turn, std::slice::from_ref(&abort)),
+        Resolution::Aborted
+    );
+    assert_eq!(
+        codex_resolution("pending", "other", std::slice::from_ref(&abort)),
+        Resolution::Pending
+    );
+    let mut both = abort;
+    both["payload"]["turn_id"] = json!("other");
+    assert_eq!(
+        codex_resolution("pending", turn, &[both]),
+        Resolution::Pending
+    );
+    p.insert(
+        p.len() - 1,
+        json!({"type":"event_msg","payload":{"type":"item_completed","root_turn_id":"other"}}),
+    );
+    assert!(match_codex(&h, &p).is_none());
+}
