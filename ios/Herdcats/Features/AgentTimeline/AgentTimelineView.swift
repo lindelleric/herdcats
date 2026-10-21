@@ -22,6 +22,8 @@ struct AgentTimelineView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var waitingKey: WaitingTaskKey?
+    @State private var phoneAnswersSelection: PhoneAnswersSelection?
     @State private var approvalResponse = ApprovalResponseState()
     @State private var approvalCardHeight: CGFloat = 0
     @State private var activeClient: AgentBridgeClient?
@@ -61,7 +63,32 @@ struct AgentTimelineView: View {
     @State private var copiedCodexStop = false
     @State private var copiedCodexUpdaterStop = false
 
-    private var approvalInset: CGFloat { showsApproval ? approvalCardHeight + 8 : 0 }
+    private var approvalInset: CGFloat { (showsApproval || showsWaitingRow) ? approvalCardHeight + 8 : 0 }
+    private var hooksKey: PhoneAnswersStore.Key? {
+        guard let generation = connectionState.generation,
+            let agent = timeline.identity?.agent, ApprovalAgent(rawValue: agent) != nil else { return nil }
+        return .init(target: setupTarget, generation: generation, agent: agent)
+    }
+    struct WaitingTaskKey: Equatable {
+        let hooks: PhoneAnswersStore.Key?
+        let owner: UUID?
+        let identity: AgentTimelineIdentity?
+        let generation: UInt64?
+        let eligible: Bool
+    }
+    private var waitingTaskKey: WaitingTaskKey {
+        WaitingTaskKey(hooks: hooksKey, owner: activeOwner, identity: timeline.identity, generation: timeline.generation,
+            eligible: PhoneAnswersPresentation.eligible(approvals: bridgeCapabilities?.approvals,
+                ready: timeline.phase == .ready && connectionState.isReady && appModel.supportsHostServices,
+                blocked: timeline.agentStatus == "blocked", pending: timeline.pendingApproval != nil,
+                active: scenePhase == .active && appModel.isSceneActive))
+    }
+    private var showsWaitingRow: Bool { waitingTaskKey.eligible && waitingKey == waitingTaskKey }
+    private func hooksContextIsCurrent(_ key: PhoneAnswersStore.Key) -> Bool {
+        scenePhase == .active && appModel.isSceneActive && connectionState.isReady && appModel.supportsHostServices
+            && setupTarget == key.target && connectionState.generation == key.generation
+            && bridgeCapabilities?.approvals == true
+    }
     private var showsApproval: Bool {
         ApprovalResponseState.isVisible(pending: timeline.pendingApproval, approvals: bridgeCapabilities?.approvals)
     }
@@ -245,24 +272,35 @@ struct AgentTimelineView: View {
         // Let messages scroll behind the pane cards, but keep them below
         // the navigation bar and status area.
         .overlay(alignment: .bottom) {
-            if showsApproval, let pending = timeline.pendingApproval {
-                ApprovalCard(pending: pending, response: approvalResponse,
-                    maximumHeight: max(100, min(440, (viewportHeight - topOverlayInset - bottomOverlayInset) * 0.65))) { option in
-                    respondToApproval(pending, option: option)
-                }
-                .background {
-                    GeometryReader { geometry in
-                        Color.clear.onChange(of: geometry.size.height, initial: true) { _, height in approvalCardHeight = height }
+            Group {
+                if showsApproval, let pending = timeline.pendingApproval {
+                    ApprovalCard(pending: pending, response: approvalResponse,
+                        maximumHeight: max(100, min(440, (viewportHeight - topOverlayInset - bottomOverlayInset) * 0.65))) { option in
+                        respondToApproval(pending, option: option)
+                    }
+                } else if showsWaitingRow, let key = hooksKey, let agent = ApprovalAgent(rawValue: key.agent) {
+                    PhoneAnswersWaitingRow(agent: agent, result: appModel.phoneAnswers.result(for: key)) { mode in
+                        phoneAnswersSelection = PhoneAnswersSelection(key: key, mode: mode)
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.bottom, bottomOverlayInset + 8)
             }
+            .background {
+                GeometryReader { geometry in
+                    Color.clear.onChange(of: geometry.size.height, initial: true) { _, height in approvalCardHeight = height }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, bottomOverlayInset + 8)
         }
         .clipped()
         .background(Theme.background)
         .onChange(of: timeline.pendingApproval, initial: true) { _, pending in approvalResponse.sync(pending) }
         .task(id: taskKey) { await run() }
+        .task(id: waitingTaskKey) { await prepareWaitingRow() }
+        .sheet(item: $phoneAnswersSelection) { selection in
+            PhoneAnswersSheet(selection: selection, connection: connection, store: appModel.phoneAnswers,
+                isCurrent: { hooksContextIsCurrent(selection.key) })
+        }
         .onChange(of: timeline.revision, initial: true) { _, _ in
             switch timeline.phase {
             case .ready:
@@ -1040,6 +1078,22 @@ struct AgentTimelineView: View {
             return "Check that the optional Herdcats Bridge is available on your host, then try again."
         }
     }
+    @MainActor private func prepareWaitingRow() async {
+        let expected = waitingTaskKey
+        waitingKey = nil
+        guard expected.eligible, let key = expected.hooks, let agent = ApprovalAgent(rawValue: key.agent) else { return }
+        var grace = PhoneAnswersGrace()
+        _ = grace.update(eligible: true, now: ProcessInfo.processInfo.systemUptime)
+        do { try await Task.sleep(for: .seconds(PhoneAnswersGrace.delay)) } catch { return }
+        guard !Task.isCancelled, waitingTaskKey == expected,
+            grace.update(eligible: true, now: ProcessInfo.processInfo.systemUptime) else { return }
+        waitingKey = expected
+        await appModel.phoneAnswers.check(key) {
+            guard !Task.isCancelled, waitingTaskKey == expected, hooksContextIsCurrent(key) else { throw HerdrError.notConnected }
+            return try await connection.hooksStatus(agent: agent, target: key.target, owned: key.generation)
+        }
+    }
+
     @MainActor private func respondToApproval(_ pending: AgentPendingApproval, option: AgentApprovalOption) {
         guard showsApproval, let owner = activeOwner, let client = activeClient,
             connectionState.isReady, scenePhase == .active,

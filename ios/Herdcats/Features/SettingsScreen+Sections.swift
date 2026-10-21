@@ -3,6 +3,83 @@ import UIKit
 
 extension SettingsScreen {
 
+    struct PhoneAnswersScreenKey: Equatable {
+        let target: ConnectionIdentity?
+        let generation: ConnectionGeneration?
+        let active: Bool
+    }
+    var phoneAnswersScreenKey: PhoneAnswersScreenKey {
+        PhoneAnswersScreenKey(target: appModel.connectionIdentity, generation: appModel.ownership.transportGeneration,
+            active: settingsVisible && scenePhase == .active && appModel.isSceneActive && appModel.supportsHostServices
+                && AgentTimelineConnectionState(phase: appModel.phase, generation: appModel.ownership.transportGeneration).isReady)
+    }
+    func phoneAnswersKey(_ agent: ApprovalAgent) -> PhoneAnswersStore.Key? {
+        let context = phoneAnswersScreenKey
+        guard context.active, let target = context.target, let generation = context.generation else { return nil }
+        return .init(target: target, generation: generation, agent: agent.rawValue)
+    }
+    func phoneAnswersContextIsCurrent(_ key: PhoneAnswersStore.Key) -> Bool {
+        let context = phoneAnswersScreenKey
+        return context.active && phoneAnswersCapability && context.target == key.target && context.generation == key.generation
+    }
+    @MainActor func preparePhoneAnswersSettings() async {
+        let expected = phoneAnswersScreenKey
+        phoneAnswersCapability = false
+        guard expected.active, let generation = expected.generation else { return }
+        let capabilities = await appModel.connection.bridgeCapabilities(for: generation)
+        guard !Task.isCancelled, phoneAnswersScreenKey == expected else { return }
+        phoneAnswersCapability = capabilities?.approvals == true
+        guard phoneAnswersCapability else { return }
+        for agent in ApprovalAgent.allCases {
+            guard !Task.isCancelled, phoneAnswersScreenKey == expected else { return }
+            await checkPhoneAnswers(agent, force: false)
+        }
+    }
+    @MainActor func checkPhoneAnswers(_ agent: ApprovalAgent, force: Bool) async {
+        guard !phoneAnswersChecking, let key = phoneAnswersKey(agent), phoneAnswersContextIsCurrent(key) else { return }
+        phoneAnswersChecking = true
+        defer { phoneAnswersChecking = false }
+        await appModel.phoneAnswers.check(key, force: force) {
+            guard !Task.isCancelled, phoneAnswersContextIsCurrent(key) else { throw HerdrError.notConnected }
+            return try await appModel.connection.hooksStatus(agent: agent, target: key.target, owned: key.generation)
+        }
+    }
+    @ViewBuilder var phoneAnswersSection: some View {
+        if phoneAnswersCapability && phoneAnswersScreenKey.active {
+            Section {
+                ForEach(ApprovalAgent.allCases, id: \.rawValue) { agent in
+                    if let key = phoneAnswersKey(agent) {
+                        let result = appModel.phoneAnswers.result(for: key)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("\(agent == .codex ? "Codex" : "Claude") phone answers")
+                            Text(PhoneAnswersPresentation.status(result)).font(.jost(.caption)).foregroundStyle(Theme.textMuted)
+                            if agent == .codex, result?.error == nil,
+                                result?.status == .needsTrust || result?.status == .disabled {
+                                Text(PhoneAnswersPresentation.hint(agent: agent, result: result).detail ?? "")
+                                    .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
+                            }
+                            HStack(spacing: 16) {
+                                Button("Check") { Task { await checkPhoneAnswers(agent, force: true) } }
+                                ForEach(PhoneAnswersPresentation.actions(result)) { mode in
+                                    Button(mode == .install ? "Install" : mode == .repair ? "Repair" : "Remove",
+                                        role: mode.requiresConfirmation ? .destructive : nil) {
+                                        phoneAnswersSelection = PhoneAnswersSelection(key: key, mode: mode)
+                                    }
+                                }
+                                if appModel.phoneAnswers.isChecking(key) { ProgressView() }
+                            }
+                            .font(.jost(.subheadline))
+                            .buttonStyle(.borderless)
+                            .disabled(phoneAnswersChecking || appModel.phoneAnswers.isChecking(key))
+                        }
+                        .listRowBackground(Theme.cardBackground)
+                        .accessibilityIdentifier("phone-answers-settings-\(agent.rawValue)")
+                    }
+                }
+            } header: { Text("Phone answers").font(.jost(.footnote)) }
+        }
+    }
+
     var refreshSection: some View {
         Section {
             Toggle(isOn: $model.autoRefreshEnabled.animation()) {
