@@ -10,21 +10,24 @@ fn fixtures() {
     assert_eq!(c.agent, Agent::Claude);
     assert_eq!(c.title, "Bash command");
     assert_eq!(c.detail, ["echo herdcats-probe > probe.txt"]);
-    assert_eq!(c.reason, None);
+    assert!(c.reason_lines.is_empty());
+    assert_eq!(c.description, ["Write probe text to probe.txt"]);
     assert_eq!(c.selected, Some(0));
     let labels = [
-        "Yes".to_string(),
-        format!(
-            "Yes, and always allow access to /fixture/work/{} {} from this project",
-            "x".repeat(67),
-            "x".repeat(70)
-        ),
-        "Yes, and switch to auto mode · auto mode handles these prompts for you".into(),
-        "No".into(),
+        vec!["Yes".to_string()],
+        vec![
+            format!(
+                "Yes, and always allow access to /fixture/work/{}",
+                "x".repeat(67)
+            ),
+            format!("{} from this project", "x".repeat(70)),
+        ],
+        vec!["Yes, and switch to auto mode · auto mode handles these prompts for you".into()],
+        vec!["No".into()],
     ];
     for (i, option) in c.options.iter().enumerate() {
         assert_eq!(option.number, i as u32 + 1);
-        assert_eq!(option.label, labels[i]);
+        assert_eq!(option.label_lines, labels[i]);
         assert_eq!(option.key, OptionKey::Digit(i as u32 + 1));
     }
     assert_eq!(c.options.len(), 4);
@@ -33,14 +36,14 @@ fn fixtures() {
     assert_eq!(c.title, "Would you like to run the following command?");
     assert_eq!(c.detail, ["echo herdcats-probe > probe2.txt"]);
     assert_eq!(
-        c.reason.as_deref(),
-        Some("Allow the exact requested command to write probe2.txt?")
+        c.reason_lines,
+        ["Allow the exact requested command to write probe2.txt?"]
     );
     assert_eq!(c.selected, Some(0));
     assert_eq!(c.options.len(), 3);
     for (i, (label, key)) in [("Yes, proceed", OptionKey::Letter('y')), ("Yes, and don't ask again for commands that start with `echo herdcats-probe > probe2.txt`", OptionKey::Letter('p')), ("No, and tell Codex what to do differently", OptionKey::Escape)].into_iter().enumerate() {
         assert_eq!(c.options[i].number, i as u32 + 1);
-        assert_eq!(c.options[i].label, label);
+        assert_eq!(c.options[i].label_lines, [label]);
         assert_eq!(c.options[i].key, key);
     }
 }
@@ -94,7 +97,7 @@ fn ignores_surrounding_output_and_whitespace() {
 fn codex_wrapped_labels_and_no_selection() {
     let screen = CODEX.replace("› 1. Yes, proceed (y)", "  1. Yes,\n     proceed (y)");
     let c = parse_codex(&screen).unwrap();
-    assert_eq!(c.options[0].label, "Yes, proceed");
+    assert_eq!(c.options[0].label_lines, ["Yes,", "proceed"]);
     assert_eq!(c.options[0].key, OptionKey::Letter('y'));
     assert_eq!(c.selected, None);
 }
@@ -117,4 +120,100 @@ fn fingerprint_tracks_content_not_selection() {
         }
     }
     assert!(parse_claude(CODEX).is_none());
+}
+
+#[test]
+fn claude_title_and_description_rows() {
+    let screen = CLAUDE.replace(
+        "Write probe text to probe.txt",
+        "Write probe text
+ to probe.txt",
+    );
+    let dialog = parse_claude(&screen).unwrap();
+    assert_eq!(dialog.title, "Bash command");
+    assert_eq!(dialog.description, ["Write probe text", "to probe.txt"]);
+    assert_eq!(
+        parse_claude(&screen.replace("Bash command", "Bash command\n  "))
+            .unwrap()
+            .description,
+        ["Write probe text", "to probe.txt"]
+    );
+    assert_eq!(
+        parse_claude(&CLAUDE.replace(
+            " echo herdcats-probe > probe.txt",
+            " echo herdcats-probe > probe.txt\n\n"
+        ))
+        .unwrap()
+        .detail,
+        ["echo herdcats-probe > probe.txt", "", ""]
+    );
+    assert!(parse_claude(&CLAUDE.replace("Bash command", "Edit file")).is_none());
+}
+
+#[test]
+fn codex_preserves_command_and_reason_rows_and_rejects_malformed_metadata() {
+    let screen = CODEX
+        .replace(
+            "$ echo herdcats-probe > probe2.txt",
+            "$ echo herdcats-
+  probe > probe2.txt",
+        )
+        .replace(
+            "Reason: Allow the exact requested command to write probe2.txt?",
+            "Reason: Allow the exact requested
+  command to write probe2.txt?",
+        );
+    let dialog = parse_codex(&screen).unwrap();
+    assert_eq!(dialog.detail, ["echo herdcats-", "probe > probe2.txt"]);
+    assert_eq!(
+        dialog.reason_lines,
+        ["Allow the exact requested", "command to write probe2.txt?"]
+    );
+    assert!(
+        parse_codex(&CODEX.replace(
+            "› 1.",
+            "  Reason:
+› 1."
+        ))
+        .is_none()
+    );
+    assert!(parse_codex(&CODEX.replace("  Environment: local", "  unexplained header")).is_none());
+}
+
+#[test]
+fn fingerprints_preserve_wrap_boundaries_and_all_row_groups() {
+    for (agent, screen, old, new) in [
+        (
+            Agent::Claude,
+            CLAUDE,
+            "Write probe text to probe.txt",
+            "Write probe text
+ to probe.txt",
+        ),
+        (
+            Agent::Codex,
+            CODEX,
+            "echo herdcats-probe > probe2.txt",
+            "echo herdcats-\n  probe > probe2.txt",
+        ),
+        (
+            Agent::Codex,
+            CODEX,
+            "Yes, proceed (y)",
+            "Yes, pro\n     ceed (y)",
+        ),
+        (
+            Agent::Codex,
+            CODEX,
+            "Reason: Allow the exact",
+            "Reason: Allow the\n  exact",
+        ),
+    ] {
+        assert_ne!(
+            parse(agent, screen).unwrap().fingerprint(),
+            parse(agent, &screen.replacen(old, new, 1))
+                .unwrap()
+                .fingerprint()
+        );
+    }
 }

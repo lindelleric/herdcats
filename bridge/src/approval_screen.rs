@@ -5,15 +5,16 @@ use crate::hooks::Agent;
 pub struct ApprovalDialog {
     pub agent: Agent,
     pub title: String,
+    pub description: Vec<String>,
     pub detail: Vec<String>,
-    pub reason: Option<String>,
+    pub reason_lines: Vec<String>,
     pub options: Vec<ApprovalOption>,
     pub selected: Option<usize>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApprovalOption {
     pub number: u32,
-    pub label: String,
+    pub label_lines: Vec<String>,
     pub key: OptionKey,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,20 +34,18 @@ impl ApprovalDialog {
             }
         };
         field(&self.title);
-        field(&self.detail.len().to_string());
-        for line in &self.detail {
-            field(line);
+        for rows in [&self.description, &self.detail, &self.reason_lines] {
+            field(&rows.len().to_string());
+            for row in rows {
+                field(row);
+            }
         }
-        field(if self.reason.is_some() {
-            "some"
-        } else {
-            "none"
-        });
-        if let Some(reason) = &self.reason {
-            field(reason);
-        }
+        field(&self.options.len().to_string());
         for option in &self.options {
-            field(&option.label);
+            field(&option.label_lines.len().to_string());
+            for row in &option.label_lines {
+                field(row);
+            }
         }
         format!("{hash:016x}")
     }
@@ -64,6 +63,8 @@ fn rule(line: &str) -> bool {
     !line.is_empty() && line.chars().all(|c| c == '╌')
 }
 
+const KNOWN_CLAUDE_TITLES: &[&str] = &["Bash command"];
+
 pub fn parse_claude(screen: &str) -> Option<ApprovalDialog> {
     let lines: Vec<_> = screen.lines().collect();
     let question = lines
@@ -71,28 +72,28 @@ pub fn parse_claude(screen: &str) -> Option<ApprovalDialog> {
         .rposition(|l| l.trim() == "Do you want to proceed?")?;
     let end_rule = (0..question).rev().find(|&i| rule(lines[i]))?;
     let start_rule = (0..end_rule).rev().find(|&i| rule(lines[i]))?;
-    // The description immediately precedes the first rule. The title precedes
-    // that, with an optional Tip between them. Ignore earlier pane output.
-    let mut header = lines[..start_rule]
-        .iter()
+    let title_row = (0..start_rule)
         .rev()
-        .filter(|l| !l.trim().is_empty());
-    header.next()?;
-    let title = header
-        .find(|l| !l.trim().starts_with("Tip:"))?
-        .trim()
-        .to_string();
+        .find(|&i| KNOWN_CLAUDE_TITLES.contains(&lines[i].trim()))?;
+    let title = lines[title_row].trim().to_string();
+    let description = lines[title_row + 1..start_rule]
+        .iter()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with("Tip:"))
+        .map(str::to_string)
+        .collect();
     let footer =
         (question + 1..lines.len()).find(|&i| lines[i].trim().starts_with("Esc to cancel"))?;
     let (options, selected) = options(&lines[question + 1..footer], Agent::Claude)?;
     Some(ApprovalDialog {
         agent: Agent::Claude,
         title,
+        description,
         detail: lines[start_rule + 1..end_rule]
             .iter()
             .map(|l| l.trim().to_string())
             .collect(),
-        reason: None,
+        reason_lines: Vec::new(),
         options,
         selected,
     })
@@ -106,15 +107,39 @@ pub fn parse_codex(screen: &str) -> Option<ApprovalDialog> {
         .find(|&i| lines[i].trim() == "Press enter to confirm or esc to cancel")?;
     let first = (start + 1..footer).find(|&i| option_line(lines[i], '›').is_some())?;
     let mut detail = Vec::new();
-    let mut reason = None;
+    let mut reason_lines = Vec::new();
+    // A body row belongs to the most recently introduced reason or command.
+    // Environment metadata does not contribute body rows.
+    let mut context = None;
     for line in &lines[start + 1..first] {
-        if let Some(command) = line.trim().strip_prefix("$ ") {
-            detail.push(command.trim().to_string());
-        } else if let Some(text) = line.trim().strip_prefix("Reason: ") {
-            if reason.is_some() {
+        let row = line.trim();
+        if row.is_empty() {
+            continue;
+        }
+        if let Some(command) = row.strip_prefix("$ ") {
+            if !detail.is_empty() || command.trim().is_empty() {
                 return None;
             }
-            reason = Some(text.trim().to_string());
+            detail.push(command.trim().to_string());
+            context = Some(false);
+        } else if let Some(text) = row.strip_prefix("Reason: ") {
+            if !reason_lines.is_empty() || text.trim().is_empty() {
+                return None;
+            }
+            reason_lines.push(text.trim().to_string());
+            context = Some(true);
+        } else if let Some(environment) = row.strip_prefix("Environment: ") {
+            if environment.trim().is_empty() {
+                return None;
+            }
+        } else if row == "$" || row.starts_with("Reason:") || row.starts_with("Environment:") {
+            return None;
+        } else {
+            match context {
+                Some(true) => reason_lines.push(row.to_string()),
+                Some(false) => detail.push(row.to_string()),
+                None => return None,
+            }
         }
     }
     if detail.is_empty() {
@@ -124,8 +149,9 @@ pub fn parse_codex(screen: &str) -> Option<ApprovalDialog> {
     Some(ApprovalDialog {
         agent: Agent::Codex,
         title: title.into(),
+        description: Vec::new(),
         detail,
-        reason,
+        reason_lines,
         options,
         selected,
     })
@@ -169,7 +195,7 @@ fn options(lines: &[&str], agent: Agent) -> Option<(Vec<ApprovalOption>, Option<
             indent = column;
             options.push(ApprovalOption {
                 number,
-                label: label.into(),
+                label_lines: vec![label.into()],
                 key: OptionKey::Digit(number),
             });
         } else {
@@ -178,8 +204,7 @@ fn options(lines: &[&str], agent: Agent) -> Option<(Vec<ApprovalOption>, Option<
                 return None;
             }
             let last = options.last_mut()?;
-            last.label.push(' ');
-            last.label.push_str(line.trim());
+            last.label_lines.push(line.trim().to_string());
         }
     }
     if options.is_empty() {
@@ -187,7 +212,12 @@ fn options(lines: &[&str], agent: Agent) -> Option<(Vec<ApprovalOption>, Option<
     }
     if agent == Agent::Codex {
         for option in &mut options {
-            let (label, shortcut) = option.label.rsplit_once(" (")?;
+            let last = option.label_lines.last_mut()?;
+            let (label, shortcut) = if let Some(shortcut) = last.strip_prefix('(') {
+                ("", shortcut)
+            } else {
+                last.rsplit_once(" (")?
+            };
             let shortcut = shortcut.strip_suffix(')')?;
             option.key = if shortcut == "esc" {
                 OptionKey::Escape
@@ -199,10 +229,13 @@ fn options(lines: &[&str], agent: Agent) -> Option<(Vec<ApprovalOption>, Option<
                 }
                 OptionKey::Letter(c)
             };
-            if label.is_empty() {
+            *last = label.trim_end().to_string();
+            if last.is_empty() {
+                option.label_lines.pop();
+            }
+            if option.label_lines.is_empty() {
                 return None;
             }
-            option.label = label.to_string();
         }
     }
     Some((options, selected))
