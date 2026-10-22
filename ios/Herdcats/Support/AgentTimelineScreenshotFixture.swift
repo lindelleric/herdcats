@@ -126,7 +126,7 @@
                     [
                         "id": "message:summary", "kind": "message", "role": "assistant",
                         "text":
-                            "The changes are ready for review.\n\nUse Terminal to send a message or respond to the current request.",
+                            "The changes are ready for review.",
                         "truncated": false,
                     ],
                 ]
