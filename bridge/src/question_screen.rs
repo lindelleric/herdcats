@@ -58,7 +58,8 @@ impl QuestionScreen {
         let untouched = self.options.iter().all(|o| o.checked != Some(true))
             && self.free_text.as_ref().is_none_or(|t| t.text.is_empty() && !t.active);
         untouched && match self.step {
-            QuestionStep::ClaudeQuestion(0) => !self.completed_tabs,
+            QuestionStep::ClaudeQuestion(0) => !self.completed_tabs
+                && self.cursor == Some(QuestionCursor::Option(1)),
             QuestionStep::CodexQuestion { index: 0, total } => self.unanswered == Some(total),
             QuestionStep::AsyncQueued => true,
             QuestionStep::AsyncPicker(0) => self.cursor == Some(QuestionCursor::Option(1))

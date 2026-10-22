@@ -1056,3 +1056,41 @@ fn one_question_claude_multiselect_capture_uses_tabs_and_review() {
         .replace("     Submit\n", "");
     assert!(parse(request.kind, &bare, &request).is_some());
 }
+
+#[test]
+fn claude_first_question_requires_the_cursor_on_option_one_to_be_fresh() {
+    let mut multi = pending(QuestionKind::ClaudeAsk);
+    multi.questions.remove(0);
+    let multi_raw =
+        include_str!("../../../compatibility/phase2/fixtures/claude-question-one-multi-screen.txt");
+    let single = pending(QuestionKind::ClaudeAsk);
+    let single_raw =
+        include_str!("../../../compatibility/phase2/fixtures/claude-question-single-screen.txt");
+    for (request, raw, moved, cursor) in [
+        (
+            multi,
+            multi_raw,
+            multi_raw
+                .replace("❯ 1.", "  1.")
+                .replace("     Submit", "❯    Submit"),
+            QuestionCursor::Submit,
+        ),
+        (
+            single,
+            single_raw,
+            single_raw.replace("❯ 1.", "  1.").replace("  2.", "❯ 2."),
+            QuestionCursor::Option(2),
+        ),
+    ] {
+        assert!(
+            parse(request.kind, raw, &request)
+                .unwrap()
+                .is_fresh(&request)
+        );
+        let parsed = parse(request.kind, &moved, &request).unwrap();
+        assert_eq!(parsed.cursor, Some(cursor));
+        assert!(!parsed.is_fresh(&request));
+        let no_cursor = parse(request.kind, &raw.replace("❯ 1.", "  1."), &request).unwrap();
+        assert!(!no_cursor.is_fresh(&request));
+    }
+}

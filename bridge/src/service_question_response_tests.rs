@@ -704,3 +704,53 @@ fn question_response_plan_is_unaffected_by_other_pending_async_calls() {
     );
     cleanup(&service, root);
 }
+
+#[test]
+fn question_response_claude_desk_navigation_is_not_fresh_and_sends_no_input() {
+    for multi in [false, true] {
+        for emit_changed in [false, true] {
+            let (mut service, root, herdr, path) = question_fixture("claude");
+            if multi {
+                let session = path.file_stem().unwrap().to_str().unwrap();
+                let spool_path = root.join(format!("spool/claude-{session}.jsonl"));
+                let mut record: Value =
+                    serde_json::from_str(&fs::read_to_string(&spool_path).unwrap()).unwrap();
+                record["payload"]["tool_input"]["questions"]
+                    .as_array_mut()
+                    .unwrap()
+                    .remove(0);
+                write_records(&spool_path, &[record]);
+                herdr.lock().unwrap().screen = question_screen_fixture("claude-question-one-multi");
+            }
+            let pending = interactions(&mut service).remove(0);
+            assert_eq!(pending["data"]["fresh"], true);
+            {
+                let mut state = herdr.lock().unwrap();
+                let unselected = state.screen.replace("❯ 1.", "  1.");
+                state.screen = if multi {
+                    unselected.replace("     Submit", "❯    Submit")
+                } else {
+                    unselected.replace("  2.", "❯ 2.")
+                };
+            }
+            if emit_changed {
+                let events = interactions(&mut service);
+                assert_eq!(events.len(), 1);
+                assert_eq!(events[0]["event"], "interaction.pending");
+                assert_eq!(events[0]["data"]["fresh"], false);
+            }
+            let answers = if multi {
+                json!([{"index":0,"options":[1]}])
+            } else {
+                json!([{"index":0,"options":[1]},{"index":1,"options":[1]}])
+            };
+            assert_eq!(
+                respond(&mut service, question_params(&pending, answers)),
+                vec![json!({"id":"response","error":{"code":"in_progress"}})],
+                "multi={multi}, emitted={emit_changed}"
+            );
+            assert!(herdr.lock().unwrap().inputs.is_empty());
+            cleanup(&service, root);
+        }
+    }
+}
