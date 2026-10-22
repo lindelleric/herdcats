@@ -45,6 +45,10 @@ pub struct QuestionScreen {
     pub queued_count: Option<usize>,
     pub unanswered: Option<usize>,
     pub completed_tabs: bool,
+    /// Codex retains its highlighted option while the notes editor has focus.
+    pub highlighted: Option<u32>,
+    /// Whitespace-free review answers, stable across terminal hard wrapping.
+    pub review_answers: Vec<String>,
     /// Lossless length-delimited rows, including whitespace, selection, and footer.
     pub fingerprint: Vec<u8>,
 }
@@ -174,6 +178,8 @@ fn result(step: QuestionStep) -> QuestionScreen {
         queued_count: None,
         unanswered: None,
         completed_tabs: false,
+        highlighted: None,
+        review_answers: Vec::new(),
         fingerprint: Vec::new(),
     }
 }
@@ -385,6 +391,7 @@ fn review(rows: &[&str], title: usize, pending: &PendingQuestion) -> Option<Ques
         .filter(|r| !r.trim().is_empty())
         .collect();
     let mut i = 0;
+    let mut answers = Vec::new();
     for q in &pending.questions {
         // Captured review fields: question marker at column 1, answer at column 3.
         if indent(body.get(i)?) != 1 {
@@ -403,6 +410,7 @@ fn review(rows: &[&str], title: usize, pending: &PendingQuestion) -> Option<Ques
         }
         let mut answer_rows = vec![first];
         answer_rows.extend_from_slice(body.get(start..i)?);
+        answers.push(compact(&joined(&answer_rows)));
         if rows_equal(&answer_rows, "") {
             return None;
         }
@@ -411,6 +419,7 @@ fn review(rows: &[&str], title: usize, pending: &PendingQuestion) -> Option<Ques
         return None;
     }
     let mut dialog = result(QuestionStep::ClaudeReview);
+    dialog.review_answers = answers;
     for (offset, expected) in ["Submit answers", "Cancel"].iter().enumerate() {
         let (number, label, selected) = numbered(body.get(i + 1 + offset)?)?;
         if number as usize != offset + 1 || label != *expected {
@@ -439,7 +448,6 @@ fn sync(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
     if total != pending.questions.len()
         || index == 0
         || index > total
-        || remaining == 0
         || remaining > total
     {
         return None;
@@ -484,6 +492,7 @@ fn sync(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
                 ("None of the above".into(), Some(description.into()))
             };
             if selected {
+                dialog.highlighted = Some(number);
                 cursor(&mut dialog, QuestionCursor::Option(number))?;
             }
             dialog.options.push(ScreenOption {
