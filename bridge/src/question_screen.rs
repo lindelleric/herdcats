@@ -896,19 +896,45 @@ pub fn parse(
         if !candidate {
             continue;
         }
-        let ends = (start + 1..rows.len()).filter(|&i| match kind {
-            QuestionKind::ClaudeAsk => {
-                rows[i].contains("Esc to cancel")
-                    || rows[i].trim().trim_start_matches('❯').trim() == "2. Cancel"
-            }
-            QuestionKind::CodexPlan => {
-                rows[i].contains("enter to submit answer")
-                    || rows[i].contains("enter to submit all")
-            }
-            QuestionKind::CodexAsync => {
-                (matches!(indent(raw[spans[i].0]), 2 | 4) && rows[i].trim() == "⇧← to answer")
-                    || (indent(raw[spans[i].0]) == 2
-                        && rows[i].trim() == "enter submit   ⌃] skip   ⇧→ main prompt")
+        let ends = (start + 1..rows.len()).filter(|&i| {
+            let Some(&(first, last)) = spans.get(i) else {
+                return false;
+            };
+            let Some(source) = raw.get(first) else {
+                return false;
+            };
+            let Some(row) = rows.get(i).map(|row| row.trim()) else {
+                return false;
+            };
+            let column = indent(source);
+            let original = source.trim();
+            // End candidates are whole controls at their terminal columns, never
+            // substrings inside a selected option, notes, or typed continuations.
+            match kind {
+                QuestionKind::ClaudeAsk => {
+                    (column == 0
+                        && original.starts_with("Enter ")
+                        && row.starts_with("Enter to select")
+                        && row.ends_with("Esc to cancel"))
+                        || (column == 2 && original.starts_with("2. ") && row == "2. Cancel")
+                        || (column == 0 && original.starts_with("❯ 2. ") && row == "❯ 2. Cancel")
+                }
+                QuestionKind::CodexPlan => {
+                    column == 2
+                        && original.starts_with("tab ")
+                        && matches!(row, "enter to submit answer" | "enter to submit all")
+                }
+                QuestionKind::CodexAsync => {
+                    (column == 2
+                        && original.starts_with("enter ")
+                        && row == "enter submit   ⌃] skip   ⇧→ main prompt")
+                        || (row == "⇧← to answer"
+                            && raw.get(first..last).is_some_and(|span| {
+                                span.iter().any(|source| {
+                                    indent(source) == 4 && source.trim().starts_with("⇧←")
+                                })
+                            }))
+                }
             }
         });
         for end in ends {

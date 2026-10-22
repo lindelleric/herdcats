@@ -880,3 +880,81 @@ fn arbitrary_control_text_and_truncations_never_panic() {
         }
     }
 }
+
+#[test]
+fn markers_inside_typed_text_never_truncate_a_successful_parse() {
+    let markers = [
+        "Esc to cancel",
+        "Enter to select · Esc to cancel",
+        "2. Cancel",
+        "❯ 2. Cancel",
+        "enter to submit answer",
+        "enter to submit all",
+        "tab or esc to clear notes | enter to submit all",
+        "enter submit   ⌃] skip   ⇧→ main prompt",
+        "⇧← to answer",
+        "• Queued follow-up inputs",
+        "? 1 question · 9s",
+        "Review your answers",
+        "Ready to submit your answers?",
+        "Submit",
+        "Chat about this",
+        "Question 1/1 (1 unanswered)",
+        "────────────────────────",
+        "←  ☐ Size  ☐ Toppings  ✔ Submit  →",
+    ];
+    let mut cases = [
+        (0, "  3. Type something.", "❯ 3. ", 5),
+        (1, "  4. [ ] Type something", "❯ 4. [✔] ", 9),
+        (2, "❯ 4. [✔] Pepper", "❯ 4. [✔] ", 9),
+        (6, "  › Cheese, Basil", "  › ", 5),
+        (8, "    3. Other", "  › 3. ", 7),
+        (9, "  › 3. Green", "  › 3. ", 7),
+    ]
+    .into_iter()
+    .map(|(index, old, prefix, column)| {
+        let (kind, screen) = fixtures()[index];
+        (pending(kind), screen, old, prefix, column)
+    })
+    .collect::<Vec<_>>();
+    let records = include_str!(
+        "../../../compatibility/phase2/fixtures/claude-question-one-transcript-pending.jsonl"
+    )
+    .lines()
+    .map(|line| serde_json::from_str(line).unwrap())
+    .collect::<Vec<_>>();
+    cases.push((
+        pending_claude_questions(&records).remove(0),
+        include_str!("../../../compatibility/phase2/fixtures/claude-question-one-screen.txt"),
+        "  3. Type something.",
+        "❯ 3. ",
+        5,
+    ));
+    for (request, screen, old, prefix, column) in cases {
+        let kind = request.kind;
+        for marker in markers {
+            for text in [
+                format!("text {marker} more"),
+                format!("text\n{}{marker}", " ".repeat(column)),
+                marker.to_string(),
+            ] {
+                let updated = screen
+                    .replace("❯ 1. Small", "  1. Small")
+                    .replace("❯ 1. Red", "  1. Red")
+                    .replace("❯ 1. [✔] Cheese", "  1. [✔] Cheese")
+                    .replace("  › 1. Red", "    1. Red")
+                    .replace(old, &format!("{prefix}{text}"));
+                if let Some(parsed) = parse(kind, &updated, &request) {
+                    let free = parsed.free_text.unwrap();
+                    assert!(
+                        compact(&free.text).contains(&compact(marker)),
+                        "{updated}\nparsed hint: {}",
+                        free.text
+                    );
+                    let rows = updated.lines().collect::<Vec<_>>();
+                    assert_eq!(parsed.fingerprint, fingerprint(&rows), "{updated}");
+                }
+            }
+        }
+    }
+}
