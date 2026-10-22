@@ -1,0 +1,87 @@
+{
+  "capture_kind": "sanitized live disposable probe sessions",
+  "versions": {
+    "claude": "2.1.307",
+    "codex": "0.163.0",
+    "herdr": "0.9.3"
+  },
+  "redaction": "Exact probe text allowlist; phase 0 pseudonymous IDs and text redaction; phase 1 record filters and anchored screen crops.",
+  "files": {
+    "claude-question-one-screen.txt": {
+      "bytes": 937,
+      "sha256": "8d7e791c954d2f8a80faaa6b77e5a123114f4ca0432f843b544f6740b94750b4"
+    },
+    "claude-question-single-screen.txt": {
+      "bytes": 586,
+      "sha256": "12d2784d3fa9749a6bebd037b7de5790f3dba7eee6bdf97ff32234b7ec88cf44"
+    },
+    "claude-question-multi-screen.txt": {
+      "bytes": 655,
+      "sha256": "438ae2f3855079cde23952df9f81bd4c4ffafc306ce7a9db05f5b068864bf35f"
+    },
+    "claude-question-other-screen.txt": {
+      "bytes": 675,
+      "sha256": "ca3ec9bbe819c921f698e87506c609448a57adea6984dda47b064e3f004e26b9"
+    },
+    "claude-question-review-screen.txt": {
+      "bytes": 211,
+      "sha256": "6708a210fcdeed91ed0213ba0fca5e443f6db0e143da0cbbc388184967baf77b"
+    },
+    "codex-sync-first-screen.txt": {
+      "bytes": 302,
+      "sha256": "27227adea6bbaad83ec31749a814f413cdcad48395daaf42f7f52c75546ee0d0"
+    },
+    "codex-sync-last-screen.txt": {
+      "bytes": 392,
+      "sha256": "bc72dff45b077541ee38c85c63cbb4c24717e8ad5486be10754633436abb139d"
+    },
+    "codex-sync-notes-screen.txt": {
+      "bytes": 371,
+      "sha256": "2b3ed8a69571afe5bac914452d96fa42d892456dfef851a76570fbadb68558af"
+    },
+    "codex-async-queued-screen.txt": {
+      "bytes": 70,
+      "sha256": "0de693c4886582b680f93cb1b1917879cc1d83ebeedc78583f22bd5f461a2737"
+    },
+    "codex-async-picker-screen.txt": {
+      "bytes": 167,
+      "sha256": "1b5f3322a24e75ce93f779339537802fc789ade072dc697657554af1a978a419"
+    },
+    "codex-async-other-screen.txt": {
+      "bytes": 167,
+      "sha256": "ad40e32526566eb1a36a36a830a0df59d1fcf1324c6eead2c72554cd67447557"
+    },
+    "claude-question-one-transcript.jsonl": {
+      "bytes": 6068,
+      "sha256": "a2fcdeacef0ea9bee314babc8eb24cf5182a10edbf69b2a0cf09ccecb33fb79e"
+    },
+    "claude-question-one-transcript-pending.jsonl": {
+      "bytes": 2786,
+      "sha256": "b458901021d92be0e30bd2e7f27513fd6172615e1c3557b76643ae83d2ddef70"
+    },
+    "claude-question-transcript.jsonl": {
+      "bytes": 8319,
+      "sha256": "a508afeab38ea2f68ab14b772e3df19e65996ed5561c228c50b1a097196124f6"
+    },
+    "claude-question-transcript-pending.jsonl": {
+      "bytes": 3024,
+      "sha256": "11cae22f508b28b932f0563c0ea3e1b1c53947e81ef4d3e0ec2fc0f8f341d6a4"
+    },
+    "codex-sync-rollout.jsonl": {
+      "bytes": 5275,
+      "sha256": "c67c9a910dec4fc5a748ca33a9a66c6084023757828c1add46e5564815b4eb5d"
+    },
+    "codex-sync-rollout-pending.jsonl": {
+      "bytes": 3741,
+      "sha256": "f7e13bbc5de21186e6310520751926b8aa8d05f7b72ba25830449328e3497d1a"
+    },
+    "codex-async-rollout.jsonl": {
+      "bytes": 13116,
+      "sha256": "0d9fd7dc89ffcb8d8532af8ecd65ddf9b9ccaeb4f62ee2de1b252ee96d603606"
+    },
+    "codex-async-rollout-pending.jsonl": {
+      "bytes": 9120,
+      "sha256": "5130a456e05aff039879b3da70368fad467f7903f1d05a2473f4f1dfa9f5c3da"
+    }
+  }
+}

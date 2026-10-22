@@ -1,0 +1,13 @@
+←  ☐ Size  ☐ Toppings  ✔ Submit  →
+
+Pick a size
+
+❯ 1. Small
+     Choose small
+  2. Large
+     Choose large
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

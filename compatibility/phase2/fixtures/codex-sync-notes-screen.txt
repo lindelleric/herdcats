@@ -1,0 +1,11 @@
+  Question 2/2 (1 unanswered)
+  Pick toppings (select all that apply; enter multiple choices in the free-text field).
+
+  › 1. Cheese             Add cheese.
+    2. Olives             Add olives.
+    3. Basil              Add basil.
+    4. None of the above  Optionally, add details in notes (tab)
+
+  › Cheese, Basil
+
+  tab or esc to clear notes | enter to submit all
