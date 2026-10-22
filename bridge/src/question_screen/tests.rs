@@ -776,3 +776,107 @@ fn async_footer_as_typed_continuation_is_not_a_control() {
     );
     assert!(parse(kind, &followed, &request).is_none());
 }
+
+#[test]
+fn review_title_can_be_an_ordinary_question() {
+    let (kind, screen) = fixtures()[0];
+    let mut request = pending(kind);
+    request.questions[0].text = "Review your answers".into();
+    let updated = screen.replace("Pick a size", "Review your answers");
+    assert_eq!(
+        parse(kind, &updated, &request).unwrap().step,
+        QuestionStep::ClaudeQuestion(0)
+    );
+    let records = include_str!(
+        "../../../compatibility/phase2/fixtures/claude-question-one-transcript-pending.jsonl"
+    )
+    .lines()
+    .map(|line| serde_json::from_str(line).unwrap())
+    .collect::<Vec<_>>();
+    let mut request = pending_claude_questions(&records).remove(0);
+    request.questions[0].text = "Review your answers".into();
+    let screen =
+        include_str!("../../../compatibility/phase2/fixtures/claude-question-one-screen.txt");
+    assert_eq!(
+        parse(
+            kind,
+            &screen.replace("Pick a color?", "Review your answers"),
+            &request
+        )
+        .unwrap()
+        .step,
+        QuestionStep::ClaudeQuestion(0)
+    );
+}
+
+#[test]
+fn arbitrary_control_text_and_truncations_never_panic() {
+    let mut screens = fixtures()
+        .into_iter()
+        .map(|(kind, screen)| (pending(kind), screen))
+        .collect::<Vec<_>>();
+    let records = include_str!(
+        "../../../compatibility/phase2/fixtures/claude-question-one-transcript-pending.jsonl"
+    )
+    .lines()
+    .map(|line| serde_json::from_str(line).unwrap())
+    .collect::<Vec<_>>();
+    screens.push((
+        pending_claude_questions(&records).remove(0),
+        include_str!("../../../compatibility/phase2/fixtures/claude-question-one-screen.txt"),
+    ));
+    let texts = [
+        "Enter to select · Esc to cancel",
+        "Esc to cancel",
+        "enter to submit answer",
+        "enter to submit all",
+        "enter submit   ⌃] skip   ⇧→ main prompt",
+        "• Queued follow-up inputs",
+        "? 1 question · 9s",
+        "⇧← to answer",
+        "Review your answers",
+        "Ready to submit your answers?",
+        "Submit",
+        "Chat about this",
+        "Question 1/1 (1 unanswered)",
+        "────────────────────────",
+        "",
+        "● question",
+        "→ answer",
+        "☐ Color",
+    ];
+    for (matching, screen) in screens {
+        let rows = screen.lines().collect::<Vec<_>>();
+        for kind in [
+            QuestionKind::ClaudeAsk,
+            QuestionKind::CodexPlan,
+            QuestionKind::CodexAsync,
+        ] {
+            let request = if kind == matching.kind {
+                matching.clone()
+            } else {
+                pending(kind)
+            };
+            for count in 0..=rows.len() {
+                let _ = parse(kind, &rows[..count].join("\n"), &request);
+                let _ = parse(kind, &rows[count..].join("\n"), &request);
+            }
+            // Mutating every row is stronger than selecting just content rows.
+            for (index, row) in rows.iter().enumerate() {
+                for text in texts {
+                    for column in [row.chars().take_while(|c| c.is_whitespace()).count(), 2] {
+                        let mut changed = rows.iter().map(|r| r.to_string()).collect::<Vec<_>>();
+                        changed[index] = format!("{}{text}", " ".repeat(column));
+                        let changed = changed.join("\n");
+                        let _ = parse(kind, &changed, &request);
+                        let mut titled = request.clone();
+                        for question in &mut titled.questions {
+                            question.text = text.into();
+                        }
+                        let _ = parse(kind, &changed, &titled);
+                    }
+                }
+            }
+        }
+    }
+}

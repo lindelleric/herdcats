@@ -102,6 +102,7 @@ fn indent(row: &str) -> usize {
 
 // Consume known content by its structured value, even when it resembles a control.
 fn known_end(rows: &[&str], start: usize, first: &str, expected: &str) -> Option<usize> {
+    rows.get(start)?;
     let target = compact(expected);
     let mut seen = compact(first);
     let mut end = start + 1;
@@ -127,16 +128,21 @@ fn title_end(rows: &[&str], start: usize, expected: &str) -> Option<usize> {
 
 // Unknown typed text can continue only deeper than the option-number column.
 fn option_end(rows: &[&str], start: usize, limit: usize, multi: bool) -> usize {
-    let column = indent(rows[start])
-        + if numbered(rows[start]).is_some_and(|(_, _, selected)| selected) {
+    let Some(first) = rows.get(start) else {
+        return limit.min(rows.len());
+    };
+    let column = indent(first)
+        + if numbered(first).is_some_and(|(_, _, selected)| selected) {
             2
         } else {
             0
         };
     (start + 1..limit)
         .find(|&i| {
-            !rows[i].trim().is_empty()
-                && (indent(rows[i]) <= column || (multi && indent(rows[i]) == 5 && submit(rows[i])))
+            rows.get(i).is_some_and(|row| {
+                !row.trim().is_empty()
+                    && (indent(row) <= column || (multi && indent(row) == 5 && submit(row)))
+            })
         })
         .unwrap_or(limit)
 }
@@ -197,17 +203,15 @@ fn tab_matches(row: &str, pending: &PendingQuestion) -> bool {
 }
 
 fn claude(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
-    if !tab_matches(rows[0], pending) {
+    if !tab_matches(rows.first()?, pending) {
         return None;
     }
     let title = rows
         .iter()
-        .position(|row| !row.trim().is_empty() && *row != rows[0])?;
-    if rows[title].trim() == "Review your answers" {
-        return (pending.questions.len() > 1)
-            .then(|| review(rows, title, pending))
-            .flatten();
-    }
+        .enumerate()
+        .skip(1)
+        .find(|(_, row)| !row.trim().is_empty())
+        .map(|(index, _)| index)?;
     let mut matches = pending
         .questions
         .iter()
@@ -216,11 +220,20 @@ fn claude(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
             let first_option = title_end(rows, title, &q.text)?;
             claude_question(rows, first_option, index, q)
         });
-    let chosen = matches.next()?;
+    let question = matches.next();
     if matches.next().is_some() {
-        None
+        return None;
+    }
+    let reviewed = if pending.questions.len() > 1 {
+        let review_end = title_end(rows, title, "Review your answers");
+        review_end.and_then(|end| review(rows, end.saturating_sub(1), pending))
     } else {
-        Some(chosen)
+        None
+    };
+    match (question, reviewed) {
+        (Some(_), Some(_)) => None,
+        (Some(dialog), None) | (None, Some(dialog)) => Some(dialog),
+        (None, None) => None,
     }
 }
 
@@ -235,30 +248,30 @@ fn claude_question(
     let mut submitted = false;
     let mut i = first_option;
     while i < rows.len() {
-        if rule(rows[i]) && indent(rows[i]) == 0 {
+        if rule(rows.get(i)?) && indent(rows.get(i)?) == 0 {
             divider = Some(i);
             break;
         }
-        if rows[i].trim().is_empty() {
+        if rows.get(i)?.trim().is_empty() {
             i += 1;
             continue;
         }
-        if submit(rows[i]) && q.multi_select {
-            if indent(rows[i]) != 5 && !rows[i].starts_with("❯    Submit") {
+        if submit(rows.get(i)?) && q.multi_select {
+            if indent(rows.get(i)?) != 5 && !rows.get(i)?.starts_with("❯    Submit") {
                 return None;
             }
             if submitted || dialog.options.len() != q.options.len() + usize::from(q.allows_other) {
                 return None;
             }
             submitted = true;
-            if rows[i].contains('❯') {
+            if rows.get(i)?.contains('❯') {
                 cursor(&mut dialog, QuestionCursor::Submit)?;
             }
             i += 1;
             continue;
         }
-        let (number, mut label, selected) = numbered(rows[i])?;
-        if indent(rows[i]) != if selected { 0 } else { 2 } {
+        let (number, mut label, selected) = numbered(rows.get(i)?)?;
+        if indent(rows.get(i)?) != if selected { 0 } else { 2 } {
             return None;
         }
         if number as usize != dialog.options.len() + 1 {
@@ -298,7 +311,7 @@ fn claude_question(
                 "Type something."
             };
             let mut text_rows = vec![label];
-            text_rows.extend_from_slice(&rows[i + 1..end]);
+            text_rows.extend_from_slice(rows.get(i + 1..end)?);
             let typed = !rows_equal(&text_rows, placeholder);
             dialog.free_text = Some(FreeText {
                 active: selected || checked == Some(true),
@@ -327,7 +340,8 @@ fn claude_question(
         return None;
     }
     let divider = divider?;
-    let after: Vec<_> = rows[divider + 1..]
+    let after: Vec<_> = rows
+        .get(divider + 1..)?
         .iter()
         .filter(|r| !r.trim().is_empty())
         .collect();
@@ -342,7 +356,8 @@ fn claude_question(
 }
 
 fn review(rows: &[&str], title: usize, pending: &PendingQuestion) -> Option<QuestionScreen> {
-    let body: Vec<_> = rows[title + 1..]
+    let body: Vec<_> = rows
+        .get(title + 1..)?
         .iter()
         .copied()
         .filter(|r| !r.trim().is_empty())
@@ -353,19 +368,19 @@ fn review(rows: &[&str], title: usize, pending: &PendingQuestion) -> Option<Ques
         if indent(body.get(i)?) != 1 {
             return None;
         }
-        let first = body[i].trim().strip_prefix("● ")?;
+        let first = body.get(i)?.trim().strip_prefix("● ")?;
         i = known_end(&body, i, first, &q.text)?;
         if indent(body.get(i)?) != 3 {
             return None;
         }
-        let first = body[i].trim().strip_prefix('→')?.trim();
+        let first = body.get(i)?.trim().strip_prefix('→')?.trim();
         let start = i + 1;
         i = start;
         while body.get(i).is_some_and(|row| indent(row) > 3) {
             i += 1;
         }
         let mut answer_rows = vec![first];
-        answer_rows.extend_from_slice(&body[start..i]);
+        answer_rows.extend_from_slice(body.get(start..i)?);
         if rows_equal(&answer_rows, "") {
             return None;
         }
@@ -375,7 +390,7 @@ fn review(rows: &[&str], title: usize, pending: &PendingQuestion) -> Option<Ques
     }
     let mut dialog = result(QuestionStep::ClaudeReview);
     for (offset, expected) in ["Submit answers", "Cancel"].iter().enumerate() {
-        let (number, label, selected) = numbered(body[i + 1 + offset])?;
+        let (number, label, selected) = numbered(body.get(i + 1 + offset)?)?;
         if number as usize != offset + 1 || label != *expected {
             return None;
         }
@@ -393,7 +408,7 @@ fn review(rows: &[&str], title: usize, pending: &PendingQuestion) -> Option<Ques
 }
 
 fn sync(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
-    let header = rows[0].trim().strip_prefix("Question ")?;
+    let header = rows.first()?.trim().strip_prefix("Question ")?;
     let (position, unanswered) = header.split_once(" (")?;
     let remaining: usize = unanswered.strip_suffix(" unanswered)")?.parse().ok()?;
     let (index, total) = position.split_once('/')?;
@@ -407,16 +422,16 @@ fn sync(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
     {
         return None;
     }
-    let q = &pending.questions[index - 1];
-    let title = (1..rows.len()).find(|&i| !rows[i].trim().is_empty())?;
+    let q = pending.questions.get(index.checked_sub(1)?)?;
+    let title = (1..rows.len()).find(|&i| rows.get(i).is_some_and(|row| !row.trim().is_empty()))?;
     let first_option = title_end(rows, title, &q.text)?;
     let mut dialog = result(QuestionStep::CodexQuestion {
         index: index - 1,
         total,
     });
     let mut i = first_option;
-    while i < rows.len() - 1 {
-        let row = rows[i];
+    while i < rows.len().checked_sub(1)? {
+        let row = rows.get(i)?;
         if row.trim().is_empty() {
             i += 1;
             continue;
@@ -468,7 +483,8 @@ fn sync(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
             {
                 return None;
             }
-            if rows[i + 1..rows.len() - 1]
+            if rows
+                .get(i + 1..rows.len().checked_sub(1)?)?
                 .iter()
                 .any(|r| !r.trim().is_empty() && indent(r) <= 4)
             {
@@ -479,11 +495,11 @@ fn sync(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
                 active: true,
                 text: {
                     let mut text_rows = vec![notes];
-                    text_rows.extend_from_slice(&rows[i + 1..rows.len() - 1]);
+                    text_rows.extend_from_slice(rows.get(i + 1..rows.len().checked_sub(1)?)?);
                     joined(&text_rows)
                 },
             });
-            i = rows.len() - 1;
+            i = rows.len().checked_sub(1)?;
         }
     }
     if dialog.options.len() != q.options.len() + usize::from(q.allows_other) {
@@ -499,13 +515,14 @@ fn sync(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
 }
 
 fn asynchronous(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
-    let body: Vec<_> = rows[1..]
+    let body: Vec<_> = rows
+        .get(1..)?
         .iter()
         .copied()
         .filter(|r| !r.trim().is_empty())
         .collect();
     if let Some(notice) = body.first()?.trim().strip_prefix("? ") {
-        if body.len() != 2 || body[1].trim() != "⇧← to answer" {
+        if body.len() != 2 || body.get(1)?.trim() != "⇧← to answer" {
             return None;
         }
         let (count, countdown) = notice.split_once(" · ")?;
@@ -546,20 +563,23 @@ fn async_picker(
     index: usize,
     q: &Question,
 ) -> Option<QuestionScreen> {
+    if body.len() < 2 || first_option >= body.len().checked_sub(1)? {
+        return None;
+    }
     let mut dialog = result(QuestionStep::AsyncPicker(index));
     let mut i = first_option;
-    while i < body.len() - 1 {
-        let (number, label, selected) = numbered(body[i])?;
-        if indent(body[i]) != if selected { 2 } else { 4 } {
+    while i < body.len().checked_sub(1)? {
+        let (number, label, selected) = numbered(body.get(i)?)?;
+        if indent(body.get(i)?) != if selected { 2 } else { 4 } {
             return None;
         }
         let end = if let Some(option) = q.options.get(dialog.options.len()) {
             known_end(body, i, label, &option.label)?
         } else {
-            option_end(body, i, body.len() - 1, false)
+            option_end(body, i, body.len().checked_sub(1)?, false)
         };
         let mut text_rows = vec![label];
-        text_rows.extend_from_slice(&body[i + 1..end]);
+        text_rows.extend_from_slice(body.get(i + 1..end)?);
         let visible_label = joined(&text_rows);
         let mut label = visible_label.as_str();
         if number as usize != dialog.options.len() + 1 {
@@ -618,17 +638,17 @@ fn anchor_rows(screen: &str, pending: &PendingQuestion) -> (Vec<String>, Vec<(us
         ("enter submit   ⌃] skip   ⇧→ main prompt", 2),
     ];
     let mut i = 0;
-    while i < raw.len() {
+    while let Some(first_raw) = raw.get(i) {
         let start = i;
-        let first = raw[i].trim();
+        let first = first_raw.trim();
         let mut replacement = None;
         for (expected, column) in fixed {
-            if indent(raw[i]) != column {
+            if indent(first_raw) != column {
                 continue;
             }
             let target = compact(expected);
             let mut candidate = String::new();
-            for (offset, row) in raw[i..].iter().enumerate() {
+            for (offset, row) in raw.get(i..).unwrap_or_default().iter().enumerate() {
                 if indent(row) > if column == 2 { 4 } else { column.max(2) } {
                     break;
                 }
@@ -646,16 +666,16 @@ fn anchor_rows(screen: &str, pending: &PendingQuestion) -> (Vec<String>, Vec<(us
             }
         }
         if replacement.is_none()
-            && ((first.starts_with("← ") && indent(raw[i]) == 0)
-                || ((first.starts_with("☐ ") || first.starts_with("☒ ")) && indent(raw[i]) <= 1))
+            && ((first.starts_with("← ") && indent(first_raw) == 0)
+                || ((first.starts_with("☐ ") || first.starts_with("☒ ")) && indent(first_raw) <= 1))
         {
             let mut candidate = String::new();
             for (end, row) in raw.iter().enumerate().skip(i) {
                 if indent(row)
-                    > if indent(raw[i]) == 2 {
+                    > if indent(first_raw) == 2 {
                         4
                     } else {
-                        indent(raw[i]).max(2)
+                        indent(first_raw).max(2)
                     }
                 {
                     break;
@@ -676,7 +696,7 @@ fn anchor_rows(screen: &str, pending: &PendingQuestion) -> (Vec<String>, Vec<(us
                     else {
                         return false;
                     };
-                    rest = &rest[state.len_utf8()..];
+                    rest = rest.get(state.len_utf8()..).unwrap_or("");
                     let Some(header) = q.header.as_deref() else {
                         return false;
                     };
@@ -700,14 +720,14 @@ fn anchor_rows(screen: &str, pending: &PendingQuestion) -> (Vec<String>, Vec<(us
                 }
             }
         }
-        if replacement.is_none() && first.starts_with("Question ") && indent(raw[i]) == 2 {
+        if replacement.is_none() && first.starts_with("Question ") && indent(first_raw) == 2 {
             let mut candidate = String::new();
             for (end, row) in raw.iter().enumerate().skip(i) {
                 if indent(row)
-                    > if indent(raw[i]) == 2 {
+                    > if indent(first_raw) == 2 {
                         4
                     } else {
-                        indent(raw[i]).max(2)
+                        indent(first_raw).max(2)
                     }
                 {
                     break;
@@ -730,7 +750,7 @@ fn anchor_rows(screen: &str, pending: &PendingQuestion) -> (Vec<String>, Vec<(us
                 }
             }
         }
-        if replacement.is_none() && first.starts_with("? ") && indent(raw[i]) == 2 {
+        if replacement.is_none() && first.starts_with("? ") && indent(first_raw) == 2 {
             let mut candidate = String::new();
             for (end, row) in raw.iter().enumerate().skip(i) {
                 if indent(row) > 4 {
@@ -747,7 +767,7 @@ fn anchor_rows(screen: &str, pending: &PendingQuestion) -> (Vec<String>, Vec<(us
                             .chars()
                             .take_while(char::is_ascii_digit)
                             .collect::<String>();
-                        let suffix = &count[digits.len()..];
+                        let suffix = count.get(digits.len()..).unwrap_or("");
                         if matches!(suffix, "question" | "questions") {
                             rows.push(format!("? {digits} {suffix} · {countdown}"));
                             spans.push((start, end + 1));
@@ -762,16 +782,16 @@ fn anchor_rows(screen: &str, pending: &PendingQuestion) -> (Vec<String>, Vec<(us
             }
         }
         if replacement.is_none()
-            && ((first.starts_with("Enter to select") && indent(raw[i]) == 0)
-                || (first.starts_with("tab ") && indent(raw[i]) == 2))
+            && ((first.starts_with("Enter to select") && indent(first_raw) == 0)
+                || (first.starts_with("tab ") && indent(first_raw) == 2))
         {
             let mut candidate = String::new();
             for (end, row) in raw.iter().enumerate().skip(i) {
                 if indent(row)
-                    > if indent(raw[i]) == 2 {
+                    > if indent(first_raw) == 2 {
                         4
                     } else {
-                        indent(raw[i]).max(2)
+                        indent(first_raw).max(2)
                     }
                 {
                     break;
@@ -800,16 +820,19 @@ fn anchor_rows(screen: &str, pending: &PendingQuestion) -> (Vec<String>, Vec<(us
                 }
             }
         }
-        if replacement.is_none() && rule(raw[i]) && indent(raw[i]) == 0 {
+        if replacement.is_none() && rule(first_raw) && indent(first_raw) == 0 {
             let mut end = i + 1;
-            while end < raw.len() && rule(raw[end]) && indent(raw[end]) == 0 {
+            while raw
+                .get(end)
+                .is_some_and(|row| rule(row) && indent(row) == 0)
+            {
                 end += 1;
             }
             replacement = Some((end, "─".into()));
         }
         if replacement.is_none() {
-            if let Some((number, label, selected)) = numbered(raw[i])
-                .filter(|(_, _, selected)| indent(raw[i]) == if *selected { 0 } else { 2 })
+            if let Some((number, label, selected)) = numbered(first_raw)
+                .filter(|(_, _, selected)| indent(first_raw) == if *selected { 0 } else { 2 })
             {
                 let expected = "Chat about this";
                 let mut candidate = compact(label);
@@ -833,7 +856,7 @@ fn anchor_rows(screen: &str, pending: &PendingQuestion) -> (Vec<String>, Vec<(us
                 }
             }
         }
-        let (end, row) = replacement.unwrap_or((i + 1, raw[i].to_string()));
+        let (end, row) = replacement.unwrap_or((i + 1, first_raw.to_string()));
         rows.push(row);
         spans.push((start, end));
         i = end;
@@ -894,14 +917,14 @@ pub fn parse(
             if next.is_some_and(|i| indent(raw[i]) > 4) {
                 continue;
             }
-            let slice = &rows[start..=end];
+            let slice = rows.get(start..=end)?;
             let dialog = match kind {
                 QuestionKind::ClaudeAsk => claude(slice, pending),
                 QuestionKind::CodexPlan => sync(slice, pending),
                 QuestionKind::CodexAsync => asynchronous(slice, pending),
             };
             if let Some(mut dialog) = dialog {
-                dialog.fingerprint = fingerprint(&raw[spans[start].0..spans[end].1]);
+                dialog.fingerprint = fingerprint(raw.get(spans.get(start)?.0..spans.get(end)?.1)?);
                 if chosen.replace(dialog).is_some() {
                     return None;
                 }
