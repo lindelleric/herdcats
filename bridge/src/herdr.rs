@@ -51,12 +51,20 @@ impl Client {
         Ok(snapshot)
     }
     pub fn read_visible(&self, pane_id: &str) -> Result<String> {
-        let frame = self.request(
+        self.read_visible_with_timeout(pane_id, Duration::from_secs(2))
+    }
+    pub fn read_visible_with_timeout(&self, pane_id: &str, timeout: Duration) -> Result<String> {
+        let frame = self.request_with_timeout(
             "pane.read", "pane.read", json!({"pane_id":pane_id,"source":"visible"}),
-            "invalid_herdr_response",
+            "invalid_herdr_response", timeout,
         )?;
         frame["result"]["read"]["text"].as_str()
             .map(str::to_owned).ok_or("invalid_herdr_response")
+    }
+    pub fn send_text(&self, pane_id: &str, text: &str) -> Result<()> {
+        self.request("pane.send_text", "pane.send_text", json!({"pane_id":pane_id,"text":text}),
+            "invalid_herdr_response")?;
+        Ok(())
     }
 
     pub fn send_keys(&self, pane_id: &str, keys: &[&str]) -> Result<()> {
@@ -68,12 +76,18 @@ impl Client {
     }
 
     fn request(&self, id: &str, method: &str, params: Value, too_large: &'static str) -> Result<Value> {
+        self.request_with_timeout(id, method, params, too_large, Duration::from_secs(2))
+    }
+    fn request_with_timeout(&self, id: &str, method: &str, params: Value, too_large: &'static str, timeout: Duration) -> Result<Value> {
+        if timeout.is_zero() { return Err("herdr_unavailable"); }
         let mut stream = UnixStream::connect(&self.socket).map_err(|_| "herdr_unavailable")?;
+        // Set timeouts before sending: on macOS a second setsockopt after a
+        // fast peer has replied and closed can fail with EINVAL despite unread data.
         stream
-            .set_read_timeout(Some(Duration::from_secs(2)))
+            .set_read_timeout(Some(timeout))
             .map_err(|_| "herdr_unavailable")?;
         stream
-            .set_write_timeout(Some(Duration::from_secs(2)))
+            .set_write_timeout(Some(timeout))
             .map_err(|_| "herdr_unavailable")?;
         writeln!(
             stream,

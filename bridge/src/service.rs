@@ -10,6 +10,7 @@ use crate::{
     hooks::Agent,
     resolver::Resolver,
     question_match::{self, PendingQuestion, QuestionKind},
+    question_keys::{self, ExpectedScreen, Input, Step},
     question_screen::{self, QuestionScreen, QuestionStep},
     spool,
 };
@@ -22,6 +23,24 @@ use std::{
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+#[derive(Debug)]
+struct InteractionError {
+    code: &'static str,
+    steps_sent: Option<usize>,
+}
+impl From<&'static str> for InteractionError {
+    fn from(code: &'static str) -> Self { Self { code, steps_sent: None } }
+}
+impl InteractionError {
+    fn stale_after(steps_sent: usize) -> Self { Self { code: "stale", steps_sent: Some(steps_sent) } }
+    fn data(&self) -> Value {
+        let mut data = json!({"code":self.code});
+        if let Some(steps_sent) = self.steps_sent { data["steps_sent"] = json!(steps_sent); }
+        data
+    }
+}
+type InteractionResult<T> = std::result::Result<T, InteractionError>;
 
 #[derive(Clone, PartialEq, Serialize)]
 struct Identity {
@@ -672,17 +691,17 @@ impl Service {
             identity: identity.clone(), generation: self.generation, request, dialog,
         })
     }
-    fn read_question(
+    fn matched_question(
         &self,
         identity: &Identity,
         file: std::fs::File,
         cache: &mut Option<QuestionMatchCache>,
-    ) -> Option<PendingQuestionEvent> {
+    ) -> Option<PendingQuestion> {
         let stamp = match file.metadata() {
             Ok(meta) if meta.is_file() => ApprovalFileStamp::of(&meta),
             _ => { *cache = None; return None; }
         };
-        let request = if let Some(cached) = cache.as_ref()
+        if let Some(cached) = cache.as_ref()
             .filter(|c| c.identity == *identity && c.stamp == stamp) {
             cached.request.clone()
         } else {
@@ -696,7 +715,15 @@ impl Service {
             if ApprovalFileStamp::of(&file.metadata().ok()?) != stamp { return None; }
             *cache = Some(QuestionMatchCache { identity: identity.clone(), stamp, request: request.clone() });
             request
-        }?;
+        }
+    }
+    fn read_question(
+        &self,
+        identity: &Identity,
+        file: std::fs::File,
+        cache: &mut Option<QuestionMatchCache>,
+    ) -> Option<PendingQuestionEvent> {
+        let request = self.matched_question(identity, file, cache)?;
         if request.questions.iter().any(|q| q.secret)
             || (request.kind == QuestionKind::CodexAsync && request.questions.len() != 1) {
             return None;
@@ -742,23 +769,35 @@ impl Service {
         }
         Ok(())
     }
-    fn respond_interaction(&self, params: &Value) -> Result<Value> {
+    fn respond_interaction(&self, params: &Value) -> InteractionResult<Value> {
         let question_response = params.get("answers").is_some() || params.get("skip").is_some();
-        if (question_response && !self.include_questions) || (!question_response && !self.include_approvals) {
-            return Err("unsupported_capability");
+        if (!self.include_approvals && !self.include_questions) || (question_response && !self.include_questions) {
+            return Err("unsupported_capability".into());
         }
         let watch = self.watch.as_ref().ok_or("not_watching")?;
         let identity = watch.identity.as_ref().filter(|_| watch.unavailable.is_none())
             .ok_or("timeline_unavailable")?;
-        let pending = match watch.pending.as_ref().ok_or("stale")? {
-            PendingInteraction::Approval(pending) => pending,
-            PendingInteraction::Question(_) => return Err("unsupported_capability"),
-        };
-        if params["request_id"].as_str() != Some(&pending.request.request_id)
-            || pending.identity != *identity || pending.generation != self.generation
-        {
-            return Err("stale");
+        match watch.pending.as_ref().ok_or("stale")? {
+            PendingInteraction::Approval(pending) => {
+                if !self.include_approvals { return Err("unsupported_capability".into()); }
+                if params["request_id"].as_str() != Some(&pending.request.request_id)
+                    || pending.identity != *identity || pending.generation != self.generation {
+                    return Err("stale".into());
+                }
+                if question_response { return Err("mismatch".into()); }
+                self.respond_approval(params, watch, identity, pending).map_err(Into::into)
+            }
+            PendingInteraction::Question(pending) => {
+                if !self.include_questions { return Err("unsupported_capability".into()); }
+                if params["request_id"].as_str() != Some(&pending.request.request_id)
+                    || pending.identity != *identity || pending.generation != self.generation {
+                    return Err("stale".into());
+                }
+                self.respond_question(params, watch, identity, pending)
+            }
         }
+    }
+    fn respond_approval(&self, params: &Value, watch: &Watch, identity: &Identity, pending: &PendingApproval) -> Result<Value> {
         let command = pending.request.tool_input["command"].as_str().ok_or("stale")?;
         let screen = self.client.read_visible(&identity.pane_id).map_err(|_| "stale")?;
         let current = approval_screen::parse(pending.request.agent, &screen, command).ok_or("stale")?;
@@ -819,6 +858,94 @@ impl Service {
         }
         Ok(json!({"request_id":pending.request.request_id,"sent":key,"confirmed":confirmed}))
     }
+    fn question_pane_file(&self, identity: &Identity) -> Result<std::fs::File> {
+        let snapshot = self.client.snapshot().map_err(|_| "stale")?;
+        let pane = snapshot.panes.iter().find(|p| p.pane_id == identity.pane_id).ok_or("stale")?;
+        if pane.agent_status != "blocked" || pane.terminal_id != identity.terminal_id
+            || pane.agent.as_deref() != Some(&identity.agent) { return Err("stale"); }
+        let adapter = self.adapter_for(&identity.agent).ok_or("stale")?;
+        let (session, file) = adapter.resolve_and_open(pane).map_err(|_| "stale")?;
+        if session != identity.native_session_id { return Err("stale"); }
+        Ok(file)
+    }
+    fn respond_question(&self, params: &Value, watch: &Watch, identity: &Identity, pending: &PendingQuestionEvent) -> InteractionResult<Value> {
+        if !pending.fresh { return Err("in_progress".into()); }
+        // Reopen the last verified reference, then independently validate the fresh
+        // occupant. Neither the transcript match nor screen may come from a cache.
+        let source = watch.source_pane.as_ref().ok_or("stale")?;
+        let adapter = self.adapter_for(&identity.agent).ok_or("stale")?;
+        let (session, _) = adapter.resolve_and_open(source).map_err(|_| "stale")?;
+        if session != identity.native_session_id { return Err("stale".into()); }
+        let file = self.question_pane_file(identity)?;
+        let newest = self.matched_question(identity, file, &mut None).ok_or("stale")?;
+        if newest != pending.request { return Err("stale".into()); }
+        let visible = self.client.read_visible(&identity.pane_id).map_err(|_| "stale")?;
+        let current = question_screen::parse(newest.kind, &visible, &newest).ok_or("stale")?;
+        if !current.is_fresh(&newest) { return Err("in_progress".into()); }
+        let steps = question_keys::plan(newest.kind, &newest, &current, params)?;
+        let confirmed = self.execute_question(identity, &newest, current, &steps)?;
+        Ok(json!({"request_id":newest.request_id,"confirmed":confirmed}))
+    }
+    fn execute_question(&self, identity: &Identity, pending: &PendingQuestion, mut current: QuestionScreen, steps: &[Step]) -> InteractionResult<bool> {
+        let mut steps_sent = 0;
+        for (index, step) in steps.iter().enumerate() {
+            if index > 0 {
+                let occupant = self.question_pane_file(identity);
+                // A guard read immediately before each later input catches desk
+                // edits and a last picker that disappeared after the digit check.
+                let visible = self.client.read_visible_with_timeout(&identity.pane_id, Duration::from_secs(1))
+                    .map_err(|_| InteractionError::stale_after(steps_sent))?;
+                let parsed = question_screen::parse(pending.kind, &visible, pending);
+                if step.only_if.is_some() && parsed.is_none() { return Ok(true); }
+                let parsed = parsed.ok_or_else(|| InteractionError::stale_after(steps_sent))?;
+                // A remaining dialog must still belong to this blocked occupant.
+                // Disappearance needs no further input, even if the pane is idle.
+                occupant.map_err(|_| InteractionError::stale_after(steps_sent))?;
+                if !steps[index-1].expected.matches(Some(&parsed))
+                    || step.only_if.as_ref().is_some_and(|guard| !guard.matches(&parsed)) {
+                    return Err(InteractionError::stale_after(steps_sent));
+                }
+                current = parsed;
+            }
+            // Count dispatched input attempts conservatively: a transport failure
+            // may happen after Herdr received the input. Never retry that input.
+            steps_sent += 1;
+            let sent = match &step.input {
+                Input::Keys(keys) => self.client.send_keys(&identity.pane_id, &keys.iter().map(String::as_str).collect::<Vec<_>>()),
+                Input::Text(text) => self.client.send_text(&identity.pane_id, text),
+            };
+            sent.map_err(|_| InteractionError::stale_after(steps_sent))?;
+            let deadline = Instant::now() + Duration::from_secs(1);
+            let final_input = matches!(step.expected, ExpectedScreen::Gone);
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    if final_input { return Ok(false); }
+                    return Err(InteractionError::stale_after(steps_sent));
+                }
+                let visible = match self.client.read_visible_with_timeout(&identity.pane_id, remaining) {
+                    Ok(visible) => visible,
+                    Err(_) if final_input => return Ok(false),
+                    Err(_) => return Err(InteractionError::stale_after(steps_sent)),
+                };
+                let parsed = question_screen::parse(pending.kind, &visible, pending);
+                if step.expected.matches(parsed.as_ref()) {
+                    match parsed {
+                        Some(parsed) => { current = parsed; break; }
+                        None => return Ok(true),
+                    }
+                }
+                // On final submission an unchanged dialog means unconfirmed;
+                // any different parsed dialog is a state mismatch, not success.
+                if final_input && parsed.as_ref().is_none_or(|s| s.fingerprint != current.fingerprint) {
+                    return Err(InteractionError::stale_after(steps_sent));
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if !remaining.is_zero() { thread::sleep(Duration::from_millis(100).min(remaining)); }
+            }
+        }
+        Ok(false)
+    }
     pub fn request(&mut self, bytes: &[u8], out: &mut impl Write) -> io::Result<()> {
         self.request_with_refresh(bytes, out, |follower, file, session| {
             follower.refresh_file(file, session)
@@ -869,7 +996,7 @@ impl Service {
                     Self::write(out, &json!({"id":id,"result":result}))?;
                     self.poll(out)
                 }
-                Err(code) => Self::error(out, id, code),
+                Err(error) => Self::write(out, &json!({"id":id,"error":error.data()})),
             },
             "watch" => {
                 let Some(pane) = params["pane_id"]
@@ -1074,6 +1201,14 @@ mod tests {
         read_error_after_send: bool,
         keys: Vec<Value>,
         screens_after_send: std::collections::VecDeque<String>,
+        allow_question_input: bool,
+        inputs: Vec<Value>,
+        // One render sequence per input; extra guard reads retain the last render.
+        screens_after_input: std::collections::VecDeque<std::collections::VecDeque<String>>,
+        active_input_screens: std::collections::VecDeque<String>,
+        screens_before_input: std::collections::VecDeque<String>,
+        terminal_after_input: Option<String>,
+        status_after_inputs: Option<(usize, String)>,
         hide_pane: bool,
         terminal_id: Option<String>,
         session_override: Option<String>,
@@ -1123,7 +1258,12 @@ mod tests {
                     "pane.read" => {
                         assert_eq!(request["params"], json!({"pane_id":"w1:p1","source":"visible"}));
                         state.reads += 1;
-                        if !state.keys.is_empty() {
+                        if state.allow_question_input {
+                            if let Some(screen) = state.screens_before_input.pop_front()
+                                .or_else(|| state.active_input_screens.pop_front()) {
+                                state.screen = screen;
+                            }
+                        } else if !state.keys.is_empty() {
                             if let Some(screen) = state.screens_after_send.pop_front() {
                                 state.screen = screen;
                             }
@@ -1132,12 +1272,30 @@ mod tests {
                     }
                     "pane.send_keys" => {
                         let keys = request["params"]["keys"].as_array().unwrap();
-                        assert_eq!(keys.len(), 1);
-                        assert!(keys.iter().all(|key| !["enter", "\n", "\r"].contains(&key.as_str().unwrap())));
+                        if !state.allow_question_input {
+                            assert_eq!(keys.len(), 1);
+                            assert!(keys.iter().all(|key| !["enter", "\n", "\r"].contains(&key.as_str().unwrap())));
+                        }
                         state.keys.push(request["params"].clone());
+                        state.inputs.push(json!({"method":"pane.send_keys","params":request["params"]}));
+                        state.active_input_screens = state.screens_after_input.pop_front().unwrap_or_default();
+                        json!({})
+                    }
+                    "pane.send_text" => {
+                        assert!(state.allow_question_input);
+                        assert_eq!(request["params"]["pane_id"], "w1:p1");
+                        assert!(request["params"]["text"].is_string());
+                        assert_eq!(request["params"].as_object().unwrap().len(), 2);
+                        state.inputs.push(json!({"method":"pane.send_text","params":request["params"]}));
+                        state.active_input_screens = state.screens_after_input.pop_front().unwrap_or_default();
                         json!({})
                     }
                     "session.snapshot" => {
+                        if let Some((count, status)) = state.status_after_inputs.clone()
+                            && state.inputs.len() >= count { state.status = Some(status); }
+                        if !state.inputs.is_empty() && let Some(terminal) = state.terminal_after_input.clone() {
+                            state.terminal_id = Some(terminal);
+                        }
                         let agent = state.agent.as_deref().unwrap_or("claude");
                         let mut snapshot = json!({"protocol":22,"version":"0.9.3","panes":[{"pane_id":"w1:p1","terminal_id":state.terminal_id.as_deref().unwrap_or("terminal-one"),"workspace_id":"w1","tab_id":"w1:t1","agent":agent,"agent_status":state.status.as_deref().unwrap_or("idle"),"foreground_cwd":"/fixture/work","revision":1,"agent_session":{"agent":agent,"source":format!("herdr:{agent}"),"kind":"id","value":state.session_override.clone().unwrap_or_else(|| session_for_server.lock().unwrap().clone())}}]});
                         if state.hide_pane {
@@ -1169,6 +1327,7 @@ mod tests {
     }
     include!("service_approval_tests.rs");
     include!("service_question_tests.rs");
+    include!("service_question_response_tests.rs");
     include!("service_response_tests.rs");
     fn cleanup(service: &Service, root: PathBuf) {
         // Wake and terminate the fixture thread without a valid request.

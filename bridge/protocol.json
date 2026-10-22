@@ -124,7 +124,7 @@
         "unsupported_capability": "Client did not opt in to the corresponding approvals or questions capability.",
         "not_watching": "No active watch.",
         "timeline_unavailable": "The watch has no resolved identity or its timeline is unavailable.",
-        "stale": "No matching emitted request, changed/unreadable dialog or source, resolved/aborted or superseded call, or changed/unblocked/missing pane. No keys are sent. During question execution includes steps_sent: number of input steps already sent.",
+        "stale": "No matching emitted request, changed/unreadable dialog or source, resolved/aborted or superseded call, or changed/unblocked/missing pane. Preflight and approval errors send no input. During question execution, includes steps_sent: number of input steps dispatched, conservatively counting a failed send whose delivery may be uncertain.",
         "mismatch": "The option number is invalid or its label_lines differ from the exact rows shown. No keys are sent. For questions, answers do not fit the request.",
         "in_progress": "Question screen is no longer fresh; no input sent.",
         "invalid": "Invalid answer indices, cardinality, option numbers or text."
@@ -140,7 +140,8 @@
         "Text is a single line of at most 500 characters with no control characters.",
         "Respond only from a fresh screen. Recheck the pending request, identity, blocked status and fresh visible screen before sending; verify the expected next screen between steps. Stop on mismatch with stale and steps_sent."
       ],
-      "question_result": "request_id and confirmed: boolean; after the last step confirm that the dialog has disappeared. Question execution is implemented in section 3 of slice B."
+      "question_result": "request_id and confirmed: boolean; true when the dialog is observed gone after the final input (or after the last Codex Plan digit). False if final confirmation fails or the unchanged final dialog remains for about 1 second. Never resend automatically.",
+      "question_effect": "Revalidate the newest pending request without the polling cache, identity, occupant, blocked status and fresh visible screen before input. Execute the pure key/text plan, polling the visible screen every 100ms for at most about 1 second after each step. Re-read before later inputs and revalidate the occupant before sending. Stop with stale and steps_sent on an unexpected state or intermediate read/send failure. Send the optional final Codex Plan Enter only if the selected last picker is still visible; skip it if the dialog has gone. Write the result, then poll so interaction.resolved can follow."
     }
   ],
   "envelopes": {
@@ -156,7 +157,8 @@
     "failure": {
       "id": "request ID or null for invalid frame/ID",
       "error": {
-        "code": "stable string"
+        "code": "stable string",
+        "steps_sent": "optional integer on question execution stale errors; key lists and text inputs each count as one step"
       }
     },
     "notification": {
