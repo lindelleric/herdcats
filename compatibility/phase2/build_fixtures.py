@@ -20,7 +20,7 @@ KEEP = {'herdcats-probe', 'Size', 'Pick a size', 'Small', 'Large', 'Choose small
         'Choose a small size.', 'Choose a large size.', 'Toppings', 'Pick toppings',
         'Pick toppings (select all that apply; enter multiple choices in the free-text field).',
         'Cheese', 'Olives', 'Basil', 'Pepper', 'Cheese, Basil', 'Cheese, Basil, Pepper',
-        'user_note: Cheese, Basil', 'Color', 'Pick a color', 'Color: Pick a color',
+        'user_note: Cheese, Basil', 'Color', 'Pick a color', 'Pick a color?', 'Red', 'Blue', 'Choose red', 'Choose blue', 'Color: Pick a color',
         'Red (Choose red)', 'Blue (Choose blue)', 'Green'}
 KEEP.update(f'Add {label}{period}' for label in ('cheese', 'olives', 'basil') for period in ('', '.'))
 
@@ -99,6 +99,7 @@ def pending(rows, kind):
 
 
 SCREENS = [
+    ('claude-question-one', 'claude-one-screen', '☐ Color', 'Esc to cancel'),
     ('claude-question-single', 'claude-q1-screen', '←', 'Esc to cancel'),
     ('claude-question-multi', 'claude-q2-toggled-screen', '←', 'Esc to cancel'),
     ('claude-question-other', 'claude-q2-other-typed-screen', '←', 'Esc to cancel'),
@@ -120,6 +121,7 @@ def main():
     outputs = {dest + '-screen.txt': phase1.screen(args.raw / (src + '.txt'), start, args.spike_root, end)
                for dest, src, start, end in SCREENS}
     for dest, src, kind, keep in [
+        ('claude-question-one-transcript', 'claude-one-transcript', 'claude', phase1.keep_claude),
         ('claude-question-transcript', 'claude-transcript', 'claude', phase1.keep_claude),
         ('codex-sync-rollout', 'codex-sync-rollout', 'sync', phase1.keep_codex),
         ('codex-async-rollout', 'codex-async-rollout', 'async', phase1.keep_codex),

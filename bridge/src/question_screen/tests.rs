@@ -160,7 +160,7 @@ fn rejects_mismatches_and_ambiguous_scrollback() {
         let request = pending(kind);
         assert!(parse(kind, &format!("{screen}\n{screen}"), &request).is_none());
         if kind == QuestionKind::CodexAsync && screen.contains("⇧← to answer") {
-            assert!(parse(kind, &screen.replace("1 question", "2 questions"), &request).is_none());
+            assert!(parse(kind, &screen.replace("1 question", "0 questions"), &request).is_none());
         } else {
             let wrong = screen
                 .replace("Pick a size", "Pick another size")
@@ -297,5 +297,137 @@ fn narrow_panes_accept_wrapped_titles_descriptions_and_option_rows() {
             .replace("red)", "yellow)")
             .replace("blue)", "yellow)");
         assert!(parse(kind, &wrong, &request).is_none());
+    }
+}
+
+#[test]
+fn empty_notes_are_active_with_or_without_trailing_space() {
+    let (kind, screen) = fixtures()[6];
+    for marker in ["› ", "›"] {
+        let updated = screen.replace("› Cheese, Basil", marker);
+        let parsed = parse(kind, &updated, &pending(kind)).unwrap();
+        assert_eq!(parsed.cursor, Some(QuestionCursor::Notes));
+        assert_eq!(
+            parsed.free_text,
+            Some(FreeText {
+                active: true,
+                text: String::new()
+            })
+        );
+    }
+}
+
+#[test]
+fn queued_banner_counts_questions_across_calls() {
+    let kind = QuestionKind::CodexAsync;
+    let first = pending(kind);
+    let mut second = first.clone();
+    second.request_id = "another-call".into();
+    second.questions[0].text = "Another question".into();
+    let screen = "• Queued follow-up inputs\n  ? 2 questions · 5s\n    ⇧← to answer\n";
+    for request in [first, second] {
+        let parsed = parse(kind, screen, &request).unwrap();
+        assert_eq!(parsed.queued_count, Some(2));
+        assert_eq!(parsed.countdown.as_deref(), Some("5s"));
+        assert_eq!(parsed.step, QuestionStep::AsyncQueued);
+        for banner in [
+            "? 0 questions · 5s",
+            "? two questions · 5s",
+            "? 2 questions · ",
+            "? 2 · 5s",
+            "? -1 questions · 5s",
+            "? +2 questions · 5s",
+        ] {
+            assert!(
+                parse(
+                    kind,
+                    &screen.replace("? 2 questions · 5s", banner),
+                    &request
+                )
+                .is_none()
+            );
+        }
+    }
+}
+
+#[test]
+fn claude_review_accepts_wrapped_questions_and_long_typed_answers() {
+    let (kind, screen) = fixtures()[3];
+    let request = pending(kind);
+    let wrapped = screen
+        .replace("● Pick a size", "● Pick a\n   size")
+        .replace("● Pick toppings", "● Pick top\n   pings")
+        .replace("→ Cheese, Basil, Pepper", "→ Cheese, Basil,\n     Pepper");
+    let original = parse(kind, screen, &request).unwrap();
+    let parsed = parse(kind, &wrapped, &request).unwrap();
+    assert_eq!(parsed.step, QuestionStep::ClaudeReview);
+    assert_ne!(parsed.fingerprint, original.fingerprint);
+    let long = wrapped.replace(
+        "→ Large",
+        "→ A long typed answer\n     that continues across\n     several terminal rows",
+    );
+    assert!(parse(kind, &long, &request).is_some());
+    assert!(parse(kind, &long.replace("Pick top", "Choose top"), &request).is_none());
+    assert!(parse(kind, &screen.replace("→ Large", "→ \n   "), &request).is_none());
+    assert!(parse(kind, &format!("{long}\n{long}"), &request).is_none());
+}
+
+#[test]
+fn claude_one_question_capture_has_no_review_step() {
+    let records = |source: &str| {
+        source
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect::<Vec<_>>()
+    };
+    let requests = pending_claude_questions(&records(include_str!(
+        "../../../compatibility/phase2/fixtures/claude-question-one-transcript-pending.jsonl"
+    )));
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(request.questions.len(), 1);
+    assert_eq!(request.questions[0].text, "Pick a color?");
+    assert!(
+        pending_claude_questions(&records(include_str!(
+            "../../../compatibility/phase2/fixtures/claude-question-one-transcript.jsonl"
+        )))
+        .is_empty()
+    );
+    let screen =
+        include_str!("../../../compatibility/phase2/fixtures/claude-question-one-screen.txt");
+    let kind = QuestionKind::ClaudeAsk;
+    for header in ["☐ Color", "☒ Color"] {
+        let updated = screen.replace("☐ Color", header);
+        let parsed = parse(kind, &updated, request).unwrap();
+        assert_eq!(parsed.step, QuestionStep::ClaudeQuestion(0));
+        assert_eq!(parsed.options[0].label, "Red");
+        assert_eq!(parsed.cursor, Some(QuestionCursor::Option(1)));
+        assert!(parse(kind, &updated, &pending(kind)).is_none());
+    }
+    assert!(
+        parse(
+            kind,
+            &screen.replace("☐ Color", "←  ☐ Color  ✔ Submit  →"),
+            request
+        )
+        .is_none()
+    );
+    assert!(
+        parse(
+            kind,
+            &screen.replace("Pick a color?", "Pick a color"),
+            request
+        )
+        .is_none()
+    );
+    assert!(parse(kind, &format!("{screen}\n{screen}"), request).is_none());
+    let parsed = parse(kind, screen, request).unwrap();
+    for (index, _) in screen.lines().enumerate() {
+        let mut rows: Vec<_> = screen.lines().map(str::to_owned).collect();
+        rows[index].push(' ');
+        assert_ne!(
+            parse(kind, &rows.join("\n"), request).unwrap().fingerprint,
+            parsed.fingerprint
+        );
     }
 }

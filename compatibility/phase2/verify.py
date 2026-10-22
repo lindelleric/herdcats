@@ -36,14 +36,14 @@ class QuestionEvidence(unittest.TestCase):
         self.assertEqual(manifest['versions']['claude'], '2.1.307')
         self.assertEqual(manifest['versions']['codex'], '0.163.0')
         self.assertEqual(set(manifest['files']), {p.name for p in (ROOT / 'fixtures').iterdir()})
-        self.assertEqual(len(manifest['files']), 16)
+        self.assertEqual(len(manifest['files']), 19)
         for name, entry in manifest['files'].items():
             data = (ROOT / 'fixtures' / name).read_bytes()
             self.assertEqual(len(data), entry['bytes'], name)
             self.assertEqual(hashlib.sha256(data).hexdigest(), entry['sha256'], name)
             for forbidden in FORBIDDEN:
                 self.assertNotIn(forbidden, data.decode(), name)
-        for prefix in ('claude-question-transcript', 'codex-sync-rollout', 'codex-async-rollout'):
+        for prefix in ('claude-question-one-transcript', 'claude-question-transcript', 'codex-sync-rollout', 'codex-async-rollout'):
             rows, pending = read(prefix + '.jsonl'), read(prefix + '-pending.jsonl')
             self.assertGreater(len(pending), 0)
             self.assertLess(len(pending), len(rows))
@@ -70,6 +70,27 @@ class QuestionEvidence(unittest.TestCase):
         self.assertEqual(rows[len(pending)]['message']['content'][0], results(rows)[0])
         self.assertEqual(rows[len(pending)]['toolUseResult']['answers'],
                          {'Pick a size': 'Large', 'Pick toppings': 'Cheese, Basil, Pepper'})
+
+    def test_claude_one_question(self):
+        rows = read('claude-question-one-transcript.jsonl')
+        pending = read('claude-question-one-transcript-pending.jsonl')
+        uses = [b for r in pending if r['type'] == 'assistant'
+                for b in r['message']['content'] if b.get('name') == 'AskUserQuestion']
+        self.assertEqual(len(uses), 1)
+        self.assertEqual(uses[0]['input']['questions'], [{
+            'question': 'Pick a color?', 'header': 'Color', 'multiSelect': False,
+            'options': [{'label': 'Red', 'description': 'Choose red'},
+                        {'label': 'Blue', 'description': 'Choose blue'}]}])
+        result = rows[len(pending)]
+        self.assertEqual(result['message']['content'][0]['tool_use_id'], uses[0]['id'])
+        self.assertEqual(result['message']['content'][0]['type'], 'tool_result')
+        self.assertEqual(result['toolUseResult']['answers'], {'Pick a color?': 'Red'})
+        screen = (ROOT / 'fixtures' / 'claude-question-one-screen.txt').read_text()
+        self.assertTrue(screen.startswith(' ☐ Color') or screen.startswith('☐ Color'))
+        self.assertIn('Pick a color?', screen)
+        self.assertIn('Enter to select · ↑/↓ to navigate · Esc to cancel', screen)
+        self.assertNotIn('Submit', screen)
+        self.assertNotIn('←', screen)
 
     def test_codex_sync_shapes_notes_and_resolution(self):
         rows = read('codex-sync-rollout.jsonl')

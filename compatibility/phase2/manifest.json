@@ -7,6 +7,10 @@
   },
   "redaction": "Exact probe text allowlist; phase 0 pseudonymous IDs and text redaction; phase 1 record filters and anchored screen crops.",
   "files": {
+    "claude-question-one-screen.txt": {
+      "bytes": 937,
+      "sha256": "8d7e791c954d2f8a80faaa6b77e5a123114f4ca0432f843b544f6740b94750b4"
+    },
     "claude-question-single-screen.txt": {
       "bytes": 586,
       "sha256": "12d2784d3fa9749a6bebd037b7de5790f3dba7eee6bdf97ff32234b7ec88cf44"
@@ -46,6 +50,14 @@
     "codex-async-other-screen.txt": {
       "bytes": 167,
       "sha256": "ad40e32526566eb1a36a36a830a0df59d1fcf1324c6eead2c72554cd67447557"
+    },
+    "claude-question-one-transcript.jsonl": {
+      "bytes": 6068,
+      "sha256": "a2fcdeacef0ea9bee314babc8eb24cf5182a10edbf69b2a0cf09ccecb33fb79e"
+    },
+    "claude-question-one-transcript-pending.jsonl": {
+      "bytes": 2786,
+      "sha256": "b458901021d92be0e30bd2e7f27513fd6172615e1c3557b76643ae83d2ddef70"
     },
     "claude-question-transcript.jsonl": {
       "bytes": 8319,

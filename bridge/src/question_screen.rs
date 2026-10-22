@@ -3,9 +3,13 @@ use crate::question_match::{PendingQuestion, QuestionKind};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QuestionStep {
+    /// A single Claude question submits directly and has no review step.
     ClaudeQuestion(usize),
     ClaudeReview,
-    CodexQuestion { index: usize, total: usize },
+    CodexQuestion {
+        index: usize,
+        total: usize,
+    },
     AsyncQueued,
     AsyncPicker(usize),
 }
@@ -38,6 +42,7 @@ pub struct QuestionScreen {
     pub cursor: Option<QuestionCursor>,
     pub free_text: Option<FreeText>,
     pub countdown: Option<String>,
+    pub queued_count: Option<usize>,
     /// Lossless length-delimited rows, including whitespace, selection, and footer.
     pub fingerprint: Vec<u8>,
 }
@@ -73,6 +78,15 @@ fn submit(row: &str) -> bool {
     row.trim().trim_start_matches('❯').trim() == "Submit"
 }
 
+fn notes_text(row: &str) -> Option<&str> {
+    let row = row.trim();
+    if row == "›" {
+        Some("")
+    } else {
+        row.strip_prefix("› ")
+    }
+}
+
 // Consume visual continuations, keeping control rows outside the text span.
 fn option_end(rows: &[&str], start: usize, limit: usize) -> usize {
     (start + 1..limit)
@@ -80,7 +94,7 @@ fn option_end(rows: &[&str], start: usize, limit: usize) -> usize {
             numbered(rows[i]).is_some()
                 || submit(rows[i])
                 || rule(rows[i])
-                || rows[i].trim().starts_with("› ")
+                || notes_text(rows[i]).is_some()
         })
         .unwrap_or(limit)
 }
@@ -92,6 +106,7 @@ fn result(step: QuestionStep) -> QuestionScreen {
         cursor: None,
         free_text: None,
         countdown: None,
+        queued_count: None,
         fingerprint: Vec::new(),
     }
 }
@@ -110,6 +125,16 @@ fn rule(row: &str) -> bool {
 }
 
 fn tab_matches(row: &str, pending: &PendingQuestion) -> bool {
+    if pending.questions.len() == 1 {
+        let Some(header) = pending.questions[0].header.as_deref() else {
+            return false;
+        };
+        return row
+            .trim()
+            .strip_prefix('☐')
+            .or_else(|| row.trim().strip_prefix('☒'))
+            .is_some_and(|rest| rest.trim() == header);
+    }
     let mut rest = row.trim().strip_prefix('←').unwrap_or("").trim();
     for q in &pending.questions {
         let Some(header) = q.header.as_deref() else {
@@ -137,7 +162,9 @@ fn claude(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
         .iter()
         .position(|row| !row.trim().is_empty() && *row != rows[0])?;
     if rows[title].trim() == "Review your answers" {
-        return review(rows, title, pending);
+        return (pending.questions.len() > 1)
+            .then(|| review(rows, title, pending))
+            .flatten();
     }
     let first_option = (title + 1..rows.len()).find(|&i| numbered(rows[i]).is_some())?;
     let matches: Vec<_> = pending
@@ -255,13 +282,34 @@ fn review(rows: &[&str], title: usize, pending: &PendingQuestion) -> Option<Ques
         .collect();
     let mut i = 0;
     for q in &pending.questions {
-        if body.get(i)?.strip_prefix("● ")? != q.text {
+        let first = body.get(i)?.strip_prefix("● ")?;
+        i += 1;
+        let start = i;
+        while body
+            .get(i)
+            .is_some_and(|r| !r.starts_with(['●', '→']) && *r != "Ready to submit your answers?")
+        {
+            i += 1;
+        }
+        let mut question_rows = vec![first];
+        question_rows.extend_from_slice(&body[start..i]);
+        if !rows_equal(&question_rows, &q.text) {
             return None;
         }
-        if body.get(i + 1)?.strip_prefix("→ ")?.is_empty() {
+        let first = body.get(i)?.strip_prefix('→')?.trim();
+        i += 1;
+        let start = i;
+        while body
+            .get(i)
+            .is_some_and(|r| !r.starts_with(['●', '→']) && *r != "Ready to submit your answers?")
+        {
+            i += 1;
+        }
+        let mut answer_rows = vec![first];
+        answer_rows.extend_from_slice(&body[start..i]);
+        if rows_equal(&answer_rows, "") {
             return None;
         }
-        i += 2;
     }
     if *body.get(i)? != "Ready to submit your answers?" || body.len() != i + 3 {
         return None;
@@ -355,7 +403,7 @@ fn sync(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
             });
             i = end;
         } else {
-            let notes = row.trim().strip_prefix("› ")?;
+            let notes = notes_text(row)?;
             // Notes can be active while an option remains highlighted.
             if dialog
                 .free_text
@@ -395,16 +443,19 @@ fn asynchronous(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScre
             return None;
         }
         let (count, countdown) = notice.split_once(" · ")?;
-        let count: usize = count
+        let count = count
             .strip_suffix(" questions")
-            .or_else(|| count.strip_suffix(" question"))?
-            .parse()
-            .ok()?;
-        if count != pending.questions.len() || countdown.is_empty() {
+            .or_else(|| count.strip_suffix(" question"))?;
+        if count.is_empty() || !count.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let count: usize = count.parse().ok()?;
+        if count == 0 || countdown.trim().is_empty() {
             return None;
         }
         let mut dialog = result(QuestionStep::AsyncQueued);
         dialog.countdown = Some(countdown.into());
+        dialog.queued_count = Some(count);
         return Some(dialog);
     }
     let first_option = (0..body.len()).find(|&i| numbered(body[i]).is_some())?;
@@ -482,7 +533,10 @@ pub fn parse(
     let mut chosen = None;
     for start in 0..rows.len() {
         let candidate = match kind {
-            QuestionKind::ClaudeAsk => rows[start].trim().starts_with("← "),
+            QuestionKind::ClaudeAsk => {
+                let row = rows[start].trim();
+                row.starts_with("← ") || row.starts_with("☐ ") || row.starts_with("☒ ")
+            }
             QuestionKind::CodexPlan => rows[start].trim().starts_with("Question "),
             QuestionKind::CodexAsync => rows[start].trim() == "• Queued follow-up inputs",
         };
