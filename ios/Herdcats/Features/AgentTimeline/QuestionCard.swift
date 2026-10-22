@@ -68,7 +68,7 @@ struct QuestionCard: View {
                         focusedQuestion = nil
                     }
                 } label: {
-                    HStack(alignment: .top, spacing: 10) {
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
                         selectionIcon(selected: selected, multi: question.multiSelect)
                         VStack(alignment: .leading, spacing: 4) {
                             Text(verbatim: option.label).fixedSize(horizontal: false, vertical: true)
@@ -94,7 +94,7 @@ struct QuestionCard: View {
                         response.setText("", question: question.index)
                         focusedQuestion = question.index
                     } label: {
-                        HStack(spacing: 10) {
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
                             selectionIcon(selected: false, multi: question.multiSelect)
                             Text("Type something…")
                         }
