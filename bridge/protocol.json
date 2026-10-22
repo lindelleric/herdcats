@@ -1,6 +1,6 @@
 {
   "protocol": 1,
-  "bridge_version": "0.2.2",
+  "bridge_version": "0.3.0",
   "transport": "non-PTY stdio NDJSON; one watched pane per process",
   "launch": {
     "command": "herdcats-bridge serve --stdio",
@@ -311,7 +311,7 @@
     "Bounded source prefix reread on change, new complete records parsed incrementally.",
     "Negotiated content retrieval covers complete original records and blocks within the verified 64MiB source; only references on retained entries are readable.",
     "Claude captured2.1.296 schema coverage; no general version promise.",
-    "Optional four-platform installer and native iOS client. Bridge approval events and guarded responses support Claude and Codex in unreleased builds from main (shipping in 0.3.0; published 0.2.2 reports approvals: false); native app approval/question UI, prompts and saved-machine routing remain gated."
+    "Optional four-platform installer and native iOS client. Bridge approval and question events and guarded responses are available from 0.3.0 for Claude and Codex. Clients must gate on the approvals / questions capabilities and corresponding initialize opt-ins, not on bridge_version. Claude cards require the recording hook (herdcats-bridge hooks install --agent claude); Codex approval cards require the Codex recording hook (herdcats-bridge hooks install --agent codex), while Codex question cards require no recording hook. prompts and routed_hosts (saved-machine routing) remain unavailable."
   ],
   "errors": [
     "ambiguous_session",
@@ -371,10 +371,10 @@
     "eligibility": "Require all three: a spool record correlated to a still-pending native call, Herdr agent_status blocked, and exactly one dialog parsed from source visible anchored to the hook command. Never use scrollback/recent text or guess an uncorrelated request.",
     "bounds": "Keep every pending frame below wire_frame_bytes. Suppress an oversized approval instead of truncating command, metadata or labels.",
     "input_failures": "Approval spool/screen/tail read failures yield no card and do not themselves emit timeline.unavailable. Same-identity timeline source_changing retries preserve an already emitted card until verification can resume.",
-    "capability": "approvals: true advertises bridge support for Claude and Codex; initialize params.approvals must be true to enable interaction events, responses and approval reads (unreleased until 0.3.0; clients must gate on this capability, not on bridge_version); cards still require installed recording hooks and verified live inputs. Questions advertise true with a separate initialize params.questions opt-in; prompts remain false."
+    "capability": "Approval and question support for Claude and Codex is available from 0.3.0. Clients must gate on the approvals / questions capabilities and corresponding initialize opt-ins, not on bridge_version. approvals: true advertises bridge support; initialize params.approvals must be true to enable approval interaction events, responses and reads. questions: true requires a separate initialize params.questions opt-in. Claude cards require the recording hook (herdcats-bridge hooks install --agent claude); Codex approval cards require the Codex recording hook (herdcats-bridge hooks install --agent codex), while Codex question cards require no recording hook. Cards still require verified live inputs; prompts and routed_hosts remain false and unavailable."
   },
   "question_policy": {
-    "sources": "Claude question cards require the recording PermissionRequest hook installed: pending AskUserQuestion requests come from its session spool, since the transcript writes the call only after answering or Esc cancel. Pair identical inputs one-to-one against answered transcript tool calls in timestamp order, requiring a valid call timestamp no more than 2 seconds after or 120 seconds before its spool record. Missing spool means no Claude question card. Codex question cards use the rollout alone and require no recording hook. Read only for blocked panes.",
+    "sources": "Claude question cards, available from 0.3.0, require the recording PermissionRequest hook installed (herdcats-bridge hooks install --agent claude): pending AskUserQuestion requests come from its session spool, since the transcript writes the call only after answering or Esc cancel. Pair identical inputs one-to-one against answered transcript tool calls in timestamp order, requiring a valid call timestamp no more than 2 seconds after or 120 seconds before its spool record. Missing spool means no Claude question card. Codex question cards use the rollout alone and require no recording hook. Read only for blocked panes.",
     "eligibility": "Newest pending request, no secrets, exactly one question and exactly one pending async call for Codex async, a queued banner count of exactly 1 if queued, and exactly one parsed visible question screen. Approval cards take priority.",
     "resolution": "Resolve when request is no longer pending, pane leaves blocked, screen no longer parses, or identity changes. Same-identity source_changing preserves pending state. initialize/unwatch silently reset.",
     "bounds": "Suppress oversized events rather than truncating question text or options."
