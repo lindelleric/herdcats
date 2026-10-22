@@ -10,16 +10,12 @@ struct QuestionCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("\(pending.agent == "codex" ? "Codex" : "Claude") · Question")
-                        .font(.jost(.caption, weight: .semibold)).foregroundStyle(.secondary)
-                    Spacer(minLength: 8)
-                    if response.phase == .sending { ProgressView().accessibilityLabel("Sending answer") }
-                }
+            HStack(alignment: .firstTextBaseline) {
                 Text(verbatim: pending.questions.count == 1 ? pending.questions[0].text : "\(pending.questions.count) questions")
                     .font(.jost(.title3, weight: .semibold))
                     .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                if response.phase == .sending { ProgressView().accessibilityLabel("Sending answer") }
             }
             ForEach(pending.questions, id: \.index) { question in
                 questionControls(question)
