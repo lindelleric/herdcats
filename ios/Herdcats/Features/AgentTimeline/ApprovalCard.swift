@@ -116,7 +116,7 @@ struct ApprovalCard: View {
         } else if index == 0 {
             optionButton(option).buttonStyle(.herdrPrimary())
         } else {
-            optionButton(option).buttonStyle(.herdrGhost())
+            optionButton(option).buttonStyle(ApprovalOptionButtonStyle())
         }
     }
     private func optionButton(_ option: AgentApprovalOption) -> some View {
@@ -176,54 +176,90 @@ struct ApprovalDrawer: View {
     }
 }
 
+private struct ApprovalOptionButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        let shape = RoundedRectangle.continuous(DesignSystem.CornerRadius.button)
+        configuration.label
+            .font(.jost(14, weight: .bold))
+            .foregroundStyle(Theme.text)
+            .padding(.vertical, DesignSystem.Spacing.md)
+            .padding(.horizontal, DesignSystem.Spacing.base)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .background(shape.fill(configuration.isPressed ? Theme.subtleFill : Theme.fieldBackground))
+            .contentShape(shape)
+            .offset(y: configuration.isPressed ? 1 : 0)
+            .opacity(isEnabled ? 1 : 0.5)
+    }
+}
+
 struct SwipeToConfirm: View {
     let labelLines: [String]
     let onConfirm: () -> Void
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var offset: CGFloat = 0
+    private let thumbWidth: CGFloat = 44
 
-    var body: some View {
+    private var label: some View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(Array(labelLines.enumerated()), id: \.offset) { _, line in
                 Text(verbatim: line).frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .font(.jost(14, weight: .bold))
-        .foregroundStyle(Theme.text)
         .padding(.vertical, DesignSystem.Spacing.md)
-        .padding(.leading, 60)
+        .padding(.leading, thumbWidth + 12)
         .padding(.trailing, DesignSystem.Spacing.base)
         .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-        .background(Theme.fieldBackground, in: RoundedRectangle.continuous(DesignSystem.CornerRadius.button))
-        .overlay {
-            GeometryReader { geometry in
-                let travel = max(0, geometry.size.width - 52)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(Theme.onPrimary)
-                    .frame(width: 44, height: max(36, geometry.size.height - 8))
-                    .background(Theme.accentFill, in: RoundedRectangle.continuous(DesignSystem.CornerRadius.button))
-                    .offset(x: 4 + offset, y: 4)
-                    .simultaneousGesture(DragGesture(minimumDistance: 12)
-                        .onChanged { value in
-                            guard isEnabled, abs(value.translation.width) > abs(value.translation.height) else { return }
-                            offset = min(travel, max(0, value.translation.width))
-                        }
-                        .onEnded { value in
-                            let confirmed = isEnabled && travel > 0 && offset >= travel * 0.9
-                                && value.translation.width > abs(value.translation.height)
-                            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { offset = 0 }
-                            if confirmed { onConfirm() }
-                        })
+    }
+    var body: some View {
+        label
+            .foregroundStyle(Theme.text)
+            .background(Theme.fieldBackground, in: RoundedRectangle.continuous(DesignSystem.CornerRadius.button))
+            .overlay {
+                GeometryReader { geometry in
+                    let travel = max(0, geometry.size.width - thumbWidth)
+                    let fillWidth = thumbWidth + offset
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle.continuous(DesignSystem.CornerRadius.button)
+                            .fill(Theme.accentFill)
+                            .frame(width: fillWidth)
+                            .allowsHitTesting(false)
+                        label
+                            .foregroundStyle(Theme.onPrimary)
+                            .frame(width: geometry.size.width, height: geometry.size.height)
+                            .mask(alignment: .leading) { Rectangle().frame(width: fillWidth) }
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(Theme.onPrimary)
+                            .frame(width: thumbWidth, height: geometry.size.height)
+                            .background(Theme.accentFill, in: RoundedRectangle.continuous(DesignSystem.CornerRadius.button))
+                            .offset(x: offset)
+                            .simultaneousGesture(DragGesture(minimumDistance: 12)
+                                .onChanged { value in
+                                    guard isEnabled, abs(value.translation.width) > abs(value.translation.height) else { return }
+                                    offset = min(travel, max(0, value.translation.width))
+                                }
+                                .onEnded { value in
+                                    let confirmed = isEnabled && travel > 0 && offset >= travel * 0.9
+                                        && value.translation.width > abs(value.translation.height)
+                                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { offset = 0 }
+                                    if confirmed { onConfirm() }
+                                })
+                    }
+                    .clipShape(RoundedRectangle.continuous(DesignSystem.CornerRadius.button))
+                }
             }
-        }
-        .opacity(isEnabled ? 1 : 0.5)
-        .onChange(of: isEnabled) { _, _ in offset = 0 }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(labelLines.joined(separator: "\n"))
-        .accessibilityHint("Swipe right to confirm, or use the Confirm action.")
-        .accessibilityAddTraits(.isButton)
-        .accessibilityAction(named: "Confirm") { if isEnabled { onConfirm() } }
+            .opacity(isEnabled ? 1 : 0.5)
+            .onChange(of: isEnabled) { _, _ in offset = 0 }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(labelLines.joined(separator: "\n"))
+            .accessibilityHint("Swipe right to confirm, or use the Confirm action.")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction(named: "Confirm") { if isEnabled { onConfirm() } }
     }
 }
