@@ -109,6 +109,10 @@
     "codex-sync-notes-first-screen.txt": {
       "bytes": 263,
       "sha256": "00f979b82f767e1f03b556b5b06ac1f8c8c10d6df6c2fcd32e08cf5239866969"
+    },
+    "codex-async-queued-nocountdown-screen.txt": {
+      "bytes": 64,
+      "sha256": "66a9a1983d2fe4475cff5733802ffd77a2035b1f07b591baa8d16c4fa460c9bb"
     }
   }
 }

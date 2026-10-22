@@ -63,24 +63,27 @@ fn text(value: &str, expected: ExpectedDialog) -> Step {
 }
 #[test]
 fn async_option_from_banner_opens_selects_and_submits() {
-    let (pending, screen) = fixture(QuestionKind::CodexAsync, "codex-async-queued");
-    let picker = dialog(QuestionStep::AsyncPicker(0), QuestionCursor::Option(1));
-    let selected = dialog(QuestionStep::AsyncPicker(0), QuestionCursor::Option(2));
-    assert_eq!(
-        plan(
-            pending.kind,
-            &pending,
-            &screen,
-            &json!({"answers":[{"index":0,"options":[2]}]})
-        )
-        .unwrap(),
-        vec![
-            key("shift+left", ExpectedScreen::Dialog(picker)),
-            key("2", ExpectedScreen::Dialog(selected)),
-            key("enter", ExpectedScreen::Gone)
-        ]
-    );
+    for name in ["codex-async-queued", "codex-async-queued-nocountdown"] {
+        let (pending, screen) = fixture(QuestionKind::CodexAsync, name);
+        let picker = dialog(QuestionStep::AsyncPicker(0), QuestionCursor::Option(1));
+        let selected = dialog(QuestionStep::AsyncPicker(0), QuestionCursor::Option(2));
+        assert_eq!(
+            plan(
+                pending.kind,
+                &pending,
+                &screen,
+                &json!({"answers":[{"index":0,"options":[2]}]})
+            )
+            .unwrap(),
+            vec![
+                key("shift+left", ExpectedScreen::Dialog(picker)),
+                key("2", ExpectedScreen::Dialog(selected)),
+                key("enter", ExpectedScreen::Gone)
+            ]
+        );
+    }
 }
+
 #[test]
 fn async_other_and_skip_from_open_and_queued() {
     for start in ["codex-async-picker", "codex-async-queued"] {

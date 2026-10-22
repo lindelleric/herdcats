@@ -550,6 +550,10 @@ fn every_fixture_survives_hard_wrapping_at_narrow_widths() {
         cases.push((one_multi.clone(), screen));
     }
     cases.push(first_notes_capture());
+    cases.push((
+        pending(QuestionKind::CodexAsync),
+        include_str!("../../../compatibility/phase2/fixtures/codex-async-queued-nocountdown-screen.txt"),
+    ));
     for (request, screen) in cases {
         let original = parse(request.kind, screen, &request).unwrap();
         for width in [40, 30, 24] {
@@ -1124,4 +1128,39 @@ fn non_last_codex_notes_footer_parses_live_capture() {
         })
     );
     assert_eq!(parsed.unanswered, Some(2));
+}
+
+#[test]
+fn async_queued_banner_without_countdown_parses() {
+    let screen = include_str!(
+        "../../../compatibility/phase2/fixtures/codex-async-queued-nocountdown-screen.txt"
+    );
+    let request = pending(QuestionKind::CodexAsync);
+    let parsed = parse(request.kind, screen, &request).unwrap();
+    assert_eq!(parsed.step, QuestionStep::AsyncQueued);
+    assert_eq!(parsed.countdown, None);
+    assert_eq!(parsed.queued_count, Some(1));
+    for notice in [
+        "? 0 questions",
+        "? two questions",
+        "? -1 questions",
+        "? 1 question · ",
+    ] {
+        assert!(
+            parse(
+                request.kind,
+                &screen.replace("? 1 question", notice),
+                &request
+            )
+            .is_none()
+        );
+    }
+    let plural = parse(
+        request.kind,
+        &screen.replace("? 1 question", "? 2 questions"),
+        &request,
+    )
+    .unwrap();
+    assert_eq!(plural.queued_count, Some(2));
+    assert_eq!(plural.countdown, None);
 }

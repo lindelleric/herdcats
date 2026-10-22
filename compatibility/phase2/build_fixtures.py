@@ -126,6 +126,7 @@ SCREENS = [
     ('codex-sync-last', 'codex-sync-after-digit1', 'Question 2/2', 'enter to submit all'),
     ('codex-sync-notes-first', 'codex-sync-notes-first-screen', 'Question 1/2', 'enter to submit answer'),
     ('codex-sync-notes', 'codex-sync-notes', 'Question 2/2', 'enter to submit all'),
+    ('codex-async-queued-nocountdown', 'codex-async-queued-nocountdown-screen', 'Queued follow-up inputs', '⇧← to answer'),
     ('codex-async-queued', 'codex-async-queued-screen', 'Queued follow-up inputs', '⇧← to answer'),
     ('codex-async-picker', 'codex-async-picker-screen', 'Queued follow-up inputs', 'main prompt'),
     ('codex-async-other', 'codex-async-other-typed-screen', 'Queued follow-up inputs', 'main prompt'),
