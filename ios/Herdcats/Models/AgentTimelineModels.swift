@@ -20,10 +20,12 @@ enum AgentBridgeError: Error, LocalizedError, Equatable, Sendable {
     case invalidFrame, frameTooLarge, incompleteFrame, protocolMismatch, sequenceGap, identityMismatch
     case closed, timeout
     case unavailable(String)
+    case questionFailure(code: String, stepsSent: Int?)
     case routedHostUnsupported
     var code: String {
         switch self {
         case .unavailable(let code): return code
+        case .questionFailure(let code, _): return code
         case .routedHostUnsupported: return "routed_host_unsupported"
         case .timeout: return "bridge_timeout"
         case .protocolMismatch: return "protocol_mismatch"
@@ -62,6 +64,7 @@ struct AgentBridgeCapabilities: Codable, Equatable, Sendable {
     var codexTimeline: Bool? = false
     var codexDaemonConfig: Bool? = false
     var codexDaemonStop: Bool? = false
+    var questions: Bool? = nil
     var approvals: Bool? = nil
     var recordContent: Bool? = nil
 
@@ -71,12 +74,14 @@ struct AgentBridgeCapabilities: Codable, Equatable, Sendable {
         codexDaemonConfig: Bool? = false,
         codexDaemonStop: Bool? = false,
         recordContent: Bool? = nil,
-        approvals: Bool? = nil
+        approvals: Bool? = nil,
+        questions: Bool? = nil
     ) {
         self.claudeTimeline = claudeTimeline
         self.codexTimeline = codexTimeline
         self.codexDaemonConfig = codexDaemonConfig
         self.codexDaemonStop = codexDaemonStop
+        self.questions = questions
         self.approvals = approvals
         self.recordContent = recordContent
     }
@@ -87,6 +92,7 @@ struct AgentBridgeCapabilities: Codable, Equatable, Sendable {
         self.codexTimeline = try container.decodeIfPresent(Bool.self, forKey: .codexTimeline) ?? false
         self.codexDaemonConfig = try container.decodeIfPresent(Bool.self, forKey: .codexDaemonConfig) ?? false
         self.codexDaemonStop = try container.decodeIfPresent(Bool.self, forKey: .codexDaemonStop) ?? false
+        self.questions = try container.decodeIfPresent(Bool.self, forKey: .questions)
         self.approvals = try container.decodeIfPresent(Bool.self, forKey: .approvals)
         self.recordContent = try container.decodeIfPresent(Bool.self, forKey: .recordContent)
     }
@@ -223,8 +229,16 @@ struct AgentBridgePayload: Codable, Sendable {
     var selected: Int?
     var sent: String?
     var confirmed: Bool?
+    var questionKind: String?
+    var questions: [AgentQuestion]?
+    var step: AgentQuestionStep?
+    var fresh: Bool?
+    var countdown: String?
 }
-struct AgentBridgeRemoteError: Codable, Sendable { let code: String }
+struct AgentBridgeRemoteError: Codable, Sendable {
+    let code: String
+    var stepsSent: Int? = nil
+}
 struct AgentBridgeFrame: Decodable, Sendable {
     var id: String?
     var result: AgentBridgePayload?
@@ -533,7 +547,7 @@ enum TimelineHistoryDiagnostics {
         case .protocolMismatch: return "protocol_mismatch"
         case .sequenceGap: return "sequence_gap"
         case .routedHostUnsupported: return "routed_host_unsupported"
-        case .unavailable(let code):
+        case .unavailable(let code), .questionFailure(let code, _):
             let safe = code.prefix(64).filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") }
             return "remote_\(safe)"
         }

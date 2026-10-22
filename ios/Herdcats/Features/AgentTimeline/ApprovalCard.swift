@@ -94,7 +94,7 @@ struct ApprovalCard: View {
     }
 }
 
-private struct ApprovalOptionButtonStyle: ButtonStyle {
+struct ApprovalOptionButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {

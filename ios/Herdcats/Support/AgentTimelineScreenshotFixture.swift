@@ -50,6 +50,46 @@
         static var showsApproval: Bool {
             ["timeline-approval-codex", "timeline-approval-claude"].contains(ScreenshotFixtures.screen)
         }
+        static var showsQuestion: Bool { ScreenshotFixtures.screen.hasPrefix("timeline-question-") }
+        static func questionFrame(paneId: String, kind: AgentQuestionKind? = nil) throws -> AgentBridgeFrame {
+            let kind = kind ?? (ScreenshotFixtures.screen == "timeline-question-codex-plan" ? .codexPlan
+                : ScreenshotFixtures.screen == "timeline-question-codex-async" ? .codexAsync : .claude)
+            let agent = kind == .claude ? "claude" : "codex"
+            func options(_ labels: [String], _ descriptions: [String]) -> [[String: Any]] {
+                labels.enumerated().map { index, label in
+                    ["number": index + 1, "label": label, "description": descriptions[index]]
+                }
+            }
+            var sizeOptions = options(["Small", "Large"], kind == .claude
+                ? ["Choose small", "Choose large"] : ["Choose a small size.", "Choose a large size."])
+            var toppingsOptions = options(["Cheese", "Olives", "Basil"], ["Add cheese", "Add olives", "Add basil"])
+            if kind == .codexPlan {
+                sizeOptions.append(["number": 3, "label": "None of the above"])
+                toppingsOptions.append(["number": 4, "label": "None of the above"])
+            }
+            let questions: [[String: Any]] = kind == .codexAsync ? [
+                ["index": 0, "text": "Which task should I work on next?", "options": options(["Tests", "Documentation"], ["Check the implementation", "Update the guide"]),
+                 "multi_select": false, "allows_other": true],
+            ] : [
+                ["index": 0, "header": "Size", "text": "Pick a size", "options": sizeOptions, "multi_select": false, "allows_other": true],
+                ["index": 1, "header": "Toppings", "text": "Pick toppings", "options": toppingsOptions,
+                 "multi_select": kind == .claude, "allows_other": true],
+            ]
+            let step: [String: Any] = switch kind {
+            case .claude: ["kind": "claude_question", "index": 0]
+            case .codexPlan: ["kind": "codex_question", "index": 0, "total": 2]
+            case .codexAsync: ["kind": "async_queued"]
+            }
+            var data: [String: Any] = [
+                "identity": ["pane_id": paneId, "terminal_id": "fixture-terminal", "agent": agent, "native_session_id": "fixture-session"],
+                "generation": 1, "request_id": "fixture-question-\(kind.rawValue)", "kind": "question", "agent": agent,
+                "question_kind": kind.rawValue, "questions": questions, "step": step, "fresh": true,
+            ]
+            if kind == .codexAsync { data["countdown"] = "18s" }
+            return try AgentBridgeFrame.decode(JSONSerialization.data(withJSONObject: [
+                "event": "interaction.pending", "epoch": "fixture", "seq": 2, "data": data,
+            ]))
+        }
         static func approvalFrame(paneId: String, agent: String) throws -> AgentBridgeFrame {
             let codex = agent == "codex"
             let options: [[String: Any]] = codex ? [
@@ -200,7 +240,7 @@
                         "identity": [
                             "pane_id": paneId, "terminal_id": "fixture-terminal", "agent": ScreenshotFixtures.paneAgent,
                             "native_session_id": "fixture-session",
-                        ], "generation": 1, "entries": entries, "has_more": ScreenshotFixtures.screen.hasPrefix("timeline-history"), "before": "message:user", "agent_status": showsApproval ? "blocked" : "idle",
+                        ], "generation": 1, "entries": entries, "has_more": ScreenshotFixtures.screen.hasPrefix("timeline-history"), "before": "message:user", "agent_status": (showsApproval || showsQuestion) ? "blocked" : "idle",
                         "unknown_records": ProcessInfo.processInfo.arguments.contains("-hc.timeline-long") ? 2 : 0, "dropped_entries": 0,
                     ],
                 ]))
