@@ -136,7 +136,7 @@
         "skip": "true only for Codex async; omit answers"
       },
       "question_validation": [
-        "Each answer requires options or text. Single-select accepts at most one option; multi-select accepts zero or more. Option numbers exclude the free-text row. Codex Plan requires exactly one option, including None of the above for a text-only answer.",
+        "Each answer requires at least one option or non-empty text, including multi-select: submitting a multi-select with nothing chosen is not supported (unverified terminal behaviour), so answer it in Terminal. Single-select accepts at most one option; multi-select accepts several. Option numbers exclude the free-text row. Codex Plan requires exactly one option, including None of the above for a text-only answer.",
         "Text is a single line of at most 500 characters with no control characters.",
         "Respond only from a fresh screen. Recheck the pending request, identity, blocked status and fresh visible screen before sending; verify the expected next screen between steps. Stop on mismatch with stale and steps_sent."
       ],
