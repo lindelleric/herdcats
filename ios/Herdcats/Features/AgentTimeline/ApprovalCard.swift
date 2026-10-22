@@ -1,60 +1,41 @@
 import SwiftUI
-import UIKit
 
 struct ApprovalCard: View {
     let pending: AgentPendingApproval
     let response: ApprovalResponseState
     let onRespond: (AgentApprovalOption) -> Void
-    var onMeasure: (CGFloat, CGFloat) -> Void = { _, _ in }
-    @State private var contentHeight: CGFloat = 0
-    @State private var peekHeight: CGFloat = 0
-    @State private var commandHeight: CGFloat = 60
-
     private var toolTitle: String {
         let entry = AgentTimelineEntry(id: pending.requestId, kind: "tool", text: "",
             role: nil, toolName: pending.toolName, status: nil, details: nil, truncated: false)
         return TimelineActivitySummary.isCommand(entry) ? "Run command" : TimelineActivitySummary.purpose(entry)
     }
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                header
-                commandBox
-                if let text = pending.agent == "codex" ? pending.justification : pending.description {
-                    Text(verbatim: text)
-                        .font(.jost(.subheadline)).foregroundStyle(Theme.text)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-                }
-                if let environment = pending.environment {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Environment").font(.jost(.caption, weight: .semibold)).foregroundStyle(.secondary)
-                        Text(verbatim: environment).font(.jost(.caption)).fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                options
-                if let message = response.message {
-                    Text(message).font(.jost(.caption))
-                        .foregroundStyle(response.isError ? Theme.destructive : Theme.text)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("approval-response-message")
+        VStack(alignment: .leading, spacing: 16) {
+            header
+            commandBox
+            if let text = pending.agent == "codex" ? pending.justification : pending.description {
+                Text(verbatim: text)
+                    .font(.jost(.subheadline)).foregroundStyle(Theme.text)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            if let environment = pending.environment {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Environment").font(.jost(.caption, weight: .semibold)).foregroundStyle(.secondary)
+                    Text(verbatim: environment).font(.jost(.caption)).fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 24)
-            .padding(.bottom, 12)
-            .coordinateSpace(name: "approval-content")
-            .background {
-                GeometryReader { geometry in
-                    Color.clear.onChange(of: geometry.size.height, initial: true) { _, height in
-                        contentHeight = height
-                        onMeasure(contentHeight, peekHeight)
-                    }
-                }
+            options
+            if let message = response.message {
+                Text(message).font(.jost(.caption))
+                    .foregroundStyle(response.isError ? Theme.destructive : Theme.text)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("approval-response-message")
             }
         }
+        .padding(16)
         .foregroundStyle(Theme.text)
-        .background(Theme.cardBackground.ignoresSafeArea())
+        .herdrCard()
         .accessibilityIdentifier("timeline-approval-card")
     }
     private var header: some View {
@@ -73,39 +54,21 @@ struct ApprovalCard: View {
     private var commandBox: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Command").font(.jost(.caption, weight: .semibold)).foregroundStyle(.secondary)
-            ScrollView {
-                Text(verbatim: pending.command)
-                    .font(.system(size: 13, design: .monospaced))
-                    .foregroundStyle(Theme.text)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-                    .background {
-                        GeometryReader { geometry in
-                            Color.clear.onChange(of: geometry.size.height, initial: true) { _, height in commandHeight = height }
-                        }
-                    }
-            }
-            .frame(height: min(128, max(16, commandHeight)))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(Theme.fieldBackground, in: RoundedRectangle.continuous(DesignSystem.CornerRadius.md))
+            Text(verbatim: pending.command)
+                .font(.system(size: 13, design: .monospaced))
+                .foregroundStyle(Theme.text)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(Theme.fieldBackground, in: RoundedRectangle.continuous(DesignSystem.CornerRadius.md))
         }
     }
     private var options: some View {
         VStack(spacing: 10) {
             ForEach(Array(pending.options.enumerated()), id: \.element.number) { index, option in
                 optionControl(option, index: index)
-                    .background {
-                        GeometryReader { geometry in
-                            if index == 0 {
-                                Color.clear.onChange(of: geometry.frame(in: .named("approval-content")).maxY, initial: true) { _, bottom in
-                                    peekHeight = bottom + 12
-                                    onMeasure(contentHeight, peekHeight)
-                                }
-                            }
-                        }
-                    }
             }
         }
         .disabled(response.isDisabled)
@@ -128,51 +91,6 @@ struct ApprovalCard: View {
             }
         }
         .accessibilityLabel(option.labelLines.joined(separator: "\n"))
-    }
-}
-
-struct ApprovalDrawer: View {
-    let pending: AgentPendingApproval
-    let response: ApprovalResponseState
-    let onRespond: (AgentApprovalOption) -> Void
-    @State private var contentHeight: CGFloat = 0
-    @State private var peekHeight: CGFloat = 0
-    @State private var availableHeight: CGFloat = 0
-    @State private var selected: PresentationDetent = .large
-    @State private var userSelected = false
-
-    private var fitted: CGFloat { contentHeight + 12 }
-    private var peek: CGFloat { min(max(180, peekHeight + 12), max(180, fitted - 24), max(180, availableHeight - 80)) }
-    private var detents: Set<PresentationDetent> {
-        var values: Set<PresentationDetent> = [.large]
-        if availableHeight > 260, peekHeight > 0 { values.insert(.height(peek)) }
-        if contentHeight > 0, fitted < availableHeight { values.insert(.height(fitted)) }
-        return values
-    }
-    var body: some View {
-        GeometryReader { geometry in
-            ApprovalCard(pending: pending, response: response, onRespond: onRespond) { full, first in
-                contentHeight = full; peekHeight = first
-                fitInitially()
-            }
-            .onChange(of: geometry.size.height, initial: true) { _, height in
-                availableHeight = max(availableHeight, height)
-                fitInitially()
-            }
-        }
-        .presentationDetents(detents, selection: Binding(get: { selected }, set: { selected = $0; userSelected = true }))
-        .presentationDragIndicator(.visible)
-        .presentationBackgroundInteraction(detents.contains(.height(peek)) ? .enabled(upThrough: .height(peek)) : .disabled)
-        .presentationCornerRadius(20)
-        .presentationBackground(Theme.cardBackground)
-        .interactiveDismissDisabled()
-        .onAppear {
-            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-        }
-    }
-    private func fitInitially() {
-        guard !userSelected else { return }
-        selected = contentHeight > 0 && fitted < availableHeight ? .height(fitted) : .large
     }
 }
 

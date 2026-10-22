@@ -78,24 +78,13 @@ import Observation
 }
 
 @MainActor @Observable final class TimelineSheetState {
-    enum Sheet: String, Identifiable { case approval, phoneAnswers, helper, codexDaemon; var id: String { rawValue } }
+    enum Sheet: String, Identifiable { case phoneAnswers, helper, codexDaemon; var id: String { rawValue } }
     private(set) var presented: Sheet?
     private(set) var dismissing: Sheet?
-    private var scope: ApprovalResponseState.Scope?
-    private var lastScope: ApprovalResponseState.Scope?
-    private var focusScope: ApprovalResponseState.Scope?
-    private var visible = false
-
-    func sync(pending: AgentPendingApproval?, visible: Bool, phone: Bool = false, helper: Bool = false, codex: Bool = false) {
-        self.visible = visible
-        let next = pending.map(ApprovalResponseState.Scope.init)
-        if let next, next != scope || lastScope == nil { lastScope = next; focusScope = nil }
-        scope = next
-        if !visible { lastScope = nil; focusScope = nil }
+    func sync(visible: Bool, phone: Bool = false, helper: Bool = false, codex: Bool = false) {
         if let presented {
             let keep: Bool
             switch presented {
-            case .approval: keep = next != nil
             case .phoneAnswers: keep = phone
             case .helper: keep = helper
             case .codexDaemon: keep = codex
@@ -106,7 +95,6 @@ import Observation
         if phone { presented = .phoneAnswers }
         else if helper { presented = .helper }
         else if codex { presented = .codexDaemon }
-        else if next != nil { presented = .approval }
     }
     func close() {
         guard let presented else { return }
@@ -114,13 +102,4 @@ import Observation
         self.presented = nil
     }
     func didDismiss() { dismissing = nil }
-    func requestComposerFocus(for scope: ApprovalResponseState.Scope) {
-        guard visible, lastScope == scope else { return }
-        focusScope = scope
-    }
-    func takeComposerFocus() -> Bool {
-        guard visible, scope == nil, presented == nil, dismissing == nil, focusScope != nil else { return false }
-        focusScope = nil
-        return true
-    }
 }

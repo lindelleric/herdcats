@@ -27,7 +27,6 @@ struct AgentTimelineView: View {
     @State private var approvalResponse = ApprovalResponseState()
     @State private var waitingRowHeight: CGFloat = 0
     @State private var sheetState = TimelineSheetState()
-    @State private var drawerApproval: AgentPendingApproval?
     @State private var approvalViewVisible = false
     @State private var activeClient: AgentBridgeClient?
     @State private var activeOwner: UUID?
@@ -173,6 +172,13 @@ struct AgentTimelineView: View {
                                 Text("Source update delayed; showing verified history.")
                                     .font(.jost(.caption)).foregroundStyle(Theme.textMuted)
                             }
+                            if showsApproval, let pending = timeline.pendingApproval {
+                                ApprovalCard(pending: pending, response: approvalResponse) { option in
+                                    respondToApproval(pending, option: option)
+                                }
+                                .id("\(contentScope):approval:\(pending.requestId)")
+                                .disabled(approvalResponse.isDisabled)
+                            }
                         } else {
                             availability
                         }
@@ -195,7 +201,18 @@ struct AgentTimelineView: View {
                     }
                 }
                 .coordinateSpace(name: "timeline-viewport")
-                .onChange(of: viewport.size.height, initial: true) { _, height in viewportHeight = height }
+                .onChange(of: viewport.size.height, initial: true) { _, height in
+                    viewportHeight = height
+                    if following && showsApproval { proxy.scrollTo("timeline-bottom", anchor: .bottom) }
+                }
+                .onChange(of: timeline.pendingApproval?.requestId, initial: true) { _, requestId in
+                    guard requestId != nil, showsApproval else { return }
+                    following = true
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    withAnimation(reduceMotion ? nil : .smooth(duration: 0.4)) {
+                        proxy.scrollTo("timeline-bottom", anchor: .bottom)
+                    }
+                }
                 .onPreferenceChange(TimelineEntryFramesPreferenceKey.self) { entryFrames = $0 }
                 .onChange(of: historyScrollAnchor) { _, anchor in
                     guard let anchor else { return }
@@ -214,11 +231,13 @@ struct AgentTimelineView: View {
                 .scrollDismissesKeyboard(.interactively)
                 .simultaneousGesture(
                     DragGesture()
-                        .onChanged { _ in
+                        .onChanged { value in
+                            guard abs(value.translation.height) > abs(value.translation.width) else { return }
                             following = false
                             onOutputInteraction()
                         }
                         .onEnded { value in
+                            guard abs(value.translation.height) > abs(value.translation.width) else { return }
                             let firstFrame = conversationItems.first.flatMap { entryFrames[$0.id] }
                             let atHistoryTop = conversationItems.isEmpty || (firstFrame.map { $0.minY >= topOverlayInset - 8 } ?? false)
                             let loadHistory = atHistoryTop && value.translation.height > 60
@@ -228,7 +247,7 @@ struct AgentTimelineView: View {
                         }
                 )
                 .onChange(of: timeline.revision) { _, _ in
-                    guard following, !conversationItems.isEmpty else { return }
+                    guard following, (!conversationItems.isEmpty || showsApproval) else { return }
                     proxy.scrollTo("timeline-bottom", anchor: .bottom)
                 }
                 .onChange(of: timeline.identity) { _, _ in
@@ -240,12 +259,12 @@ struct AgentTimelineView: View {
                     #endif
                 }
                 .onChange(of: bottomOverlayInset) { _, _ in
-                    if following && !conversationItems.isEmpty {
+                    if following && (!conversationItems.isEmpty || showsApproval) {
                         proxy.scrollTo("timeline-bottom", anchor: .bottom)
                     }
                 }
                 .onChange(of: approvalInset) { _, _ in
-                    if following && !conversationItems.isEmpty {
+                    if following && (!conversationItems.isEmpty || showsApproval) {
                         proxy.scrollTo("timeline-bottom", anchor: .bottom)
                     }
                 }
@@ -300,15 +319,6 @@ struct AgentTimelineView: View {
         .onChange(of: phoneAnswersSelection?.id) { _, _ in updateTimelineSheet() }
         .onChange(of: showsSetup) { _, _ in updateTimelineSheet() }
         .onChange(of: showsCodexDaemonConfirm) { _, _ in updateTimelineSheet() }
-        .task(id: timeline.pendingApproval) {
-            // Replacement dialogs arrive as resolved followed by pending.
-            // Coalesce that burst instead of dismissing and reopening the drawer.
-            if timeline.pendingApproval == nil {
-                do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
-            }
-            guard !Task.isCancelled else { return }
-            updateTimelineSheet()
-        }
         .onChange(of: timeline.revision, initial: true) { _, _ in
             switch timeline.phase {
             case .ready:
@@ -381,6 +391,7 @@ struct AgentTimelineView: View {
         .onChange(of: taskKey) { _, _ in historyLoader.cancel(); updateTimelineSheet() }
         .onDisappear {
             approvalViewVisible = false
+            approvalResponse.reset()
             updateTimelineSheet()
             historyLoader.cancel(); cancelHelperInstallation(); contentFiles.reset()
         }
@@ -400,7 +411,6 @@ struct AgentTimelineView: View {
     }
     @MainActor private func timelineSheetDismissed() {
         let dismissed = sheetState.dismissing
-        if dismissed == .approval { drawerApproval = nil }
         sheetState.didDismiss()
         if dismissed == .helper {
             cancelHelperInstallation()
@@ -410,14 +420,6 @@ struct AgentTimelineView: View {
     }
     @ViewBuilder private func timelineSheet(_ sheet: TimelineSheetState.Sheet) -> some View {
         switch sheet {
-        case .approval:
-            if let pending = timeline.pendingApproval ?? drawerApproval {
-                ApprovalDrawer(pending: pending, response: approvalResponse) { option in
-                    respondToApproval(pending, option: option)
-                }
-                .id(pending.requestId)
-                .disabled(timeline.pendingApproval == nil)
-            }
         case .phoneAnswers:
             if let selection = phoneAnswersSelection {
                 PhoneAnswersSheet(selection: selection, connection: connection, store: appModel.phoneAnswers,
@@ -447,11 +449,8 @@ struct AgentTimelineView: View {
         }
     }
     @MainActor private func updateTimelineSheet() {
-        if showsApproval { drawerApproval = timeline.pendingApproval }
-        sheetState.sync(pending: showsApproval ? timeline.pendingApproval : nil,
-            visible: approvalViewVisible && scenePhase == .active,
+        sheetState.sync(visible: approvalViewVisible && scenePhase == .active,
             phone: phoneAnswersSelection != nil, helper: showsSetup, codex: showsCodexDaemonConfirm)
-        if sheetState.takeComposerFocus() { onFocusComposer() }
     }
     private var contentScope: String {
         "\(activeOwner?.uuidString ?? "none"):\(timeline.generation ?? 0):\(timeline.identity?.nativeSessionId ?? "")"
@@ -1156,10 +1155,7 @@ struct AgentTimelineView: View {
                 let effects = approvalResponse.succeed(token: token, confirmed: result.confirmed,
                     focusComposer: ApprovalResponseState.focusesComposer(agent: current.agent, option: option))
                 if effects.haptic { HapticFeedback.impact(.light) }
-                if effects.focusComposer {
-                    sheetState.requestComposerFocus(for: ApprovalResponseState.Scope(current))
-                    updateTimelineSheet()
-                }
+                if effects.focusComposer { onFocusComposer() }
             } catch {
                 guard activeOwner == owner, connectionState == ownedConnection, scenePhase == .active else { return }
                 approvalResponse.sync(timeline.pendingApproval)
