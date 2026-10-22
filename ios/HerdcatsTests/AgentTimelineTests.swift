@@ -347,10 +347,10 @@ struct TimelineEntryInterruptionTests {
         #expect(upgrade.bridgeVersion == "0.2.0")
         AgentTimelineView.publishBridgeVersion("0.2.2", to: upgrade, owner: owner, activeOwner: nil)
         #expect(upgrade.bridgeVersion == "0.2.0")
-        // With 0.2.2 pinned, 0.2.0/0.2.1 hosts see the optional upgrade item;
+        // With 0.3.0 pinned, 0.2.0/0.2.1/0.2.2 hosts see the optional upgrade item;
         // the pinned version and anything newer never do.
         #expect(HostHelperProbe.isOlderThanPinned("0.2.1"))
-        #expect(!HostHelperProbe.isOlderThanPinned("0.2.2"))
+        #expect(HostHelperProbe.isOlderThanPinned("0.2.2"))
         #expect(!HostHelperProbe.isOlderThanPinned("0.3.0"))
     }
 }
