@@ -531,6 +531,204 @@ fn asynchronous(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScre
     Some(dialog)
 }
 
+fn compact(text: &str) -> String {
+    text.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// Coalesce only recognized control blocks. Each logical row retains its original
+/// span, so matching ignores visual wraps while fingerprints remain verbatim.
+fn anchor_rows(screen: &str, pending: &PendingQuestion) -> (Vec<String>, Vec<(usize, usize)>) {
+    let raw: Vec<_> = screen.lines().collect();
+    let mut rows = Vec::new();
+    let mut spans = Vec::new();
+    let fixed = [
+        "Review your answers",
+        "Ready to submit your answers?",
+        "• Queued follow-up inputs",
+        "⇧← to answer",
+        "enter submit   ⌃] skip   ⇧→ main prompt",
+    ];
+    let mut i = 0;
+    while i < raw.len() {
+        let start = i;
+        let first = raw[i].trim();
+        let mut replacement = None;
+        for expected in fixed {
+            let target = compact(expected);
+            let mut candidate = String::new();
+            for (offset, row) in raw[i..].iter().enumerate() {
+                candidate.push_str(&compact(row));
+                if !target.starts_with(&candidate) {
+                    break;
+                }
+                if candidate == target {
+                    replacement = Some((i + offset + 1, expected.to_string()));
+                    break;
+                }
+            }
+            if replacement.is_some() {
+                break;
+            }
+        }
+        if replacement.is_none()
+            && (first.starts_with("← ") || first.starts_with("☐ ") || first.starts_with("☒ "))
+        {
+            let mut candidate = String::new();
+            for (end, row) in raw.iter().enumerate().skip(i) {
+                candidate.push_str(&compact(row));
+                let mut rest = candidate.as_str();
+                let multiple = pending.questions.len() > 1;
+                if multiple {
+                    rest = rest.strip_prefix('←').unwrap_or("");
+                }
+                let mut canonical = if multiple {
+                    "←  ".to_string()
+                } else {
+                    String::new()
+                };
+                let valid = pending.questions.iter().all(|q| {
+                    let Some(state) = rest.chars().next().filter(|c| matches!(c, '☐' | '☒'))
+                    else {
+                        return false;
+                    };
+                    rest = &rest[state.len_utf8()..];
+                    let Some(header) = q.header.as_deref() else {
+                        return false;
+                    };
+                    let key = compact(header);
+                    let Some(after) = rest.strip_prefix(&key) else {
+                        return false;
+                    };
+                    rest = after;
+                    canonical.push_str(&format!("{state} {header}  "));
+                    true
+                });
+                if valid && rest == if multiple { "✔Submit→" } else { "" } {
+                    if multiple {
+                        canonical.push_str("✔ Submit  →");
+                    }
+                    replacement = Some((end + 1, canonical));
+                    break;
+                }
+                if row.trim().is_empty() {
+                    break;
+                }
+            }
+        }
+        if replacement.is_none() && first.starts_with("Question ") {
+            let mut candidate = String::new();
+            for (end, row) in raw.iter().enumerate().skip(i) {
+                candidate.push_str(&compact(row));
+                if let Some(body) = candidate
+                    .strip_prefix("Question")
+                    .and_then(|s| s.strip_suffix("unanswered)"))
+                {
+                    if let Some((position, remaining)) = body.split_once('(') {
+                        replacement = Some((
+                            end + 1,
+                            format!("Question {position} ({remaining} unanswered)"),
+                        ));
+                    }
+                    break;
+                }
+                if row.trim().is_empty() {
+                    break;
+                }
+            }
+        }
+        if replacement.is_none() && first.starts_with("? ") {
+            let mut candidate = String::new();
+            for (end, row) in raw.iter().enumerate().skip(i) {
+                candidate.push_str(&compact(row));
+                // The answer shortcut is a distinct short marker after the banner.
+                if candidate.ends_with("⇧←toanswer") {
+                    let banner = candidate.trim_end_matches("⇧←toanswer");
+                    if let Some((count, countdown)) =
+                        banner.strip_prefix('?').and_then(|s| s.split_once('·'))
+                    {
+                        let digits = count
+                            .chars()
+                            .take_while(char::is_ascii_digit)
+                            .collect::<String>();
+                        let suffix = &count[digits.len()..];
+                        if matches!(suffix, "question" | "questions") {
+                            rows.push(format!("? {digits} {suffix} · {countdown}"));
+                            spans.push((start, end + 1));
+                            replacement = Some((end + 1, "⇧← to answer".into()));
+                        }
+                    }
+                    break;
+                }
+                if row.trim().is_empty() {
+                    break;
+                }
+            }
+        }
+        if replacement.is_none()
+            && (first.starts_with("Enter to select") || first.starts_with("tab "))
+        {
+            let mut candidate = String::new();
+            for (end, row) in raw.iter().enumerate().skip(i) {
+                candidate.push_str(&compact(row));
+                let done = if first.starts_with("Enter") {
+                    candidate.ends_with("Esctocancel")
+                } else if candidate.starts_with("taboresctoclearnotes") {
+                    candidate.ends_with("entertosubmitall")
+                } else {
+                    candidate.ends_with("esctointerrupt")
+                };
+                if done {
+                    let canonical = if first.starts_with("Enter") {
+                        "Enter to select · Esc to cancel"
+                    } else if candidate.contains("entertosubmitanswer") {
+                        "enter to submit answer"
+                    } else {
+                        "enter to submit all"
+                    };
+                    replacement = Some((end + 1, canonical.into()));
+                    break;
+                }
+                if row.trim().is_empty() {
+                    break;
+                }
+            }
+        }
+        if replacement.is_none() && rule(raw[i]) {
+            let mut end = i + 1;
+            while end < raw.len() && rule(raw[end]) {
+                end += 1;
+            }
+            replacement = Some((end, "─".into()));
+        }
+        if replacement.is_none() {
+            if let Some((number, label, selected)) = numbered(raw[i]) {
+                let expected = "Chat about this";
+                let mut candidate = compact(label);
+                for (end, row) in raw.iter().enumerate().skip(i) {
+                    if end > i {
+                        candidate.push_str(&compact(row));
+                    }
+                    if !compact(expected).starts_with(&candidate) {
+                        break;
+                    }
+                    if candidate == compact(expected) {
+                        replacement = Some((
+                            end + 1,
+                            format!("{}{number}. {expected}", if selected { "❯ " } else { "" }),
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
+        let (end, row) = replacement.unwrap_or((i + 1, raw[i].to_string()));
+        rows.push(row);
+        spans.push((start, end));
+        i = end;
+    }
+    (rows, spans)
+}
+
 /// Indices in steps are zero-based; option numbers retain their terminal values.
 pub fn parse(
     kind: QuestionKind,
@@ -540,7 +738,9 @@ pub fn parse(
     if kind != pending.kind || pending.questions.is_empty() {
         return None;
     }
-    let rows: Vec<_> = screen.lines().collect();
+    let raw: Vec<_> = screen.lines().collect();
+    let (logical, spans) = anchor_rows(screen, pending);
+    let rows: Vec<_> = logical.iter().map(String::as_str).collect();
     let mut chosen = None;
     for start in 0..rows.len() {
         let candidate = match kind {
@@ -578,7 +778,7 @@ pub fn parse(
             QuestionKind::CodexAsync => asynchronous(slice, pending),
         };
         if let Some(mut dialog) = dialog {
-            dialog.fingerprint = fingerprint(slice);
+            dialog.fingerprint = fingerprint(&raw[spans[start].0..spans[end].1]);
             if chosen.replace(dialog).is_some() {
                 return None;
             }

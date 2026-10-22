@@ -504,3 +504,106 @@ fn codex_notes_continuations_are_joined_up_to_footer() {
         assert!(!parsed.free_text.unwrap().text.contains("enter to submit"));
     }
 }
+
+#[test]
+fn every_fixture_survives_hard_wrapping_at_narrow_widths() {
+    let mut cases = fixtures()
+        .into_iter()
+        .map(|(kind, screen)| (pending(kind), screen))
+        .collect::<Vec<_>>();
+    let records = include_str!(
+        "../../../compatibility/phase2/fixtures/claude-question-one-transcript-pending.jsonl"
+    )
+    .lines()
+    .map(|line| serde_json::from_str(line).unwrap())
+    .collect::<Vec<_>>();
+    cases.push((
+        pending_claude_questions(&records).remove(0),
+        include_str!("../../../compatibility/phase2/fixtures/claude-question-one-screen.txt"),
+    ));
+    for (request, screen) in cases {
+        let original = parse(request.kind, screen, &request).unwrap();
+        for width in [40, 30, 24] {
+            let wrapped = screen
+                .lines()
+                .flat_map(|line| {
+                    let chars = line.chars().collect::<Vec<_>>();
+                    if chars.is_empty() {
+                        vec![String::new()]
+                    } else {
+                        chars
+                            .chunks(width)
+                            .map(|chunk| chunk.iter().collect::<String>())
+                            .collect()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let parsed = parse(request.kind, &wrapped, &request)
+                .unwrap_or_else(|| panic!("width {width}: {wrapped}"));
+            assert_eq!(
+                parsed,
+                QuestionScreen {
+                    fingerprint: parsed.fingerprint.clone(),
+                    ..original.clone()
+                },
+                "width {width}: {wrapped}"
+            );
+            if screen.lines().any(|line| line.chars().count() > width) {
+                assert_ne!(parsed.fingerprint, original.fingerprint);
+            }
+            assert!(parse(request.kind, &format!("{wrapped}\n{wrapped}"), &request).is_none());
+        }
+    }
+}
+
+#[test]
+fn short_control_anchors_also_accept_explicit_continuations() {
+    for (index, from, to) in [
+        (3, "Review your answers", "Review your\nanswers"),
+        (
+            3,
+            "Ready to submit your answers?",
+            "Ready to submit\nyour answers?",
+        ),
+        (0, "Chat about this", "Chat about\nthis"),
+        (7, "? 1 question · 9s", "? 1 ques\ntion · 9s"),
+        (7, "⇧← to answer", "⇧← to\nanswer"),
+        (8, "• Queued follow-up inputs", "• Queued follow-up\ninputs"),
+        (
+            8,
+            "enter submit   ⌃] skip   ⇧→ main prompt",
+            "enter submit\n⌃] skip\n⇧→ main prompt",
+        ),
+    ] {
+        let (kind, screen) = fixtures()[index];
+        let request = pending(kind);
+        let original = parse(kind, screen, &request).unwrap();
+        let wrapped = screen.replace(from, to);
+        let parsed = parse(kind, &wrapped, &request).unwrap_or_else(|| panic!("{wrapped}"));
+        assert_eq!(
+            parsed,
+            QuestionScreen {
+                fingerprint: parsed.fingerprint.clone(),
+                ..original
+            }
+        );
+    }
+    let records = include_str!(
+        "../../../compatibility/phase2/fixtures/claude-question-one-transcript-pending.jsonl"
+    )
+    .lines()
+    .map(|line| serde_json::from_str(line).unwrap())
+    .collect::<Vec<_>>();
+    let request = pending_claude_questions(&records).remove(0);
+    let screen =
+        include_str!("../../../compatibility/phase2/fixtures/claude-question-one-screen.txt");
+    assert!(
+        parse(
+            request.kind,
+            &screen.replace("☐ Color", "☐ Col\nor"),
+            &request
+        )
+        .is_some()
+    );
+}
