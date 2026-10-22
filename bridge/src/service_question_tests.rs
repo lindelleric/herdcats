@@ -29,6 +29,16 @@ fn question_fixture(kind: &str) -> (Service, PathBuf, SharedHerdr, PathBuf) {
         root.join(format!("codex/2026/10/13/rollout-fixture-{native}.jsonl"))
     };
     fs::write(&path, text).unwrap();
+    service.spool_dir = Some(root.join("spool"));
+    if claude {
+        fs::create_dir_all(root.join("spool")).unwrap();
+        fs::copy(
+            fixtures.join("claude-question-spool.jsonl"),
+            root.join(format!("spool/claude-{native}.jsonl")),
+        )
+        .unwrap();
+    }
+
     {
         let mut state = herdr.lock().unwrap();
         state.agent = Some(if claude { "claude" } else { "codex" }.into());
@@ -197,28 +207,23 @@ fn question_step_and_fresh_changes_emit_and_loss_of_screen_resolves() {
 fn approval_has_priority_over_pending_question() {
     let (mut service, root, herdr, _, path) = approval_fixture("claude");
     service.include_questions = true;
-    let pending: Vec<Value> = include_str!(
-        "../../compatibility/phase2/fixtures/claude-question-transcript-pending.jsonl"
-    )
-    .lines()
-    .map(|l| serde_json::from_str(l).unwrap())
-    .collect();
-    let call = pending
-        .iter()
-        .find(|r| {
-            r["message"]["content"]
-                .as_array()
-                .is_some_and(|blocks| blocks.iter().any(|b| b["name"] == "AskUserQuestion"))
-        })
-        .unwrap();
-    let mut call = call.clone();
-    call["sessionId"] = json!(
+    let mut record: Value = serde_json::from_str(include_str!(
+        "../../compatibility/phase2/fixtures/claude-question-spool.jsonl"
+    ))
+    .unwrap();
+    let session =
         serde_json::from_str::<Value>(fs::read_to_string(&path).unwrap().lines().next().unwrap())
             .unwrap()["sessionId"]
-    );
+            .clone();
+    record["session_id"] = session.clone();
+    record["payload"]["session_id"] = session.clone();
+    let spool_path = root.join(format!("spool/claude-{}.jsonl", session.as_str().unwrap()));
     writeln!(
-        fs::OpenOptions::new().append(true).open(&path).unwrap(),
-        "{call}"
+        fs::OpenOptions::new()
+            .append(true)
+            .open(spool_path)
+            .unwrap(),
+        "{record}"
     )
     .unwrap();
     let events = interactions(&mut service);
@@ -293,4 +298,100 @@ fn questions_resolve_on_unblocked_or_replaced_identity_and_preserve_transient_re
         }
         cleanup(&service, root);
     }
+}
+
+#[test]
+fn claude_questions_require_spool_even_when_a_transcript_call_exists() {
+    for legacy_call in [false, true] {
+        let (mut service, root, herdr, path) = question_fixture("claude");
+        fs::remove_dir_all(root.join("spool")).unwrap();
+        if legacy_call {
+            let full = include_str!(
+                "../../compatibility/phase2/fixtures/claude-question-transcript.jsonl"
+            );
+            let records: Vec<Value> = full
+                .lines()
+                .map(|l| serde_json::from_str(l).unwrap())
+                .take_while(|r: &Value| {
+                    !r["message"]["content"]
+                        .as_array()
+                        .is_some_and(|bs| bs.iter().any(|b| b["type"] == "tool_result"))
+                })
+                .collect();
+            write_records(&path, &records);
+        }
+        assert!(interactions(&mut service).is_empty());
+        assert_eq!(herdr.lock().unwrap().reads, 0);
+        assert!(service.watch.as_ref().unwrap().question_cache.is_none());
+        cleanup(&service, root);
+    }
+}
+#[test]
+fn claude_question_cache_invalidates_on_spool_changes_and_removal() {
+    let (mut service, root, _, _) = question_fixture("claude");
+    let first = interactions(&mut service).remove(0);
+    let stamp = service
+        .watch
+        .as_ref()
+        .unwrap()
+        .question_cache
+        .as_ref()
+        .unwrap()
+        .stamp
+        .clone();
+    let session = first["data"]["identity"]["native_session_id"]
+        .as_str()
+        .unwrap();
+    let path = root.join(format!("spool/claude-{session}.jsonl"));
+    let mut record: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    record["t"] = json!(record["t"].as_f64().unwrap() + 1.0);
+    writeln!(
+        fs::OpenOptions::new().append(true).open(&path).unwrap(),
+        "{record}"
+    )
+    .unwrap();
+    let changed = interactions(&mut service);
+    assert_eq!(changed.len(), 2);
+    assert_eq!(changed[0]["event"], "interaction.resolved");
+    assert_eq!(changed[1]["event"], "interaction.pending");
+    assert_ne!(
+        changed[1]["data"]["request_id"],
+        first["data"]["request_id"]
+    );
+    assert_ne!(
+        service
+            .watch
+            .as_ref()
+            .unwrap()
+            .question_cache
+            .as_ref()
+            .unwrap()
+            .stamp,
+        stamp
+    );
+    fs::remove_file(path).unwrap();
+    assert_eq!(
+        interactions(&mut service)[0]["event"],
+        "interaction.resolved"
+    );
+    assert!(service.watch.as_ref().unwrap().question_cache.is_none());
+    cleanup(&service, root);
+}
+#[test]
+fn claude_question_response_rechecks_spool_without_using_poll_cache() {
+    let (mut service, root, herdr, _) = question_fixture("claude");
+    let pending = interactions(&mut service).remove(0);
+    fs::remove_dir_all(root.join("spool")).unwrap();
+    assert_eq!(
+        respond(
+            &mut service,
+            question_params(
+                &pending,
+                json!([{"index":0,"options":[1]},{"index":1,"options":[1]}])
+            )
+        ),
+        vec![json!({"id":"response","error":{"code":"stale"}})]
+    );
+    assert!(herdr.lock().unwrap().inputs.is_empty());
+    cleanup(&service, root);
 }

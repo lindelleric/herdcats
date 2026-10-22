@@ -15,7 +15,14 @@ fn fixture(kind: QuestionKind, screen: &str) -> (PendingQuestion, QuestionScreen
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
     let pending = if kind == QuestionKind::ClaudeAsk {
-        question_match::pending_claude_questions(&records)
+        question_match::pending_claude_spool_questions(
+            &std::fs::read_to_string(root.join("claude-question-spool.jsonl"))
+                .unwrap()
+                .lines()
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect::<Vec<_>>(),
+            &records,
+        )
     } else {
         question_match::pending_codex_questions(&records)
     }
@@ -147,7 +154,12 @@ fn one_claude(multi: bool) -> (PendingQuestion, QuestionScreen) {
         .lines()
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
-    let mut pending = question_match::pending_claude_questions(&records).remove(0);
+    let spool: Vec<Value> = std::fs::read_to_string(root.join("claude-question-one-spool.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let mut pending = question_match::pending_claude_spool_questions(&spool, &records).remove(0);
     pending.questions[0].multi_select = multi;
     let mut raw = std::fs::read_to_string(root.join("claude-question-one-screen.txt")).unwrap();
     if multi {

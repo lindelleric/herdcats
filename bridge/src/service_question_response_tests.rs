@@ -277,35 +277,27 @@ fn question_response_rechecks_pending_source_and_live_occupant_without_inputs() 
             }
             "missing_source" => fs::remove_file(&path).unwrap(),
             "superseded" | "changed" => {
-                let mut records: Vec<Value> = fs::read_to_string(&path)
+                let identity = service.watch.as_ref().unwrap().identity.clone().unwrap();
+                let spool_path =
+                    root.join(format!("spool/claude-{}.jsonl", identity.native_session_id));
+                let mut records: Vec<Value> = fs::read_to_string(&spool_path)
                     .unwrap()
                     .lines()
                     .map(|l| serde_json::from_str(l).unwrap())
                     .collect();
-                let mut call = records
-                    .iter()
-                    .find(|r| {
-                        r["message"]["content"].as_array().is_some_and(|blocks| {
-                            blocks.iter().any(|b| b["name"] == "AskUserQuestion")
-                        })
-                    })
-                    .unwrap()
-                    .clone();
-                let block = call["message"]["content"]
-                    .as_array_mut()
-                    .unwrap()
-                    .iter_mut()
-                    .find(|b| b["name"] == "AskUserQuestion")
-                    .unwrap();
+                let mut record = records.last().unwrap().clone();
                 if case == "superseded" {
-                    block["id"] = json!("newest");
+                    record["t"] = json!(record["t"].as_f64().unwrap() + 1.0);
                 } else {
-                    block["input"]["questions"][0]["options"][0]["description"] = json!("changed");
+                    record["payload"]["tool_input"]["questions"][0]["options"][0]["description"] =
+                        json!("changed");
                 }
-                records.push(call);
-                write_records(&path, &records);
-                // Even a stamp-valid cache must not authorize the old call.
-                let stamp = ApprovalFileStamp::of(&fs::metadata(&path).unwrap());
+                records.push(record);
+                write_records(&spool_path, &records);
+                // A response must ignore even a stamp-valid polling cache.
+                let stamp = service
+                    .question_input_stamp(&identity, &fs::File::open(&path).unwrap())
+                    .unwrap();
                 service
                     .watch
                     .as_mut()

@@ -253,7 +253,7 @@
         "identity": "same watched timeline identity",
         "generation": "u64 timeline generation",
         "kind": "question",
-        "request_id": "Claude tool_use_id or Codex call_id",
+        "request_id": "Claude ask-<payload.prompt_id>-<record t in whole milliseconds> from the hook spool, or Codex call_id",
         "agent": "claude or codex",
         "question_kind": "claude | codex_plan | codex_async",
         "questions": "array of {index: zero-based integer, header: string|null, text: string, options: [{number: one-based integer, label: string, description: string|null}], multi_select: boolean, allows_other: boolean}; free-text row excluded from options",
@@ -261,7 +261,7 @@
         "fresh": "boolean; untouched first Claude tab with no checks/text or completed tabs; Codex Plan Question 1/n with n unanswered and no notes; async queued or picker cursor on 1 without text",
         "countdown": "string|null; visible Codex async countdown"
       },
-      "question_effect": "Enabled only by initialize params.questions true. Match newest pending request from transcript/rollout alone while blocked; cache by transcript stamp, re-read visible screen each poll. Suppress secret questions, multi-question async requests, and screens that do not parse. Approvals take priority. Emit on changed step or fresh state (also countdown/payload changes)."
+      "question_effect": "Enabled only by initialize params.questions true. Match newest pending Claude question from its recording hook spool plus answered transcript calls, or Codex question from the rollout alone, while blocked; cache Claude by spool and transcript stamps and Codex by rollout stamp, re-read visible screen each poll. Suppress secret questions, multi-question async requests, and screens that do not parse. Approvals take priority. Emit on changed step or fresh state (also countdown/payload changes)."
     },
     "interaction.resolved": {
       "fields": [
@@ -272,7 +272,7 @@
       "field_types": {
         "identity": "object; identity of the previously emitted interaction, including on occupant replacement",
         "generation": "u64; generation of the previously emitted interaction",
-        "request_id": "string; previously emitted Claude tool_use_id or Codex rollout call_id"
+        "request_id": "string; previously emitted request ID: Claude approval tool_use_id, Claude question ask-<prompt_id>-<milliseconds>, or Codex rollout call_id"
       },
       "effect": "Clear the matching pending interaction once when the call resolves/aborts, the pane leaves blocked, the dialog disappears or becomes uncertain, or the identity changes. initialize and unwatch reset pending state without emitting this event. Same-identity source_changing retries preserve the existing interaction without emitting interaction.resolved."
     }
@@ -374,7 +374,7 @@
     "capability": "approvals: true advertises bridge support for Claude and Codex; initialize params.approvals must be true to enable interaction events, responses and approval reads (unreleased until 0.3.0; clients must gate on this capability, not on bridge_version); cards still require installed recording hooks and verified live inputs. Questions advertise true with a separate initialize params.questions opt-in; prompts remain false."
   },
   "question_policy": {
-    "sources": "Transcript/rollout only; no hook or spool required. Read only for blocked panes.",
+    "sources": "Claude question cards require the recording PermissionRequest hook installed: pending AskUserQuestion requests come from its session spool, since the transcript writes the call only after answering or Esc cancel. Pair identical inputs one-to-one against answered transcript tool calls in time order. Missing spool means no Claude question card. Codex question cards use the rollout alone and require no recording hook. Read only for blocked panes.",
     "eligibility": "Newest pending request, no secrets, exactly one question for Codex async, and exactly one parsed visible question screen. Approval cards take priority.",
     "resolution": "Resolve when request is no longer pending, pane leaves blocked, screen no longer parses, or identity changes. Same-identity source_changing preserves pending state. initialize/unwatch silently reset.",
     "bounds": "Suppress oversized events rather than truncating question text or options."

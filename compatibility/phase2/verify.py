@@ -5,7 +5,7 @@ import json
 import unittest
 from pathlib import Path
 
-from build_fixtures import FORBIDDEN
+from build_fixtures import FORBIDDEN, claude_spool, pending as pending_prefix
 
 ROOT = Path(__file__).resolve().parent
 
@@ -36,7 +36,9 @@ class QuestionEvidence(unittest.TestCase):
         self.assertEqual(manifest['versions']['claude'], '2.1.307')
         self.assertEqual(manifest['versions']['codex'], '0.163.0')
         self.assertEqual(set(manifest['files']), {p.name for p in (ROOT / 'fixtures').iterdir()})
-        self.assertEqual(len(manifest['files']), 19)
+        self.assertEqual(len(manifest['files']), 21)
+        for name in ('claude-question-spool.jsonl', 'claude-question-one-spool.jsonl'):
+            self.assertIn('not a live spool capture', manifest['files'][name]['derived'])
         for name, entry in manifest['files'].items():
             data = (ROOT / 'fixtures' / name).read_bytes()
             self.assertEqual(len(data), entry['bytes'], name)
@@ -52,7 +54,7 @@ class QuestionEvidence(unittest.TestCase):
     def test_claude_shapes_and_resolution(self):
         rows = read('claude-question-transcript.jsonl')
         pending = read('claude-question-transcript-pending.jsonl')
-        uses = [b for r in pending if r['type'] == 'assistant'
+        uses = [b for r in rows if r['type'] == 'assistant'
                 for b in r['message']['content'] if b.get('name') == 'AskUserQuestion']
         self.assertEqual(len(uses), 1)
         questions = uses[0]['input']['questions']
@@ -67,21 +69,25 @@ class QuestionEvidence(unittest.TestCase):
                     for b in r['message']['content'] if b.get('tool_use_id') == uses[0]['id']]
         self.assertEqual(results(pending), [])
         self.assertEqual(len(results(rows)), 1)
-        self.assertEqual(rows[len(pending)]['message']['content'][0], results(rows)[0])
-        self.assertEqual(rows[len(pending)]['toolUseResult']['answers'],
+        self.assertEqual(rows[len(pending)]['type'], 'assistant')
+        result = next(r for r in rows if r['type'] == 'user' and isinstance(r['message']['content'], list)
+                      and any(b.get('tool_use_id') == uses[0]['id'] for b in r['message']['content']))
+        self.assertEqual(result['message']['content'][0], results(rows)[0])
+        self.assertEqual(result['toolUseResult']['answers'],
                          {'Pick a size': 'Large', 'Pick toppings': 'Cheese, Basil, Pepper'})
 
     def test_claude_one_question(self):
         rows = read('claude-question-one-transcript.jsonl')
         pending = read('claude-question-one-transcript-pending.jsonl')
-        uses = [b for r in pending if r['type'] == 'assistant'
+        uses = [b for r in rows if r['type'] == 'assistant'
                 for b in r['message']['content'] if b.get('name') == 'AskUserQuestion']
         self.assertEqual(len(uses), 1)
         self.assertEqual(uses[0]['input']['questions'], [{
             'question': 'Pick a color?', 'header': 'Color', 'multiSelect': False,
             'options': [{'label': 'Red', 'description': 'Choose red'},
                         {'label': 'Blue', 'description': 'Choose blue'}]}])
-        result = rows[len(pending)]
+        result = next(r for r in rows if r['type'] == 'user' and isinstance(r['message']['content'], list)
+                      and any(b.get('tool_use_id') == uses[0]['id'] for b in r['message']['content']))
         self.assertEqual(result['message']['content'][0]['tool_use_id'], uses[0]['id'])
         self.assertEqual(result['message']['content'][0]['type'], 'tool_result')
         self.assertEqual(result['toolUseResult']['answers'], {'Pick a color?': 'Red'})
@@ -91,6 +97,29 @@ class QuestionEvidence(unittest.TestCase):
         self.assertIn('Enter to select · ↑/↓ to navigate · Esc to cancel', screen)
         self.assertNotIn('Submit', screen)
         self.assertNotIn('←', screen)
+
+    def test_claude_pending_is_pre_call_and_spool_is_reproducible_derived_evidence(self):
+        for prefix in ('claude-question', 'claude-question-one'):
+            rows = read(prefix + '-transcript.jsonl')
+            pending = read(prefix + '-transcript-pending.jsonl')
+            self.assertFalse(any(b.get('name') == 'AskUserQuestion' for r in pending
+                                 if r['type'] == 'assistant' for b in r['message']['content']))
+            self.assertEqual(pending, pending_prefix(rows, 'claude'))
+            self.assertEqual(rows[len(pending)]['type'], 'assistant')
+            spool = read(prefix + '-spool.jsonl')
+            self.assertEqual(spool, claude_spool(rows))
+            self.assertEqual(len(spool), 1)
+            record = spool[0]
+            self.assertEqual(record['v'], 1)
+            self.assertEqual(record['t'], 1792136860.328)
+            self.assertEqual(record['agent'], 'claude')
+            self.assertEqual(record['event'], 'PermissionRequest')
+            self.assertEqual(record['session_id'], rows[0]['sessionId'])
+            self.assertEqual(record['payload']['session_id'], record['session_id'])
+            self.assertEqual(record['payload']['prompt_id'], next(r['promptId'] for r in rows if r.get('promptId')))
+            call = next(b for r in rows if r['type'] == 'assistant'
+                        for b in r['message']['content'] if b.get('name') == 'AskUserQuestion')
+            self.assertEqual(record['payload']['tool_input'], call['input'])
 
     def test_codex_sync_shapes_notes_and_resolution(self):
         rows = read('codex-sync-rollout.jsonl')

@@ -138,9 +138,14 @@ impl PendingInteraction {
         }
     }
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum QuestionInputStamp {
+    Claude(ApprovalInputStamp),
+    Codex(ApprovalFileStamp),
+}
 struct QuestionMatchCache {
     identity: Identity,
-    stamp: ApprovalFileStamp,
+    stamp: QuestionInputStamp,
     request: Option<PendingQuestion>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -691,15 +696,24 @@ impl Service {
             identity: identity.clone(), generation: self.generation, request, dialog,
         })
     }
+    fn question_input_stamp(&self, identity: &Identity, file: &std::fs::File) -> Option<QuestionInputStamp> {
+        match Agent::parse(&identity.agent)? {
+            Agent::Claude => self.approval_input_stamp(identity, file).map(QuestionInputStamp::Claude),
+            Agent::Codex => {
+                let meta = file.metadata().ok()?;
+                meta.is_file().then(|| QuestionInputStamp::Codex(ApprovalFileStamp::of(&meta)))
+            }
+        }
+    }
     fn matched_question(
         &self,
         identity: &Identity,
         file: std::fs::File,
         cache: &mut Option<QuestionMatchCache>,
     ) -> Option<PendingQuestion> {
-        let stamp = match file.metadata() {
-            Ok(meta) if meta.is_file() => ApprovalFileStamp::of(&meta),
-            _ => { *cache = None; return None; }
+        let stamp = match self.question_input_stamp(identity, &file) {
+            Some(stamp) => stamp,
+            None => { *cache = None; return None; }
         };
         if let Some(cached) = cache.as_ref()
             .filter(|c| c.identity == *identity && c.stamp == stamp) {
@@ -708,11 +722,17 @@ impl Service {
             *cache = None;
             let history = crate::follower::read_tail(file.try_clone().ok()?).ok()?;
             let requests = match Agent::parse(&identity.agent)? {
-                Agent::Claude => question_match::pending_claude_questions(&history),
+                Agent::Claude => {
+                    let mut records = spool::read_session(self.spool_dir.as_deref()?, Agent::Claude,
+                        &identity.native_session_id);
+                    records.retain(|r| r["session_id"] == identity.native_session_id
+                        && r["payload"]["session_id"] == identity.native_session_id);
+                    question_match::pending_claude_spool_questions(&records, &history)
+                },
                 Agent::Codex => question_match::pending_codex_questions(&history),
             };
             let request = requests.into_iter().last();
-            if ApprovalFileStamp::of(&file.metadata().ok()?) != stamp { return None; }
+            if self.question_input_stamp(identity, &file).as_ref() != Some(&stamp) { return None; }
             *cache = Some(QuestionMatchCache { identity: identity.clone(), stamp, request: request.clone() });
             request
         }

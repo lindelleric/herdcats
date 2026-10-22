@@ -1,5 +1,23 @@
 use super::*;
-use crate::question_match::{pending_claude_questions, pending_codex_questions};
+use crate::question_match::{pending_claude_spool_questions, pending_codex_questions};
+use serde_json::Value;
+
+fn claude_questions(transcript: &[Value]) -> Vec<PendingQuestion> {
+    let mut records: Vec<Value> = [
+        include_str!("../../../compatibility/phase2/fixtures/claude-question-spool.jsonl"),
+        include_str!("../../../compatibility/phase2/fixtures/claude-question-one-spool.jsonl"),
+    ]
+    .into_iter()
+    .flat_map(str::lines)
+    .map(|l| serde_json::from_str(l).unwrap())
+    .collect();
+    records.retain(|r| {
+        transcript
+            .first()
+            .is_some_and(|t| r["session_id"] == t["sessionId"])
+    });
+    pending_claude_spool_questions(&records, transcript)
+}
 
 fn pending(kind: QuestionKind) -> PendingQuestion {
     let source = match kind {
@@ -18,7 +36,7 @@ fn pending(kind: QuestionKind) -> PendingQuestion {
         .map(|r| serde_json::from_str(r).unwrap())
         .collect();
     if kind == QuestionKind::ClaudeAsk {
-        pending_claude_questions(&records)
+        claude_questions(&records)
     } else {
         pending_codex_questions(&records)
     }
@@ -380,7 +398,7 @@ fn claude_one_question_capture_has_no_review_step() {
             .map(|line| serde_json::from_str(line).unwrap())
             .collect::<Vec<_>>()
     };
-    let requests = pending_claude_questions(&records(include_str!(
+    let requests = claude_questions(&records(include_str!(
         "../../../compatibility/phase2/fixtures/claude-question-one-transcript-pending.jsonl"
     )));
     assert_eq!(requests.len(), 1);
@@ -388,7 +406,7 @@ fn claude_one_question_capture_has_no_review_step() {
     assert_eq!(request.questions.len(), 1);
     assert_eq!(request.questions[0].text, "Pick a color?");
     assert!(
-        pending_claude_questions(&records(include_str!(
+        claude_questions(&records(include_str!(
             "../../../compatibility/phase2/fixtures/claude-question-one-transcript.jsonl"
         )))
         .is_empty()
@@ -518,7 +536,7 @@ fn every_fixture_survives_hard_wrapping_at_narrow_widths() {
     .map(|line| serde_json::from_str(line).unwrap())
     .collect::<Vec<_>>();
     cases.push((
-        pending_claude_questions(&records).remove(0),
+        claude_questions(&records).remove(0),
         include_str!("../../../compatibility/phase2/fixtures/claude-question-one-screen.txt"),
     ));
     for (request, screen) in cases {
@@ -603,7 +621,7 @@ fn short_control_anchors_also_accept_explicit_continuations() {
     .lines()
     .map(|line| serde_json::from_str(line).unwrap())
     .collect::<Vec<_>>();
-    let request = pending_claude_questions(&records).remove(0);
+    let request = claude_questions(&records).remove(0);
     let screen =
         include_str!("../../../compatibility/phase2/fixtures/claude-question-one-screen.txt");
     assert!(
@@ -793,7 +811,7 @@ fn review_title_can_be_an_ordinary_question() {
     .lines()
     .map(|line| serde_json::from_str(line).unwrap())
     .collect::<Vec<_>>();
-    let mut request = pending_claude_questions(&records).remove(0);
+    let mut request = claude_questions(&records).remove(0);
     request.questions[0].text = "Review your answers".into();
     let screen =
         include_str!("../../../compatibility/phase2/fixtures/claude-question-one-screen.txt");
@@ -822,7 +840,7 @@ fn arbitrary_control_text_and_truncations_never_panic() {
     .map(|line| serde_json::from_str(line).unwrap())
     .collect::<Vec<_>>();
     screens.push((
-        pending_claude_questions(&records).remove(0),
+        claude_questions(&records).remove(0),
         include_str!("../../../compatibility/phase2/fixtures/claude-question-one-screen.txt"),
     ));
     let texts = [
@@ -924,7 +942,7 @@ fn markers_inside_typed_text_never_truncate_a_successful_parse() {
     .map(|line| serde_json::from_str(line).unwrap())
     .collect::<Vec<_>>();
     cases.push((
-        pending_claude_questions(&records).remove(0),
+        claude_questions(&records).remove(0),
         include_str!("../../../compatibility/phase2/fixtures/claude-question-one-screen.txt"),
         "  3. Type something.",
         "❯ 3. ",

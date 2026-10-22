@@ -56,16 +56,16 @@
       "sha256": "a2fcdeacef0ea9bee314babc8eb24cf5182a10edbf69b2a0cf09ccecb33fb79e"
     },
     "claude-question-one-transcript-pending.jsonl": {
-      "bytes": 2786,
-      "sha256": "b458901021d92be0e30bd2e7f27513fd6172615e1c3557b76643ae83d2ddef70"
+      "bytes": 855,
+      "sha256": "a8f2d90124d5ec52cfd79ba4d073b6971f6391e8155d9f5d0d0299c7316e42e6"
     },
     "claude-question-transcript.jsonl": {
       "bytes": 8319,
       "sha256": "a508afeab38ea2f68ab14b772e3df19e65996ed5561c228c50b1a097196124f6"
     },
     "claude-question-transcript-pending.jsonl": {
-      "bytes": 3024,
-      "sha256": "11cae22f508b28b932f0563c0ea3e1b1c53947e81ef4d3e0ec2fc0f8f341d6a4"
+      "bytes": 855,
+      "sha256": "5a5ef82ed893c6a34f3d927bce16befc276f48aa83c0c11576b0e5f0a56d9206"
     },
     "codex-sync-rollout.jsonl": {
       "bytes": 5275,
@@ -82,6 +82,16 @@
     "codex-async-rollout-pending.jsonl": {
       "bytes": 9120,
       "sha256": "5130a456e05aff039879b3da70368fad467f7903f1d05a2473f4f1dfa9f5c3da"
+    },
+    "claude-question-spool.jsonl": {
+      "bytes": 948,
+      "sha256": "a122d51a6e1162f14514e1b2c61f4b9b0f4d196b72c4131687cdc80148a388ec",
+      "derived": "Phase-1 PermissionRequest hook shape with phase-2 Claude question input, pseudonymous prompt_id and fixed timestamp; not a live spool capture."
+    },
+    "claude-question-one-spool.jsonl": {
+      "bytes": 710,
+      "sha256": "4b0807bf65135ae190ca25a089b6aad519ccd982ea1245058efe085ea0f1f9fc",
+      "derived": "Phase-1 PermissionRequest hook shape with phase-2 Claude question input, pseudonymous prompt_id and fixed timestamp; not a live spool capture."
     }
   }
 }

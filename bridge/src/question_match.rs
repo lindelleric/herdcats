@@ -1,4 +1,4 @@
-//! Pure detection of pending questions from transcripts and rollouts.
+//! Pure detection of pending questions from Claude hook records and native history.
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
@@ -102,6 +102,106 @@ fn questions(value: &Value, kind: QuestionKind) -> Option<Vec<Question>> {
     values.iter().map(|q| question(q, kind)).collect()
 }
 
+/// Claude writes AskUserQuestion tool_use only when the picker finishes. The
+/// recording hook is the pending source; transcript pairs retire spool records.
+pub fn pending_claude_spool_questions(
+    records: &[Value],
+    transcript: &[Value],
+) -> Vec<PendingQuestion> {
+    let main = |r: &&Value| r["isSidechain"] != true && r["isMeta"] != true;
+    let results: HashSet<_> = transcript
+        .iter()
+        .filter(main)
+        .filter(|r| r["type"] == "user")
+        .flat_map(|r| {
+            r["message"]["content"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|b| {
+                    if b["type"] != "tool_result" {
+                        return None;
+                    }
+                    Some((text(&r["sessionId"])?, text(&b["tool_use_id"])?))
+                })
+        })
+        .collect();
+    let mut answered: Vec<_> = transcript
+        .iter()
+        .filter(main)
+        .filter(|r| r["type"] == "assistant")
+        .flat_map(|r| {
+            r["message"]["content"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|b| {
+                    let session = text(&r["sessionId"])?;
+                    if b["type"] == "tool_use"
+                        && b["name"] == "AskUserQuestion"
+                        && results.contains(&(session, text(&b["id"])?))
+                    {
+                        Some((session, &b["input"]))
+                    } else {
+                        None
+                    }
+                })
+        })
+        .collect();
+    let mut candidates: Vec<_> = records
+        .iter()
+        .filter_map(|r| {
+            let payload = &r["payload"];
+            let session = text(&r["session_id"])?;
+            if r["event"] != "PermissionRequest"
+                || r["agent"] != "claude"
+                || payload["tool_name"] != "AskUserQuestion"
+                || payload["session_id"] != session
+                || r["truncated"] == true
+                || payload["truncated"] == true
+            {
+                return None;
+            }
+            let prompt = text(&payload["prompt_id"])?;
+            let time = r["t"].as_f64()?;
+            let millis = (time * 1000.0).floor();
+            if !millis.is_finite() || millis < 0.0 || millis >= u64::MAX as f64 {
+                return None;
+            }
+            let questions = questions(&payload["tool_input"], QuestionKind::ClaudeAsk)?;
+            Some((
+                time,
+                session,
+                &payload["tool_input"],
+                PendingQuestion {
+                    request_id: format!("ask-{prompt}-{}", millis as u64),
+                    kind: QuestionKind::ClaudeAsk,
+                    turn_id: None,
+                    questions,
+                },
+            ))
+        })
+        .collect();
+    candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
+    candidates
+        .into_iter()
+        .filter_map(|(_, session, input, request)| {
+            // Esc cancel also writes tool_use + tool_result, so it counts as answered.
+            // Consume oldest identical answered calls one-to-one; later repeats stay pending.
+            if let Some(index) = answered
+                .iter()
+                .position(|(s, i)| *s == session && *i == input)
+            {
+                answered.remove(index);
+                None
+            } else {
+                Some(request)
+            }
+        })
+        .collect()
+}
+
+/// Retained for offline transcript consumers/tests; live pickers require the hook spool.
 pub fn pending_claude_questions(transcript: &[Value]) -> Vec<PendingQuestion> {
     let mut pending = Vec::new();
     for record in transcript {

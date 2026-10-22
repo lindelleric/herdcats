@@ -2,6 +2,7 @@
 """Build phase-2 evidence from disposable captures; never use real user sessions.
 
 Usage: build_fixtures.py --raw DIR --spike-root PATH
+       build_fixtures.py --from-fixtures  # regenerate derived evidence only
 """
 import argparse
 import hashlib
@@ -73,11 +74,10 @@ def dump(rows):
 
 def pending(rows, kind):
     if kind == 'claude':
-        call = next(b for r in rows if r['type'] == 'assistant'
-                    for b in r['message']['content'] if b.get('name') == 'AskUserQuestion')
-        end = next(i for i, r in enumerate(rows) if r['type'] == 'user'
-                   and isinstance(r['message']['content'], list)
-                   and any(b.get('tool_use_id') == call['id'] for b in r['message']['content']))
+        # Live Claude 2.1.307 writes tool_use and tool_result only after the
+        # picker completes. Pending therefore ends BEFORE the assistant call.
+        end = next(i for i, r in enumerate(rows) if r['type'] == 'assistant'
+                   and any(b.get('name') == 'AskUserQuestion' for b in r['message']['content']))
     else:
         name = 'request_user_input_async' if kind == 'async' else 'request_user_input'
         call = next(r['payload'] for r in rows if r.get('payload', {}).get('name') == name)
@@ -98,6 +98,21 @@ def pending(rows, kind):
     return rows[:end]
 
 
+def claude_spool(rows):
+    """Derived spool evidence: phase-1 hook shape with phase-2 probe input."""
+    hooks = [json.loads(line) for line in (ROOT.parent / 'phase1/fixtures/claude-hooks.jsonl').read_text().splitlines()]
+    template = next(r for r in hooks if r['event'] == 'PermissionRequest'
+                    and r['payload'].get('tool_name') == 'AskUserQuestion')
+    payload = dict(template['payload'])
+    call = next(b for r in rows if r['type'] == 'assistant'
+                for b in r['message']['content'] if b.get('name') == 'AskUserQuestion')
+    payload['tool_input'] = call['input']
+    payload['session_id'] = rows[0]['sessionId']
+    payload['prompt_id'] = next(r['promptId'] for r in rows if r.get('promptId'))
+    return [{'v': 1, 't': 1792136860.328, 'agent': 'claude', 'event': 'PermissionRequest',
+             'session_id': payload['session_id'], 'pane': 'w1:p1', 'payload': payload}]
+
+
 SCREENS = [
     ('claude-question-one', 'claude-one-screen', '☐ Color', 'Esc to cancel'),
     ('claude-question-single', 'claude-q1-screen', '←', 'Esc to cancel'),
@@ -115,36 +130,52 @@ SCREENS = [
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--raw', type=Path, required=True)
-    parser.add_argument('--spike-root', required=True)
+    parser.add_argument('--raw', type=Path)
+    parser.add_argument('--spike-root')
+    parser.add_argument('--from-fixtures', action='store_true', help='rebuild derived Claude evidence from sanitized fixtures')
     args = parser.parse_args()
-    outputs = {dest + '-screen.txt': phase1.screen(args.raw / (src + '.txt'), start, args.spike_root, end)
-               for dest, src, start, end in SCREENS}
-    for dest, src, kind, keep in [
-        ('claude-question-one-transcript', 'claude-one-transcript', 'claude', phase1.keep_claude),
-        ('claude-question-transcript', 'claude-transcript', 'claude', phase1.keep_claude),
-        ('codex-sync-rollout', 'codex-sync-rollout', 'sync', phase1.keep_codex),
-        ('codex-async-rollout', 'codex-async-rollout', 'async', phase1.keep_codex),
-    ]:
-        rows = records(args.raw / (src + '.jsonl'), keep)
-        outputs[dest + '.jsonl'] = dump(rows)
-        outputs[dest + '-pending.jsonl'] = dump(pending(rows, kind))
+    if args.from_fixtures:
+        outputs = {}
+    else:
+        if args.raw is None or args.spike_root is None:
+            parser.error('--raw and --spike-root are required unless --from-fixtures is used')
+        outputs = {dest + '-screen.txt': phase1.screen(args.raw / (src + '.txt'), start, args.spike_root, end)
+                   for dest, src, start, end in SCREENS}
+        for dest, src, kind, keep in [
+            ('claude-question-one-transcript', 'claude-one-transcript', 'claude', phase1.keep_claude),
+            ('claude-question-transcript', 'claude-transcript', 'claude', phase1.keep_claude),
+            ('codex-sync-rollout', 'codex-sync-rollout', 'sync', phase1.keep_codex),
+            ('codex-async-rollout', 'codex-async-rollout', 'async', phase1.keep_codex),
+        ]:
+            rows = records(args.raw / (src + '.jsonl'), keep)
+            outputs[dest + '.jsonl'] = dump(rows)
+            outputs[dest + '-pending.jsonl'] = dump(pending(rows, kind))
+    for prefix in ('claude-question', 'claude-question-one'):
+        name = prefix + '-transcript.jsonl'
+        source = outputs.get(name) if name in outputs else (ROOT / 'fixtures' / name).read_text()
+        rows = [json.loads(line) for line in source.splitlines()]
+        outputs[prefix + '-transcript-pending.jsonl'] = dump(pending(rows, 'claude'))
+        outputs[prefix + '-spool.jsonl'] = dump(claude_spool(rows))
     # Validate every output before writing any fixture.
     for name, text in outputs.items():
         for forbidden in FORBIDDEN:
             if forbidden in text:
                 raise ValueError(f'{name}: redaction left {forbidden!r}')
-    versions = {'claude': '2.1.307', 'codex': '0.163.0'}
+    manifest = json.loads((ROOT / 'manifest.json').read_text()) if args.from_fixtures else {}
+    versions = manifest.get('versions', {'claude': '2.1.307', 'codex': '0.163.0'})
     try:
-        versions['herdr'] = subprocess.check_output(['herdr', '--version'], text=True).strip().removeprefix('herdr ')
+        if not args.from_fixtures:
+            versions['herdr'] = subprocess.check_output(['herdr', '--version'], text=True).strip().removeprefix('herdr ')
     except (OSError, subprocess.CalledProcessError):
         pass
-    files = {}
+    files = manifest.get('files', {})
     (ROOT / 'fixtures').mkdir(exist_ok=True)
     for name, text in outputs.items():
         data = text.encode()
         (ROOT / 'fixtures' / name).write_bytes(data)
         files[name] = {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
+        if name.endswith('-spool.jsonl'):
+            files[name]['derived'] = 'Phase-1 PermissionRequest hook shape with phase-2 Claude question input, pseudonymous prompt_id and fixed timestamp; not a live spool capture.'
     (ROOT / 'manifest.json').write_text(json.dumps({
         'capture_kind': 'sanitized live disposable probe sessions', 'versions': versions,
         'redaction': 'Exact probe text allowlist; phase 0 pseudonymous IDs and text redaction; phase 1 record filters and anchored screen crops.',
