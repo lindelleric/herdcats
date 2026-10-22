@@ -41,7 +41,7 @@ fn response_requires_watch_identity_and_emitted_request() {
         respond(&mut service, json!({"request_id":"one"}))[0]["error"]["code"],
         "stale"
     );
-    service.watch.as_mut().unwrap().pending = Some(test_pending("one"));
+    service.watch.as_mut().unwrap().pending = Some(PendingInteraction::Approval(test_pending("one")));
     assert_eq!(
         respond(&mut service, json!({"request_id":"different"}))[0]["error"]["code"],
         "stale"

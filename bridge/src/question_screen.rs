@@ -43,8 +43,25 @@ pub struct QuestionScreen {
     pub free_text: Option<FreeText>,
     pub countdown: Option<String>,
     pub queued_count: Option<usize>,
+    pub unanswered: Option<usize>,
+    pub completed_tabs: bool,
     /// Lossless length-delimited rows, including whitespace, selection, and footer.
     pub fingerprint: Vec<u8>,
+}
+
+impl QuestionScreen {
+    pub fn is_fresh(&self, pending: &PendingQuestion) -> bool {
+        let untouched = self.options.iter().all(|o| o.checked != Some(true))
+            && self.free_text.as_ref().is_none_or(|t| t.text.is_empty() && !t.active);
+        untouched && match self.step {
+            QuestionStep::ClaudeQuestion(0) => !self.completed_tabs,
+            QuestionStep::CodexQuestion { index: 0, total } => self.unanswered == Some(total),
+            QuestionStep::AsyncQueued => true,
+            QuestionStep::AsyncPicker(0) => self.cursor == Some(QuestionCursor::Option(1))
+                && pending.questions.len() == 1,
+            _ => false,
+        }
+    }
 }
 
 fn fingerprint(rows: &[&str]) -> Vec<u8> {
@@ -155,6 +172,8 @@ fn result(step: QuestionStep) -> QuestionScreen {
         free_text: None,
         countdown: None,
         queued_count: None,
+        unanswered: None,
+        completed_tabs: false,
         fingerprint: Vec::new(),
     }
 }
@@ -232,7 +251,10 @@ fn claude(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
     };
     match (question, reviewed) {
         (Some(_), Some(_)) => None,
-        (Some(dialog), None) | (None, Some(dialog)) => Some(dialog),
+        (Some(mut dialog), None) | (None, Some(mut dialog)) => {
+            dialog.completed_tabs = rows[0].contains('☒');
+            Some(dialog)
+        },
         (None, None) => None,
     }
 }
@@ -429,6 +451,7 @@ fn sync(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
         index: index - 1,
         total,
     });
+    dialog.unanswered = Some(remaining);
     let mut i = first_option;
     while i < rows.len().checked_sub(1)? {
         let row = rows.get(i)?;

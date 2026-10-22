@@ -9,6 +9,8 @@ use crate::{
     herdr::{Client, Pane},
     hooks::Agent,
     resolver::Resolver,
+    question_match::{self, PendingQuestion, QuestionKind},
+    question_screen::{self, QuestionScreen, QuestionStep},
     spool,
 };
 use serde::Serialize;
@@ -73,6 +75,55 @@ impl PendingApproval {
         })
     }
 }
+struct PendingQuestionEvent {
+    identity: Identity,
+    generation: u64,
+    request: PendingQuestion,
+    screen: QuestionScreen,
+    fresh: bool,
+}
+enum PendingInteraction {
+    Approval(PendingApproval),
+    Question(PendingQuestionEvent),
+}
+impl PendingInteraction {
+    fn data(&self) -> Value {
+        match self {
+            Self::Approval(p) => p.data(),
+            Self::Question(p) => {
+                let questions: Vec<_> = p.request.questions.iter().enumerate().map(|(index, q)| {
+                    let mut options: Vec<_> = q.options.iter().enumerate().map(|(i, o)|
+                        json!({"number":i + 1,"label":o.label,"description":o.description})).collect();
+                    if p.request.kind == QuestionKind::CodexPlan && q.allows_other {
+                        options.push(json!({"number":options.len() + 1,"label":"None of the above",
+                            "description":"Optionally, add details in notes (tab)"}));
+                    }
+                    json!({"index":index,"header":q.header,"text":q.text,"options":options,
+                        "multi_select":q.multi_select,"allows_other":q.allows_other})
+                }).collect();
+                let step = match p.screen.step {
+                    QuestionStep::ClaudeQuestion(index) => json!({"kind":"claude_question","index":index}),
+                    QuestionStep::ClaudeReview => json!({"kind":"claude_review"}),
+                    QuestionStep::CodexQuestion { index, total } => json!({"kind":"codex_question","index":index,"total":total}),
+                    QuestionStep::AsyncQueued => json!({"kind":"async_queued"}),
+                    QuestionStep::AsyncPicker(index) => json!({"kind":"async_picker","index":index}),
+                };
+                let kind = match p.request.kind {
+                    QuestionKind::ClaudeAsk => "claude", QuestionKind::CodexPlan => "codex_plan",
+                    QuestionKind::CodexAsync => "codex_async",
+                };
+                json!({"identity":p.identity,"generation":p.generation,"request_id":p.request.request_id,
+                    "agent":p.identity.agent,"kind":"question","question_kind":kind,
+                    "questions":questions,"step":step,"fresh":p.fresh,"countdown":p.screen.countdown})
+            }
+        }
+    }
+}
+struct QuestionMatchCache {
+    identity: Identity,
+    stamp: ApprovalFileStamp,
+    request: Option<PendingQuestion>,
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ApprovalFileStamp {
     dev: u64,
@@ -122,8 +173,9 @@ struct Watch {
     // would not reset the generation for the new occupant.
     unavailable_agent: Option<String>,
     last_daemon_status: Option<&'static str>,
-    pending: Option<PendingApproval>,
+    pending: Option<PendingInteraction>,
     approval_cache: Option<ApprovalMatchCache>,
+    question_cache: Option<QuestionMatchCache>,
     source_pane: Option<Pane>,
 }
 pub struct Service {
@@ -137,6 +189,7 @@ pub struct Service {
     initialized: bool,
     include_content: bool,
     include_approvals: bool,
+    include_questions: bool,
     watch: Option<Watch>,
     codex_daemon_cache: Option<(std::time::Instant, &'static str)>,
     // The CONFIGURED (never canonicalized) Codex home. CodexResolver::new
@@ -208,6 +261,7 @@ impl Service {
             initialized: false,
             include_content: false,
             include_approvals: false,
+            include_questions: false,
             watch: None,
             codex_daemon_cache: None,
             codex_home: None,
@@ -317,14 +371,16 @@ impl Service {
             // previous occupant's cached transcript.
             watch.identity = None;
             watch.approval_cache = None;
+            watch.question_cache = None;
         }
         if pane.agent_status != "blocked" {
             watch.approval_cache = None;
+            watch.question_cache = None;
         }
         watch.source_pane = Some(pane.clone());
         // Clone only the descriptor. Tail reading happens after timeline work,
         // using the same adapter-verified source and no additional path lookup.
-        let approval_file = if self.include_approvals && pane.agent_status == "blocked" {
+        let approval_file = if (self.include_approvals || self.include_questions) && pane.agent_status == "blocked" {
             file.try_clone().ok()
         } else {
             None
@@ -377,6 +433,7 @@ impl Service {
             Err(code) => {
                 watch.source_pane = None;
                 watch.approval_cache = None;
+                watch.question_cache = None;
                 watch.source_changing_count = 0;
                 watch.delayed = false;
                 let is_codex_no_session = watch.agent.as_deref() == Some("codex")
@@ -436,6 +493,7 @@ impl Service {
                     .collect();
                 if reset {
                     watch.approval_cache = None;
+                    watch.question_cache = None;
                     self.generation += 1;
                     let mut body = page(&data.entries, data.entries.len());
                     body["identity"] = json!(identity);
@@ -495,10 +553,18 @@ impl Service {
                 watch.unknown_records = data.unknown_records;
                 watch.dropped_entries = data.dropped_entries;
                 watch.previous = data.entries.clone();
-                if self.include_approvals && status == "blocked" {
-                    pending = approval_file.and_then(|file| {
-                        self.read_pending(&identity, file, &mut watch.approval_cache)
-                    });
+                if status == "blocked" {
+                    if let Some(file) = approval_file {
+                        if self.include_approvals {
+                            pending = file.try_clone().ok().and_then(|file|
+                                self.read_pending(&identity, file, &mut watch.approval_cache))
+                                .map(PendingInteraction::Approval);
+                        }
+                        if pending.is_none() && self.include_questions {
+                            pending = self.read_question(&identity, file, &mut watch.question_cache)
+                                .map(PendingInteraction::Question);
+                        }
+                    }
                 }
                 watch.identity = Some(identity);
                 watch.status = status;
@@ -508,7 +574,7 @@ impl Service {
                 watch.generation = watch.follower.generation;
             }
         }
-        if self.include_approvals && !preserve_pending {
+        if (self.include_approvals || self.include_questions) && !preserve_pending {
             self.update_pending(out, &mut watch, pending)?;
         }
         self.watch = Some(watch);
@@ -606,11 +672,46 @@ impl Service {
             identity: identity.clone(), generation: self.generation, request, dialog,
         })
     }
+    fn read_question(
+        &self,
+        identity: &Identity,
+        file: std::fs::File,
+        cache: &mut Option<QuestionMatchCache>,
+    ) -> Option<PendingQuestionEvent> {
+        let stamp = match file.metadata() {
+            Ok(meta) if meta.is_file() => ApprovalFileStamp::of(&meta),
+            _ => { *cache = None; return None; }
+        };
+        let request = if let Some(cached) = cache.as_ref()
+            .filter(|c| c.identity == *identity && c.stamp == stamp) {
+            cached.request.clone()
+        } else {
+            *cache = None;
+            let history = crate::follower::read_tail(file.try_clone().ok()?).ok()?;
+            let requests = match Agent::parse(&identity.agent)? {
+                Agent::Claude => question_match::pending_claude_questions(&history),
+                Agent::Codex => question_match::pending_codex_questions(&history),
+            };
+            let request = requests.into_iter().last();
+            if ApprovalFileStamp::of(&file.metadata().ok()?) != stamp { return None; }
+            *cache = Some(QuestionMatchCache { identity: identity.clone(), stamp, request: request.clone() });
+            request
+        }?;
+        if request.questions.iter().any(|q| q.secret)
+            || (request.kind == QuestionKind::CodexAsync && request.questions.len() != 1) {
+            return None;
+        }
+        let visible = self.client.read_visible(&identity.pane_id).ok()?;
+        let screen = question_screen::parse(request.kind, &visible, &request)?;
+        let fresh = screen.is_fresh(&request);
+        Some(PendingQuestionEvent { identity: identity.clone(), generation: self.generation,
+            request, screen, fresh })
+    }
     fn update_pending(
         &mut self,
         out: &mut impl Write,
         watch: &mut Watch,
-        pending: Option<PendingApproval>,
+        pending: Option<PendingInteraction>,
     ) -> io::Result<()> {
         // Include the actual event envelope and a possible preceding resolved
         // event's sequence increment when checking the bounded wire frame.
@@ -619,38 +720,40 @@ impl Service {
                 "seq":self.sequence.saturating_add(2),"data":pending.data()});
             serde_json::to_vec(&frame).is_ok_and(|bytes| bytes.len() < MAX_RECORD)
         });
-        let same_request = match (&watch.pending, &pending) {
-            (Some(old), Some(new)) => old.identity == new.identity
-                && old.generation == new.generation
-                && old.request.request_id == new.request.request_id,
-            _ => false,
-        };
-        if !same_request {
-            if let Some(old) = watch.pending.take() {
-                self.event(out, "interaction.resolved", json!({"identity":old.identity,
-                    "generation":old.generation,"request_id":old.request.request_id}))?;
-            }
+        let old_data = watch.pending.as_ref().map(PendingInteraction::data);
+        let new_data = pending.as_ref().map(PendingInteraction::data);
+        let same_request = old_data.as_ref().zip(new_data.as_ref()).is_some_and(|(old, new)|
+            ["identity", "generation", "request_id", "kind"].iter().all(|key| old[key] == new[key]));
+        if !same_request && let Some(old) = watch.pending.take() {
+            let old = old.data();
+            self.event(out, "interaction.resolved", json!({"identity":old["identity"],
+                "generation":old["generation"],"request_id":old["request_id"]}))?;
         }
         if let Some(new) = pending {
-            let changed = watch.pending.as_ref().is_none_or(|old| {
-                old.dialog.canonical() != new.dialog.canonical()
-                    || old.dialog.selected != new.dialog.selected
-            });
-            if changed {
+            let dialog_changed = match (watch.pending.as_ref(), &new) {
+                (Some(PendingInteraction::Approval(old)), PendingInteraction::Approval(new)) =>
+                    old.dialog.canonical() != new.dialog.canonical(),
+                _ => false,
+            };
+            if old_data != new_data || dialog_changed {
                 self.event(out, "interaction.pending", new.data())?;
-                watch.pending = Some(new);
             }
+            watch.pending = Some(new);
         }
         Ok(())
     }
     fn respond_interaction(&self, params: &Value) -> Result<Value> {
-        if !self.include_approvals {
+        let question_response = params.get("answers").is_some() || params.get("skip").is_some();
+        if (question_response && !self.include_questions) || (!question_response && !self.include_approvals) {
             return Err("unsupported_capability");
         }
         let watch = self.watch.as_ref().ok_or("not_watching")?;
         let identity = watch.identity.as_ref().filter(|_| watch.unavailable.is_none())
             .ok_or("timeline_unavailable")?;
-        let pending = watch.pending.as_ref().ok_or("stale")?;
+        let pending = match watch.pending.as_ref().ok_or("stale")? {
+            PendingInteraction::Approval(pending) => pending,
+            PendingInteraction::Question(_) => return Err("unsupported_capability"),
+        };
         if params["request_id"].as_str() != Some(&pending.request.request_id)
             || pending.identity != *identity || pending.generation != self.generation
         {
@@ -741,6 +844,7 @@ impl Service {
             self.initialized = false;
             self.include_content = params["record_content"] == true;
             self.include_approvals = params["approvals"] == true;
+            self.include_questions = params["questions"] == true;
             self.watch = None;
             if params["protocol"] != 1 {
                 return Self::error(out, id, "protocol_mismatch");
@@ -753,7 +857,7 @@ impl Service {
             let codex_available = self.adapter_for("codex").is_some_and(|a| a.is_available());
             return Self::write(
                 out,
-                &json!({"id":id,"result":{"protocol":1,"bridge_version":env!("CARGO_PKG_VERSION"),"epoch":self.epoch,"capabilities":{"claude_timeline":claude_available,"record_content":true,"codex_timeline":codex_available,"codex_daemon_config":true,"codex_daemon_stop":true,"git":false,"prompts":false,"approvals":true,"questions":false,"routed_hosts":false}}}),
+                &json!({"id":id,"result":{"protocol":1,"bridge_version":env!("CARGO_PKG_VERSION"),"epoch":self.epoch,"capabilities":{"claude_timeline":claude_available,"record_content":true,"codex_timeline":codex_available,"codex_daemon_config":true,"codex_daemon_stop":true,"git":false,"prompts":false,"approvals":true,"questions":true,"routed_hosts":false}}}),
             );
         }
         if !self.initialized {
@@ -795,6 +899,7 @@ impl Service {
                     last_daemon_status: None,
                     pending: None,
                     approval_cache: None,
+                    question_cache: None,
                     source_pane: None,
                 });
                 Self::write(out, &json!({"id":id,"result":{"watching":pane}}))?;
@@ -1063,6 +1168,7 @@ mod tests {
         (service, root, session, herdr)
     }
     include!("service_approval_tests.rs");
+    include!("service_question_tests.rs");
     include!("service_response_tests.rs");
     fn cleanup(service: &Service, root: PathBuf) {
         // Wake and terminate the fixture thread without a valid request.
