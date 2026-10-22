@@ -78,6 +78,15 @@ fn submit(row: &str) -> bool {
     row.trim().trim_start_matches('❯').trim() == "Submit"
 }
 
+// Joined text is only a phone hint; slice B validates typed text with whitespace removed.
+fn joined(rows: &[&str]) -> String {
+    rows.iter()
+        .map(|row| row.trim())
+        .filter(|row| !row.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn notes_text(row: &str) -> Option<&str> {
     let row = row.trim();
     if row == "›" {
@@ -226,9 +235,6 @@ fn claude(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
                 return None;
             }
         } else {
-            if !rows_equal(&rows[i + 1..end], "") {
-                return None;
-            }
             if dialog.options.len() != q.options.len() || !q.allows_other {
                 return None;
             }
@@ -237,10 +243,16 @@ fn claude(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
             } else {
                 "Type something."
             };
-            let typed = label != placeholder;
+            let mut text_rows = vec![label];
+            text_rows.extend_from_slice(&rows[i + 1..end]);
+            let typed = !rows_equal(&text_rows, placeholder);
             dialog.free_text = Some(FreeText {
                 active: selected || checked == Some(true),
-                text: if typed { label.into() } else { String::new() },
+                text: if typed {
+                    joined(&text_rows)
+                } else {
+                    String::new()
+                },
             });
         }
         if selected {
@@ -415,9 +427,13 @@ fn sync(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
             dialog.cursor = Some(QuestionCursor::Notes);
             dialog.free_text = Some(FreeText {
                 active: true,
-                text: notes.into(),
+                text: {
+                    let mut text_rows = vec![notes];
+                    text_rows.extend_from_slice(&rows[i + 1..rows.len() - 1]);
+                    joined(&text_rows)
+                },
             });
-            i += 1;
+            i = rows.len() - 1;
         }
     }
     if dialog.options.len() != q.options.len() + usize::from(q.allows_other) {
@@ -475,12 +491,7 @@ fn asynchronous(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScre
         let end = option_end(&body, i, body.len() - 1);
         let mut text_rows = vec![label];
         text_rows.extend_from_slice(&body[i + 1..end]);
-        let visible_label = text_rows
-            .iter()
-            .map(|r| r.trim())
-            .filter(|r| !r.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ");
+        let visible_label = joined(&text_rows);
         let mut label = visible_label.as_str();
         if number as usize != dialog.options.len() + 1 {
             return None;

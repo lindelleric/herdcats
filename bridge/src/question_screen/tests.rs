@@ -431,3 +431,76 @@ fn claude_one_question_capture_has_no_review_step() {
         );
     }
 }
+
+#[test]
+fn claude_free_text_continuations_are_joined_for_single_and_multi_select() {
+    for (index, from, to, number) in [
+        (
+            0,
+            "  3. Type something.",
+            "❯ 3. A long typed\n       answer that spans\n       three rows",
+            3,
+        ),
+        (
+            2,
+            "❯ 4. [✔] Pepper",
+            "❯ 4. [✔] Pepper and\n         more toppings\n         on another row",
+            4,
+        ),
+    ] {
+        let (kind, screen) = fixtures()[index];
+        let request = pending(kind);
+        let original = parse(kind, screen, &request).unwrap();
+        let wrapped = screen.replace("❯ 1. Small", "  1. Small").replace(from, to);
+        let parsed = parse(kind, &wrapped, &request).unwrap();
+        assert_eq!(parsed.cursor, Some(QuestionCursor::Option(number)));
+        assert_eq!(
+            parsed.free_text,
+            Some(FreeText {
+                active: true,
+                text: if index == 0 {
+                    "A long typed answer that spans three rows".into()
+                } else {
+                    "Pepper and more toppings on another row".into()
+                }
+            })
+        );
+        assert_ne!(parsed.fingerprint, original.fingerprint);
+        assert!(parse(kind, &format!("{wrapped}\n{wrapped}"), &request).is_none());
+        assert!(!parsed.options.iter().any(|o| o.label == "Chat about this"));
+        if index == 2 {
+            assert_eq!(parsed.options[3].checked, Some(true));
+        }
+    }
+}
+
+#[test]
+fn codex_notes_continuations_are_joined_up_to_footer() {
+    let (kind, screen) = fixtures()[6];
+    let request = pending(kind);
+    for (notes, expected) in [
+        ("› Cheese,\n    Basil", "Cheese, Basil"),
+        (
+            "› Cheese,\n    Basil and\n    extra toppings",
+            "Cheese, Basil and extra toppings",
+        ),
+        (
+            "›\n    Continued after empty marker\n    on another row",
+            "Continued after empty marker on another row",
+        ),
+        ("›", ""),
+        ("› ", ""),
+    ] {
+        let wrapped = screen.replace("› Cheese, Basil", notes);
+        let parsed = parse(kind, &wrapped, &request).unwrap();
+        assert_eq!(parsed.cursor, Some(QuestionCursor::Notes));
+        assert_eq!(
+            parsed.free_text,
+            Some(FreeText {
+                active: true,
+                text: expected.into()
+            })
+        );
+        assert!(!parsed.free_text.unwrap().text.contains("enter to submit"));
+    }
+}

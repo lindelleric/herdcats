@@ -105,6 +105,9 @@ fn questions(value: &Value, kind: QuestionKind) -> Option<Vec<Question>> {
 pub fn pending_claude_questions(transcript: &[Value]) -> Vec<PendingQuestion> {
     let mut pending = Vec::new();
     for record in transcript {
+        if record["isSidechain"] == true || record["isMeta"] == true {
+            continue;
+        }
         let Some(blocks) = record["message"]["content"].as_array() else {
             continue;
         };

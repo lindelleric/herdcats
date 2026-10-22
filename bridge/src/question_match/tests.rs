@@ -279,3 +279,28 @@ fn async_waits_for_every_question_index() {
     history.push(reply("many", json!(1), "user"));
     assert!(pending_codex_questions(&history).is_empty());
 }
+
+#[test]
+fn claude_sidechain_and_meta_calls_and_results_are_ignored() {
+    let call = claude()
+        .into_iter()
+        .find(|r| r["type"] == "assistant")
+        .unwrap();
+    let id = call["message"]["content"][0]["id"].clone();
+    let result = json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":id,"content":"answer"}]}});
+    for flag in ["isSidechain", "isMeta"] {
+        let mut excluded_call = call.clone();
+        excluded_call[flag] = json!(true);
+        assert!(pending_claude_questions(&[excluded_call]).is_empty());
+        let mut excluded_result = result.clone();
+        excluded_result[flag] = json!(true);
+        let history = vec![call.clone(), excluded_result];
+        assert_eq!(pending_claude_questions(&history).len(), 1);
+        let mut resolved = history;
+        resolved.push(result.clone());
+        assert!(pending_claude_questions(&resolved).is_empty());
+        let mut main = call.clone();
+        main[flag] = json!(false);
+        assert_eq!(pending_claude_questions(&[main]).len(), 1);
+    }
+}
