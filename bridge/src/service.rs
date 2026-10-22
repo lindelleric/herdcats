@@ -731,7 +731,11 @@ impl Service {
                 },
                 Agent::Codex => question_match::pending_codex_questions(&history),
             };
-            let request = requests.into_iter().last();
+            // A queued banner cannot identify which async call shift+left opens,
+            // even when the calls have identical questions. Preserve Plan selection.
+            let async_count = requests.iter().filter(|r| r.kind == QuestionKind::CodexAsync).count();
+            let request = requests.into_iter().last()
+                .filter(|r| r.kind != QuestionKind::CodexAsync || async_count == 1);
             if self.question_input_stamp(identity, &file).as_ref() != Some(&stamp) { return None; }
             *cache = Some(QuestionMatchCache { identity: identity.clone(), stamp, request: request.clone() });
             request
@@ -750,6 +754,9 @@ impl Service {
         }
         let visible = self.client.read_visible(&identity.pane_id).ok()?;
         let screen = question_screen::parse(request.kind, &visible, &request)?;
+        if screen.step == QuestionStep::AsyncQueued && screen.queued_count != Some(1) {
+            return None;
+        }
         let fresh = screen.is_fresh(&request);
         Some(PendingQuestionEvent { identity: identity.clone(), generation: self.generation,
             request, screen, fresh })
@@ -901,6 +908,9 @@ impl Service {
         if newest != pending.request { return Err("stale".into()); }
         let visible = self.client.read_visible(&identity.pane_id).map_err(|_| "stale")?;
         let current = question_screen::parse(newest.kind, &visible, &newest).ok_or("stale")?;
+        if current.step == QuestionStep::AsyncQueued && current.queued_count != Some(1) {
+            return Err("stale".into());
+        }
         if !current.is_fresh(&newest) { return Err("in_progress".into()); }
         let steps = question_keys::plan(newest.kind, &newest, &current, params)?;
         let confirmed = self.execute_question(identity, &newest, current, &steps)?;

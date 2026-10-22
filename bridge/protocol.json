@@ -261,7 +261,7 @@
         "fresh": "boolean; untouched first Claude tab with no checks/text or completed tabs; Codex Plan Question 1/n with n unanswered and no notes; async queued or picker cursor on 1 without text",
         "countdown": "string|null; visible Codex async countdown"
       },
-      "question_effect": "Enabled only by initialize params.questions true. Match newest pending Claude question from its recording hook spool plus answered transcript calls, or Codex question from the rollout alone, while blocked; cache Claude by spool and transcript stamps and Codex by rollout stamp, re-read visible screen each poll. Suppress secret questions, multi-question async requests, and screens that do not parse. Approvals take priority. Emit on changed step or fresh state (also countdown/payload changes)."
+      "question_effect": "Enabled only by initialize params.questions true. Match newest pending Claude question from its recording hook spool plus answered transcript calls, or Codex question from the rollout alone, while blocked; cache Claude by spool and transcript stamps and Codex by rollout stamp, re-read visible screen each poll. Suppress secret questions, multi-question async requests, async requests when more than one async call is pending in the session, async queued banners whose count is not exactly 1, and screens that do not parse. Approvals take priority. Emit on changed step or fresh state (also countdown/payload changes)."
     },
     "interaction.resolved": {
       "fields": [
@@ -375,7 +375,7 @@
   },
   "question_policy": {
     "sources": "Claude question cards require the recording PermissionRequest hook installed: pending AskUserQuestion requests come from its session spool, since the transcript writes the call only after answering or Esc cancel. Pair identical inputs one-to-one against answered transcript tool calls in timestamp order, requiring a valid call timestamp no more than 2 seconds after or 120 seconds before its spool record. Missing spool means no Claude question card. Codex question cards use the rollout alone and require no recording hook. Read only for blocked panes.",
-    "eligibility": "Newest pending request, no secrets, exactly one question for Codex async, and exactly one parsed visible question screen. Approval cards take priority.",
+    "eligibility": "Newest pending request, no secrets, exactly one question and exactly one pending async call for Codex async, a queued banner count of exactly 1 if queued, and exactly one parsed visible question screen. Approval cards take priority.",
     "resolution": "Resolve when request is no longer pending, pane leaves blocked, screen no longer parses, or identity changes. Same-identity source_changing preserves pending state. initialize/unwatch silently reset.",
     "bounds": "Suppress oversized events rather than truncating question text or options."
   }

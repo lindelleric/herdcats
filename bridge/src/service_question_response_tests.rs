@@ -616,3 +616,91 @@ fn question_response_one_claude_multiselect_reaches_review_then_submits() {
     );
     cleanup(&service, root);
 }
+
+#[test]
+fn question_response_async_rechecks_queue_ambiguity_before_any_input() {
+    for (calls, picker) in [(2, false), (1, false), (2, true)] {
+        let (mut service, root, herdr, path) = question_fixture("codex_async");
+        if picker {
+            herdr.lock().unwrap().screen = question_screen_fixture("codex-async-picker");
+        }
+        let pending = interactions(&mut service).remove(0);
+        if calls == 2 {
+            add_pending_async_before_original(&path, 1);
+            // Keep the old request cached under the current stamp. Response must
+            // re-count uncached even though the newest request itself is unchanged.
+            let identity = service.watch.as_ref().unwrap().identity.clone().unwrap();
+            let stamp = service
+                .question_input_stamp(&identity, &fs::File::open(&path).unwrap())
+                .unwrap();
+            service
+                .watch
+                .as_mut()
+                .unwrap()
+                .question_cache
+                .as_mut()
+                .unwrap()
+                .stamp = stamp;
+        }
+        if !picker {
+            let mut state = herdr.lock().unwrap();
+            state.screen = state.screen.replace("1 question", "2 questions");
+        }
+        let emitted = respond(
+            &mut service,
+            question_params(&pending, json!([{"index":0,"options":[1]}])),
+        );
+        assert_eq!(
+            emitted,
+            vec![json!({"id":"response","error":{"code":"stale"}})],
+            "calls={calls}, picker={picker}"
+        );
+        assert!(herdr.lock().unwrap().inputs.is_empty());
+        cleanup(&service, root);
+    }
+}
+
+#[test]
+fn question_response_plan_is_unaffected_by_other_pending_async_calls() {
+    let (mut service, root, herdr, path) = question_fixture("codex_plan");
+    let mut records: Vec<Value> = fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let async_call: Value =
+        include_str!("../../compatibility/phase2/fixtures/codex-async-rollout-pending.jsonl")
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .find(|r| r["payload"]["name"] == "request_user_input_async")
+            .unwrap();
+    let index = records
+        .iter()
+        .position(|r| r["payload"]["name"] == "request_user_input")
+        .unwrap();
+    for i in 0..2 {
+        let mut call = async_call.clone();
+        call["payload"]["call_id"] = json!(format!("async-{i}"));
+        records.insert(index, call);
+    }
+    write_records(&path, &records);
+    let pending = interactions(&mut service).remove(0);
+    assert_eq!(pending["data"]["question_kind"], "codex_plan");
+    script_question(
+        &herdr,
+        vec![question_screen_fixture("codex-sync-last"), String::new()],
+    );
+    let emitted = respond(
+        &mut service,
+        question_params(
+            &pending,
+            json!([{"index":0,"options":[1]},{"index":1,"options":[2]}]),
+        ),
+    );
+    assert_question_success(&emitted, &pending);
+    assert_eq!(
+        herdr.lock().unwrap().inputs,
+        vec![keys_input(&["1"]), keys_input(&["2"])]
+    );
+    cleanup(&service, root);
+}

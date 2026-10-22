@@ -395,3 +395,45 @@ fn claude_question_response_rechecks_spool_without_using_poll_cache() {
     assert!(herdr.lock().unwrap().inputs.is_empty());
     cleanup(&service, root);
 }
+
+fn add_pending_async_before_original(path: &Path, count: usize) {
+    let mut records: Vec<Value> = fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let index = records
+        .iter()
+        .position(|r| r["payload"]["name"] == "request_user_input_async")
+        .unwrap();
+    let original = records[index].clone();
+    for i in 0..count {
+        let mut duplicate = original.clone();
+        duplicate["payload"]["call_id"] = json!(format!("other-async-{i}"));
+        records.insert(index, duplicate);
+    }
+    write_records(path, &records);
+}
+#[test]
+fn async_questions_suppress_ambiguous_rollout_queues_and_banner_counts() {
+    for (calls, picker) in [(2, false), (1, false), (2, true)] {
+        let (mut service, root, herdr, path) = question_fixture("codex_async");
+        if calls == 2 {
+            add_pending_async_before_original(&path, 1);
+        }
+        {
+            let mut state = herdr.lock().unwrap();
+            state.screen = if picker {
+                question_screen_fixture("codex-async-picker")
+            } else {
+                state.screen.replace("1 question", "2 questions")
+            };
+        }
+        assert!(
+            interactions(&mut service).is_empty(),
+            "calls={calls}, picker={picker}"
+        );
+        assert!(herdr.lock().unwrap().inputs.is_empty());
+        cleanup(&service, root);
+    }
+}
