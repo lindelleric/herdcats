@@ -2162,3 +2162,54 @@ fn subagent_notification_message_is_hidden_and_near_miss_is_shown() {
         vec![format!("source:{}:{}", offsets[2], lengths[2])]
     );
 }
+
+#[test]
+fn question_answer_retained_context_and_empty_messages_stay_hidden() {
+    for preserve_content in [false, true] {
+        let temp = Temp::new();
+        let path = temp.0.join("question-answer.jsonl");
+        let records = [
+            json!({"type":"session_meta","payload":{"id":THREAD_ID,"cwd":"/test/cwd"}}),
+            json!({"type":"response_item","payload":{"type":"function_call","id":"question-item","call_id":"question-call","name":"request_user_input","arguments":"{}"}}),
+            json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"question-call","output":"{\"answers\":{\"size\":{\"answers\":[\"None of the above\\nuser_note: Note\"]}}}"}}),
+            json!({"type":"response_item","payload":{"type":"message","id":"assistant-answer","role":"assistant","content":[{"type":"output_text","text":"Thanks, I’ll use your answers."}]}}),
+        ];
+        fs::write(
+            &path,
+            records.iter().map(|r| format!("{r}\n")).collect::<String>(),
+        )
+        .unwrap();
+        let mut follower = if preserve_content {
+            Follower::with_content_for_agent(AgentType::Codex)
+        } else {
+            Follower::for_agent(AgentType::Codex)
+        };
+        follower.refresh(&path, THREAD_ID).unwrap();
+        let previous = follower.transcript.entries.clone();
+        assert_eq!(previous.len(), 2);
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let retained = json!({"type":"retained_context","payload":{"type":"verified_answer","turn_id":"turn-question","call_id":"question-call","questions":[{"question":"Pick a size","answer":"None of the above\nuser_note: Note"}],"acceptance_order":6}});
+        writeln!(file, "{retained}").unwrap();
+        for role in ["user", "assistant"] {
+            for text in ["", " \t\r\n ", "\u{2003}"] {
+                for id in ["empty-message", "assistant-answer"] {
+                    let empty = json!({"type":"response_item","payload":{"type":"message","id":id,"role":role,"content":[{"type":"output_text","text":text,"annotations":[],"logprobs":[]}],"phase":"final_answer"}});
+                    writeln!(file, "{empty}").unwrap();
+                }
+            }
+        }
+        file.flush().unwrap();
+        follower.refresh(&path, THREAD_ID).unwrap();
+        assert_eq!(follower.transcript.entries, previous);
+        assert_eq!(follower.transcript.unknown_records, 0);
+        writeln!(file, "{}", json!({"type":"response_item","payload":{"type":"message","id":"next-answer","role":"assistant","content":[{"type":"output_text","text":"I’ll continue with the plan."}],"phase":"final_answer"}})).unwrap();
+        file.flush().unwrap();
+        follower.refresh(&path, THREAD_ID).unwrap();
+        assert_eq!(follower.transcript.entries.len(), 3);
+        assert_eq!(
+            follower.transcript.entries.last().unwrap().text,
+            "I’ll continue with the plan."
+        );
+        assert_eq!(follower.transcript.unknown_records, 0);
+    }
+}

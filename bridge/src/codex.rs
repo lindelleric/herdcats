@@ -725,6 +725,7 @@ pub(crate) fn classify_codex_record(record: &Value) -> Result<CodexRecordAction<
             Ok(CodexRecordAction::SessionMeta { id })
         }
         "turn_context"
+        | "retained_context"
         | "environment_context"
         | "world_state"
         | "token_usage_record"
@@ -780,9 +781,25 @@ pub(crate) fn classify_codex_record(record: &Value) -> Result<CodexRecordAction<
                     if role == "user" && is_codex_injected_context(&payload["content"]) {
                         return Ok(CodexRecordAction::Skip);
                     }
+                    let content = &payload["content"];
+                    let text = codex_text_content(content);
+                    // Empty text carries no timeline content. Keep non-text blocks
+                    // inspectable, including image-only messages and future types.
+                    let text_only = content.is_null()
+                        || content.is_string()
+                        || content.as_array().is_some_and(|blocks| {
+                            blocks.iter().all(|block| {
+                                matches!(
+                                    block["type"].as_str(),
+                                    Some("text" | "input_text" | "output_text")
+                                )
+                            })
+                        });
+                    if text.trim().is_empty() && text_only {
+                        return Ok(CodexRecordAction::Skip);
+                    }
                     let id = required_entry_key_part(&payload["id"])?;
                     entry_id("message", id)?;
-                    let text = codex_text_content(&payload["content"]);
                     Ok(CodexRecordAction::Message { id, role, text })
                 }
                 "function_call" => {
