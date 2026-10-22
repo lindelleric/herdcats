@@ -1,0 +1,10 @@
+• Queued follow-up inputs
+
+
+  Color: Pick a color
+
+  › 1. Red (Choose red)
+    2. Blue (Choose blue)
+    3. Other
+
+  enter submit   ⌃] skip   ⇧→ main prompt

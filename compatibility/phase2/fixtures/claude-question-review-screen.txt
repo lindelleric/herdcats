@@ -1,0 +1,13 @@
+←  ☒ Size  ☒ Toppings  ✔ Submit  →
+
+Review your answers
+
+ ● Pick a size
+   → Large
+ ● Pick toppings
+   → Cheese, Basil, Pepper
+
+Ready to submit your answers?
+
+❯ 1. Submit answers
+  2. Cancel

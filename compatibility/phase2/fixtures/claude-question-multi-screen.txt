@@ -1,0 +1,16 @@
+←  ☒ Size  ☒ Toppings  ✔ Submit  →
+
+Pick toppings
+
+❯ 1. [✔] Cheese
+         Add cheese
+  2. [ ] Olives
+         Add olives
+  3. [✔] Basil
+         Add basil
+  4. [ ] Type something
+     Submit
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
