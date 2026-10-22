@@ -132,7 +132,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--raw', type=Path)
     parser.add_argument('--spike-root')
-    parser.add_argument('--from-fixtures', action='store_true', help='rebuild derived Claude evidence from sanitized fixtures')
+    parser.add_argument('--from-fixtures', action='store_true', help='rebuild derived evidence from sanitized fixtures')
     args = parser.parse_args()
     if args.from_fixtures:
         outputs = {}
@@ -156,6 +156,9 @@ def main():
         rows = [json.loads(line) for line in source.splitlines()]
         outputs[prefix + '-transcript-pending.jsonl'] = dump(pending(rows, 'claude'))
         outputs[prefix + '-spool.jsonl'] = dump(claude_spool(rows))
+    notes_name = 'codex-sync-notes-screen.txt'
+    notes = outputs[notes_name] if notes_name in outputs else (ROOT / 'fixtures' / notes_name).read_text()
+    outputs['codex-sync-notes-placeholder-screen.txt'] = notes.replace('› Cheese, Basil', '› Add notes')
     # Validate every output before writing any fixture.
     for name, text in outputs.items():
         for forbidden in FORBIDDEN:
@@ -176,6 +179,8 @@ def main():
         files[name] = {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
         if name.endswith('-spool.jsonl'):
             files[name]['derived'] = 'Phase-1 PermissionRequest hook shape with phase-2 Claude question input, pseudonymous prompt_id and fixed timestamp; not a live spool capture.'
+        elif name == 'codex-sync-notes-placeholder-screen.txt':
+            files[name]['derived'] = 'Derived from codex-sync-notes-screen.txt by replacing the notes text with Add notes, matching the empty placeholder observed 2026-10-22; not a live screen capture.'
     (ROOT / 'manifest.json').write_text(json.dumps({
         'capture_kind': 'sanitized live disposable probe sessions', 'versions': versions,
         'redaction': 'Exact probe text allowlist; phase 0 pseudonymous IDs and text redaction; phase 1 record filters and anchored screen crops.',

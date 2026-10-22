@@ -304,7 +304,10 @@ pub fn pending_codex_questions(rollout: &[Value]) -> Vec<PendingQuestion> {
             if payload["type"] == "task_started" {
                 current_turn = turn(payload).map(str::to_owned);
             }
-            // Expiry/skip at turn end is inferred; those paths were not captured.
+            // observed 2026-10-22 (Codex 0.163.0): async skip writes no reply
+            // record. The model keeps sleeping and the call remains pending until
+            // turn end; the missing banner/picker prevents a card meanwhile.
+            // Expiry via turn end remains inferred rather than captured.
             if matches!(
                 payload["type"].as_str(),
                 Some("task_complete" | "turn_aborted")

@@ -116,7 +116,12 @@ fn question_response_codex_plan_runs_notes_and_waits_for_render() {
 #[test]
 fn question_response_async_opens_other_types_and_submits() {
     let (mut service, root, herdr, _) = question_fixture("codex_async");
+    {
+        let mut state = herdr.lock().unwrap();
+        state.screen = state.screen.replace("9s", "20s");
+    }
     let pending = interactions(&mut service).remove(0);
+    assert_eq!(pending["data"]["countdown"], "20s");
     let picker = question_screen_fixture("codex-async-picker");
     let other = picker.replace("› 1.", "  1.").replace("  3.", "› 3.");
     script_question(
@@ -460,7 +465,7 @@ fn question_response_final_unchanged_dialog_is_unconfirmed_without_resending() {
 }
 #[test]
 fn question_response_async_skip_from_banner_opens_then_skips() {
-    let (mut service, root, herdr, _) = question_fixture("codex_async");
+    let (mut service, root, herdr, path) = question_fixture("codex_async");
     let pending = interactions(&mut service).remove(0);
     script_question(
         &herdr,
@@ -474,6 +479,82 @@ fn question_response_async_skip_from_banner_opens_then_skips() {
     assert_eq!(
         herdr.lock().unwrap().inputs,
         vec![keys_input(&["shift+left"]), keys_input(&["ctrl+]"])]
+    );
+    let identity = service.watch.as_ref().unwrap().identity.as_ref().unwrap();
+    assert!(
+        service
+            .matched_question(identity, fs::File::open(path).unwrap(), &mut None)
+            .is_some()
+    );
+    assert!(interactions(&mut service).is_empty());
+    cleanup(&service, root);
+}
+
+fn codex_first_notes_placeholder() -> String {
+    let first = question_screen_fixture("codex-sync-first");
+    let placeholder = question_screen_fixture("codex-sync-notes-placeholder");
+    let (prefix, _) = first.split_once("  tab ").unwrap();
+    let (_, notes) = placeholder.split_once("  › Add notes").unwrap();
+    format!("{prefix}  › Add notes{notes}")
+}
+#[test]
+fn question_response_codex_plan_accepts_placeholder_and_advances_after_first_notes() {
+    let (mut service, root, herdr, _) = question_fixture("codex_plan");
+    let pending = interactions(&mut service).remove(0);
+    let placeholder = codex_first_notes_placeholder();
+    script_question(
+        &herdr,
+        vec![
+            placeholder.clone(),
+            placeholder.replace("› Add notes", "› extra cheese please"),
+            question_screen_fixture("codex-sync-last"),
+            String::new(),
+        ],
+    );
+    let emitted = respond(
+        &mut service,
+        question_params(
+            &pending,
+            json!([
+                {"index":0,"options":[1],"text":"extra cheese please"}, {"index":1,"options":[2]}
+            ]),
+        ),
+    );
+    assert_question_success(&emitted, &pending);
+    // The last digit submitted immediately; no optional Enter was sent.
+    assert_eq!(
+        herdr.lock().unwrap().inputs,
+        vec![
+            keys_input(&["tab"]),
+            text_input("extra cheese please"),
+            keys_input(&["enter"]),
+            keys_input(&["2"])
+        ]
+    );
+    cleanup(&service, root);
+}
+#[test]
+fn question_response_literal_add_notes_stops_at_the_next_text_check() {
+    let (mut service, root, herdr, _) = question_fixture("codex_plan");
+    let pending = interactions(&mut service).remove(0);
+    let placeholder = codex_first_notes_placeholder();
+    script_question(&herdr, vec![placeholder.clone(), placeholder]);
+    let emitted = respond(
+        &mut service,
+        question_params(
+            &pending,
+            json!([
+                {"index":0,"options":[1],"text":"Add notes"}, {"index":1,"options":[2]}
+            ]),
+        ),
+    );
+    assert_eq!(
+        emitted,
+        vec![json!({"id":"response","error":{"code":"stale","steps_sent":2}})]
+    );
+    assert_eq!(
+        herdr.lock().unwrap().inputs,
+        vec![keys_input(&["tab"]), text_input("Add notes")]
     );
     cleanup(&service, root);
 }

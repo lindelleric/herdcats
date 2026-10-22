@@ -92,6 +92,11 @@
       "bytes": 710,
       "sha256": "4b0807bf65135ae190ca25a089b6aad519ccd982ea1245058efe085ea0f1f9fc",
       "derived": "Phase-1 PermissionRequest hook shape with phase-2 Claude question input, pseudonymous prompt_id and fixed timestamp; not a live spool capture."
+    },
+    "codex-sync-notes-placeholder-screen.txt": {
+      "bytes": 367,
+      "sha256": "2de9d9d51c552d839eb49b02289d334d6123d64c728fb72226088e7f1fef62b9",
+      "derived": "Derived from codex-sync-notes-screen.txt by replacing the notes text with Add notes, matching the empty placeholder observed 2026-10-22; not a live screen capture."
     }
   }
 }

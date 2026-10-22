@@ -528,7 +528,11 @@ fn sync(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
                 text: {
                     let mut text_rows = vec![notes];
                     text_rows.extend_from_slice(rows.get(i + 1..rows.len().checked_sub(1)?)?);
-                    joined(&text_rows)
+                    let text = joined(&text_rows);
+                    // observed 2026-10-22: Codex 0.163.0 shows Add notes while
+                    // the active editor is empty. Literal identical input is
+                    // indistinguishable; the following typed-text check fails safe.
+                    if text == "Add notes" { String::new() } else { text }
                 },
             });
             i = rows.len().checked_sub(1)?;

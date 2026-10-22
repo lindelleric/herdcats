@@ -357,12 +357,13 @@ fn codex(
                 Input::Text(text.clone()),
                 ExpectedScreen::Dialog(state),
             );
-            // unverified: notes Enter on a non-last question advances to the next question.
+            // observed 2026-10-22: notes Enter on a non-last question advances to the next question.
             key(&mut steps, "enter", next);
         } else if index + 1 < total {
             key(&mut steps, number.to_string(), next);
         } else {
-            // unverified: last digit may submit immediately or leave k highlighted. Never send Enter after disappearance.
+            // observed 2026-10-22: the last digit submits immediately; the only_if Enter is skipped.
+            // unverified: retain the guarded fallback if the last picker instead remains selected.
             state.unanswered = Some(0..=1);
             key(
                 &mut steps,
@@ -385,6 +386,7 @@ fn asynchronous(
 ) -> Result<Vec<Step>> {
     let mut steps = Vec::new();
     if screen.step == QuestionStep::AsyncQueued {
+        // observed 2026-10-22: shift+left opens the queued picker (including a 20s countdown).
         key(
             &mut steps,
             "shift+left",
@@ -395,7 +397,7 @@ fn asynchronous(
         );
     }
     let Some(answers) = answers else {
-        // unverified: async skip shortcut from the open picker.
+        // observed 2026-10-22: ctrl+] closes the open picker and confirms async skip.
         key(&mut steps, "ctrl+]", ExpectedScreen::Gone);
         return Ok(steps);
     };
@@ -404,7 +406,8 @@ fn asynchronous(
     let number = answer.options.first().copied().unwrap_or(other);
     let mut state = dialog(QuestionStep::AsyncPicker(0), QuestionCursor::Option(number));
     state.text_active = answer.text.is_some();
-    // unverified: numbered ordinary options use the same digit/Enter path captured for Other.
+    // observed 2026-10-22: Other digit, typed text, then Enter delivers Green and resolves.
+    // unverified: numbered ordinary options use the same digit/Enter path.
     key(
         &mut steps,
         number.to_string(),

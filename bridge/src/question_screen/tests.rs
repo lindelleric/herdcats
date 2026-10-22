@@ -976,3 +976,30 @@ fn markers_inside_typed_text_never_truncate_a_successful_parse() {
         }
     }
 }
+
+#[test]
+fn codex_plan_add_notes_placeholder_is_empty_but_similar_typed_notes_are_preserved() {
+    let request = pending(QuestionKind::CodexPlan);
+    let screen = include_str!(
+        "../../../compatibility/phase2/fixtures/codex-sync-notes-placeholder-screen.txt"
+    );
+    let parsed = parse(request.kind, screen, &request).unwrap();
+    assert_eq!(parsed.cursor, Some(QuestionCursor::Notes));
+    assert_eq!(parsed.highlighted, Some(1));
+    assert_eq!(
+        parsed.free_text,
+        Some(FreeText {
+            active: true,
+            text: String::new()
+        })
+    );
+    assert!(!parsed.is_fresh(&request));
+    for notes in [
+        "Add notes please",
+        "Add  notes",
+        "Add notes\n     more text",
+    ] {
+        let parsed = parse(request.kind, &screen.replace("Add notes", notes), &request).unwrap();
+        assert!(!parsed.free_text.unwrap().text.is_empty());
+    }
+}

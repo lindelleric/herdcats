@@ -36,7 +36,8 @@ class QuestionEvidence(unittest.TestCase):
         self.assertEqual(manifest['versions']['claude'], '2.1.307')
         self.assertEqual(manifest['versions']['codex'], '0.163.0')
         self.assertEqual(set(manifest['files']), {p.name for p in (ROOT / 'fixtures').iterdir()})
-        self.assertEqual(len(manifest['files']), 21)
+        self.assertEqual(len(manifest['files']), 22)
+        self.assertIn('not a live screen capture', manifest['files']['codex-sync-notes-placeholder-screen.txt']['derived'])
         for name in ('claude-question-spool.jsonl', 'claude-question-one-spool.jsonl'):
             self.assertIn('not a live spool capture', manifest['files'][name]['derived'])
         for name, entry in manifest['files'].items():
@@ -170,9 +171,16 @@ class QuestionEvidence(unittest.TestCase):
         turn = request['internal_chat_message_metadata_passthrough']['turn_id']
         self.assertFalse(any(r.get('payload', {}).get('type') in {'task_complete', 'turn_aborted'}
                              and r['payload'].get('turn_id') == turn for r in pending))
-        # Expiry/skip via task_complete or turn_aborted is inferred, not captured.
+        # These captures show an answered async call. Live skip (observed 2026-10-22)
+        # writes no reply and remains pending until turn end; expiry remains inferred.
         self.assertTrue(any(r.get('payload', {}).get('type') == 'task_complete'
                             and r['payload'].get('turn_id') == turn for r in rows))
+
+    def test_codex_notes_placeholder_is_derived_from_notes_capture(self):
+        notes = (ROOT / 'fixtures/codex-sync-notes-screen.txt').read_text()
+        placeholder = (ROOT / 'fixtures/codex-sync-notes-placeholder-screen.txt').read_text()
+        self.assertEqual(placeholder, notes.replace('› Cheese, Basil', '› Add notes'))
+        self.assertIn('› Add notes', placeholder)
 
     def test_screen_evidence(self):
         expected = {
@@ -183,6 +191,7 @@ class QuestionEvidence(unittest.TestCase):
             'codex-sync-first': ['Question 1/2 (2 unanswered)', 'None of the above', 'enter to submit answer'],
             'codex-sync-last': ['Question 2/2 (1 unanswered)', 'enter to submit all'],
             'codex-sync-notes': ['› Cheese, Basil', 'tab or esc to clear notes'],
+            'codex-sync-notes-placeholder': ['› Add notes', 'tab or esc to clear notes'],
             'codex-async-queued': ['? 1 question · 9s', '⇧← to answer'],
             'codex-async-picker': ['Color: Pick a color', '› 1. Red (Choose red)', '3. Other', '⌃] skip'],
             'codex-async-other': ['› 3. Green', 'enter submit', '⇧→ main prompt'],
