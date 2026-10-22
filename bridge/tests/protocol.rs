@@ -746,6 +746,10 @@ fn protocol_documents_approval_capability_request_and_event_fields() {
     assert_eq!(protocol["protocol"], 1);
     assert_eq!(protocol["bridge_version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(protocol["capabilities"]["approvals"], true);
+    let initialize = protocol["requests"].as_array().unwrap().iter()
+        .find(|request| request["method"] == "initialize").unwrap();
+    assert!(initialize["params"]["approvals"].as_str().unwrap().contains("false by default"));
+    assert!(protocol["approval_policy"]["capability"].as_str().unwrap().contains("initialize params.approvals"));
     for capability in ["prompts", "questions"] {
         assert_eq!(protocol["capabilities"][capability], false);
     }
@@ -765,7 +769,7 @@ fn protocol_documents_approval_capability_request_and_event_fields() {
     for field in ["number", "label_lines", "key"] {
         assert!(protocol["events"]["interaction.pending"]["option_fields"].get(field).is_some());
     }
-    for error in ["stale", "mismatch"] {
+    for error in ["stale", "mismatch", "unsupported_capability"] {
         assert!(protocol["errors"].as_array().unwrap().contains(&json!(error)));
         assert!(respond["errors"].get(error).is_some());
     }

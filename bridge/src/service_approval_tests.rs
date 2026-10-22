@@ -1,6 +1,7 @@
 // Included inside service::tests to share the fake Herdr and private service API.
 fn approval_fixture(agent: &str) -> (Service, PathBuf, SharedHerdr, Value, PathBuf) {
     let (mut service, root, session, herdr) = fixture_with_herdr();
+    service.include_approvals = true;
     let (hooks, source, screen) = if agent == "claude" {
         (
             include_str!("../../compatibility/phase1/fixtures/claude-hooks.jsonl"),
@@ -641,4 +642,24 @@ fn approval_match_cache_skips_tail_and_invalidates_on_either_input_change() {
     );
     assert!(cache.is_none());
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn approvals_require_client_opt_in() {
+    let (mut service, root, herdr, _, _) = approval_fixture("claude");
+    let mut out = Vec::new();
+    service.request(br#"{"id":"i","method":"initialize","params":{"protocol":1}}"#, &mut out).unwrap();
+    assert_eq!(frames(out)[0]["result"]["capabilities"]["approvals"], true);
+    service.request(br#"{"id":"w","method":"watch","params":{"pane_id":"w1:p1"}}"#, &mut Vec::new()).unwrap();
+    let reads = herdr.lock().unwrap().reads;
+    assert!(interactions(&mut service).is_empty());
+    assert_eq!(herdr.lock().unwrap().reads, reads);
+    let mut out = Vec::new();
+    service.request(br#"{"id":"r","method":"interaction.respond","params":{}}"#, &mut out).unwrap();
+    assert_eq!(frames(out)[0]["error"]["code"], "unsupported_capability");
+    let mut out = Vec::new();
+    service.request(br#"{"id":"i","method":"initialize","params":{"protocol":1,"approvals":true}}"#, &mut out).unwrap();
+    service.request(br#"{"id":"w","method":"watch","params":{"pane_id":"w1:p1"}}"#, &mut out).unwrap();
+    assert!(frames(out).iter().any(|f| f["event"] == "interaction.pending"));
+    cleanup(&service, root);
 }

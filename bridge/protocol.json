@@ -32,7 +32,8 @@
       "method": "initialize",
       "params": {
         "protocol": 1,
-        "record_content": "optional bool; false by default for older clients"
+        "record_content": "optional bool; false by default for older clients",
+        "approvals": "optional bool; false by default; opts into interaction events and responses"
       },
       "result_fields": [
         "protocol",
@@ -110,7 +111,7 @@
         "sent": "string; exactly one Claude digit shortcut, Codex letter shortcut, or esc; never Enter",
         "confirmed": "boolean; true when the visible screen no longer parses as the same dialog; false if it remains or confirmation reads fail"
       },
-      "requires": "initialize and a watch with a resolved native identity; approvals capability is true for both Claude and Codex",
+      "requires": "initialize with params.approvals true and a watch with a resolved native identity; approvals capability is true for both Claude and Codex",
       "validation": [
         "The request_id must equal the last emitted pending approval for the current watch identity and generation.",
         "Re-read the visible screen and parse with the same hook command; dialog content and option keys must match the emitted dialog. A highlight-only change is allowed.",
@@ -119,6 +120,7 @@
         "A fresh Herdr snapshot must still show the same native occupant blocked in the same pane and terminal."
       ],
       "errors": {
+        "unsupported_capability": "Client did not opt in with initialize params.approvals true.",
         "not_watching": "No active watch.",
         "timeline_unavailable": "The watch has no resolved identity or its timeline is unavailable.",
         "stale": "No matching emitted request, changed/unreadable dialog or source, resolved/aborted or superseded call, or changed/unblocked/missing pane. No keys are sent.",
@@ -338,6 +340,6 @@
     "eligibility": "Require all three: a spool record correlated to a still-pending native call, Herdr agent_status blocked, and exactly one dialog parsed from source visible anchored to the hook command. Never use scrollback/recent text or guess an uncorrelated request.",
     "bounds": "Keep every pending frame below wire_frame_bytes. Suppress an oversized approval instead of truncating command, metadata or labels.",
     "input_failures": "Approval spool/screen/tail read failures yield no card and do not themselves emit timeline.unavailable. Same-identity timeline source_changing retries preserve an already emitted card until verification can resume.",
-    "capability": "approvals: true advertises bridge support for Claude and Codex (unreleased until 0.3.0; clients must gate on this capability, not on bridge_version); cards still require installed recording hooks and verified live inputs. prompts and questions remain false."
+    "capability": "approvals: true advertises bridge support for Claude and Codex; initialize params.approvals must be true to enable interaction events, responses and approval reads (unreleased until 0.3.0; clients must gate on this capability, not on bridge_version); cards still require installed recording hooks and verified live inputs. prompts and questions remain false."
   }
 }

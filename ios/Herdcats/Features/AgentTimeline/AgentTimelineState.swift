@@ -9,6 +9,7 @@ import Observation
         case unavailable(String)
         case disconnected
     }
+    private(set) var pendingApproval: AgentPendingApproval?
     private(set) var entries: [AgentTimelineEntry] = []
     private(set) var identity: AgentTimelineIdentity?
     private(set) var phase: Phase = .loading
@@ -108,6 +109,21 @@ import Observation
             droppedEntries = data.droppedEntries ?? droppedEntries
             delayed = data.delayed ?? delayed
             revision += 1
+        case "interaction.pending":
+            guard phase == .ready, data.identity == identity, data.generation == generation else {
+                throw AgentBridgeError.identityMismatch
+            }
+            pendingApproval = try AgentPendingApproval.decode(data)
+            revision += 1
+        case "interaction.resolved":
+            guard let requestId = data.requestId, !requestId.isEmpty, requestId.utf8.count <= 264 else {
+                throw AgentBridgeError.invalidFrame
+            }
+            if let pending = pendingApproval, pending.requestId == requestId,
+                pending.identity == data.identity, pending.generation == data.generation {
+                pendingApproval = nil
+                revision += 1
+            }
         default: throw AgentBridgeError.invalidFrame
         }
     }
@@ -134,6 +150,7 @@ import Observation
         phase = error == .closed ? .disconnected : .unavailable(error.code)
     }
     private func clear() {
+        pendingApproval = nil
         evictedIds.removeAll()
         entries = []
         identity = nil

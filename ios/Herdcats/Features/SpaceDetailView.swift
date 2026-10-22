@@ -1389,7 +1389,8 @@ struct PaneSessionView: View {
                         onSetupComplete: {
                             let key = TimelineSetupPreference.key(scope: connectionScope)
                             if UserDefaults.standard.bool(forKey: key) { UserDefaults.standard.removeObject(forKey: key) }
-                        }
+                        },
+                        onFocusComposer: focusApprovalComposer
                     )
                 } else {
                     outputScrollView
@@ -1624,6 +1625,16 @@ struct PaneSessionView: View {
     }
 
     // MARK: Live input
+
+    private func focusApprovalComposer() {
+        if surfaceModel.surface == .voiceRecording {
+            finishVoice()
+            return
+        }
+        surfaceModel.requestComposeDraft()
+        dismissLiveKeyboard()
+        composeFieldFocused = true
+    }
 
     private func openCompose() {
         guard surfaceModel.requestComposeDraft() else { return }

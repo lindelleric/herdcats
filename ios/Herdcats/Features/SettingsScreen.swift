@@ -6,6 +6,11 @@ import UIKit
 struct SettingsScreen: View {
     @Environment(AppModel.self) var appModel
     @Bindable var model: SpacesModel
+    @Environment(\.scenePhase) var scenePhase
+    @State var settingsVisible = false
+    @State var phoneAnswersCapability = false
+    @State var phoneAnswersChecking = false
+    @State var phoneAnswersSelection: PhoneAnswersSelection?
     @State var paneContentPolicy = PaneContentPersistence.shared
     @State var confirmDisablePaneSaving = false
     @State var confirmClearPaneContent = false
@@ -152,6 +157,7 @@ struct SettingsScreen: View {
                 soundSection
                 launchSection
                 connectionSection
+                phoneAnswersSection
                 versionSection
 
             }
@@ -191,6 +197,13 @@ struct SettingsScreen: View {
                 Text(
                     "Erases all saved drafts and command history across all remote machines from this iPhone. Remote terminal panes are not affected."
                 )
+            }
+            .onAppear { settingsVisible = true }
+            .onDisappear { settingsVisible = false }
+            .task(id: phoneAnswersScreenKey) { await preparePhoneAnswersSettings() }
+            .sheet(item: $phoneAnswersSelection) { selection in
+                PhoneAnswersSheet(selection: selection, connection: appModel.connection, store: appModel.phoneAnswers,
+                    isCurrent: { phoneAnswersContextIsCurrent(selection.key) })
             }
             .connectionStatusBanner(appModel: appModel)
             #if DEBUG

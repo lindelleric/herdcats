@@ -27,6 +27,8 @@ enum ScreenshotFixtures {
         }
     }
     static var paneAgent: String {
+        if screen == "timeline-approval-codex" { return "codex" }
+        if screen == "timeline-approval-claude" { return "claude" }
         let args = ProcessInfo.processInfo.arguments
         guard let index = args.firstIndex(of: "-hc.agent"), index + 1 < args.count else { return "claude" }
         return args[index + 1]

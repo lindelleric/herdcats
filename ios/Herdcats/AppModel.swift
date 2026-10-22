@@ -28,6 +28,7 @@ final class AppModel {
     /// Production ownership primitive — unit tests exercise this same type.
     var ownership = ConnectionSessionOwnership()
 
+    let phoneAnswers = PhoneAnswersStore()
     let connection: HerdrConnection
     weak var gatewayModel: AppModel?
     var selectedMachine: HerdrMachine?

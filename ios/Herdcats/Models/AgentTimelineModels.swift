@@ -62,6 +62,7 @@ struct AgentBridgeCapabilities: Codable, Equatable, Sendable {
     var codexTimeline: Bool? = false
     var codexDaemonConfig: Bool? = false
     var codexDaemonStop: Bool? = false
+    var approvals: Bool? = nil
     var recordContent: Bool? = nil
 
     init(
@@ -69,12 +70,14 @@ struct AgentBridgeCapabilities: Codable, Equatable, Sendable {
         codexTimeline: Bool? = false,
         codexDaemonConfig: Bool? = false,
         codexDaemonStop: Bool? = false,
-        recordContent: Bool? = nil
+        recordContent: Bool? = nil,
+        approvals: Bool? = nil
     ) {
         self.claudeTimeline = claudeTimeline
         self.codexTimeline = codexTimeline
         self.codexDaemonConfig = codexDaemonConfig
         self.codexDaemonStop = codexDaemonStop
+        self.approvals = approvals
         self.recordContent = recordContent
     }
 
@@ -84,6 +87,7 @@ struct AgentBridgeCapabilities: Codable, Equatable, Sendable {
         self.codexTimeline = try container.decodeIfPresent(Bool.self, forKey: .codexTimeline) ?? false
         self.codexDaemonConfig = try container.decodeIfPresent(Bool.self, forKey: .codexDaemonConfig) ?? false
         self.codexDaemonStop = try container.decodeIfPresent(Bool.self, forKey: .codexDaemonStop) ?? false
+        self.approvals = try container.decodeIfPresent(Bool.self, forKey: .approvals)
         self.recordContent = try container.decodeIfPresent(Bool.self, forKey: .recordContent)
     }
 }
@@ -206,6 +210,19 @@ struct AgentBridgePayload: Codable, Sendable {
     var nextOffset: Int?
     var total: Int?
     var hex: String?
+    var requestId: String?
+    var kind: String?
+    var agent: String?
+    var toolName: String?
+    var command: String?
+    var description: String?
+    var justification: String?
+    var environment: String?
+    var title: String?
+    var options: [AgentApprovalOption]?
+    var selected: Int?
+    var sent: String?
+    var confirmed: Bool?
 }
 struct AgentBridgeRemoteError: Codable, Sendable { let code: String }
 struct AgentBridgeFrame: Decodable, Sendable {

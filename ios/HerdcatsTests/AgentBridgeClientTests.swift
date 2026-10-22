@@ -139,6 +139,59 @@ struct AgentBridgeClientTests {
             Issue.record("routed stream accepted")
         } catch { #expect(error as? AgentBridgeError == .routedHostUnsupported) }
     }
+    @Test func handshakeOptsIntoApprovals() async throws {
+        let wire = BridgeTestWire()
+        let client = AgentBridgeClient(write: { await wire.write($0) }, close: { await wire.close() }, onEvent: { _ in })
+        let task = Task { try await client.performHandshakeAndWatch(paneId: "p1") }
+        try await wait(wire)
+        let bytes = await wire.commands[0]
+        let request = try #require(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+        #expect(request["params"] as? NSDictionary == ["protocol": 1, "record_content": true, "approvals": true] as NSDictionary)
+        let id = try await wire.requestId()
+        await client.receive(Data("{\"id\":\"\(id)\",\"result\":{\"protocol\":1,\"epoch\":\"e\",\"capabilities\":{\"claude_timeline\":true,\"record_content\":true,\"approvals\":true}}}\n".utf8))
+        for _ in 0..<500 {
+            if await wire.commands.count == 2 { break }
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        #expect(await wire.commands.count == 2)
+        let watchId = try await wire.requestId()
+        await client.receive(Data("{\"id\":\"\(watchId)\",\"result\":{}}\n".utf8))
+        try await task.value
+        #expect(await client.capabilities?.approvals == true)
+        await client.close()
+    }
+    @Test func approvalResponseUsesExactRowsAndDecodesConfirmation() async throws {
+        for confirmed in [true, false] {
+            let wire = BridgeTestWire()
+            let client = AgentBridgeClient(write: { await wire.write($0) }, close: { await wire.close() }, onEvent: { _ in })
+            let task = Task { try await client.respond(requestId: "approval", option: 2, labelLines: ["Yes", "for this session"]) }
+            try await wait(wire)
+            let bytes = await wire.commands[0]
+            let request = try #require(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+            #expect(request["method"] as? String == "interaction.respond")
+            #expect(request["params"] as? NSDictionary == ["request_id": "approval", "option": 2, "label_lines": ["Yes", "for this session"]] as NSDictionary)
+            let id = try await wire.requestId()
+            await client.receive(Data("{\"id\":\"\(id)\",\"result\":{\"request_id\":\"approval\",\"sent\":\"a\",\"confirmed\":\(confirmed)}}\n".utf8))
+            #expect(try await task.value == AgentApprovalResponse(requestId: "approval", sent: "a", confirmed: confirmed))
+            await client.close()
+        }
+    }
+    @Test func approvalResponseErrorsKeepDistinctCodes() async throws {
+        for code in ["stale", "mismatch", "unsupported_capability", "not_watching", "timeline_unavailable"] {
+            let wire = BridgeTestWire()
+            let client = AgentBridgeClient(write: { await wire.write($0) }, close: { await wire.close() }, onEvent: { _ in })
+            let task = Task { try await client.respond(requestId: "approval", option: 1, labelLines: ["Yes"]) }
+            try await wait(wire)
+            let id = try await wire.requestId()
+            await client.receive(Data("{\"id\":\"\(id)\",\"error\":{\"code\":\"\(code)\"}}\n".utf8))
+            do {
+                _ = try await task.value
+                Issue.record("Approval refusal accepted")
+            } catch { #expect((error as? AgentBridgeError)?.code == code) }
+            #expect(await wire.closes == 0)
+            await client.close()
+        }
+    }
     private func wait(_ wire: BridgeTestWire) async throws {
         for _ in 0..<500 {
             if await !wire.commands.isEmpty { return }
