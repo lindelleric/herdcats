@@ -129,8 +129,32 @@ import Testing
         #expect(state.phase == .stale && !state.canSubmit)
         state.reset(); state.sync(try pending("codex_async"))
         let skip = try #require(state.begin(skip: true)); state.succeed(token: skip, confirmed: false)
-        #expect(state.phase == .confirmed && state.isDisabled)
+        #expect(state.phase == .sent && state.isDisabled)
         state.reset(); state.sync(try pending(extra: ["fresh": false])); #expect(state.isDisabled)
+    }
+    @Test func completedRepliesStayDisabledAndUnconfirmedRepliesShowWaitingMessage() throws {
+        for confirmed in [false, true] {
+            let state = QuestionAnswerState(); state.sync(try pending())
+            state.select(question: 0, option: 1)
+            let token = try #require(state.begin())
+            state.succeed(token: token, confirmed: confirmed)
+            #expect(state.phase == (confirmed ? .confirmed : .sent))
+            #expect(state.isDisabled)
+            #expect(!state.canSubmit)
+            #expect(state.message == (confirmed ? nil : "Sent. Waiting for the terminal…"))
+            #expect(state.begin() == nil)
+        }
+    }
+    @Test func phoneSendPhaseWinsOverFreshnessUpdates() throws {
+        let state = QuestionAnswerState(); state.sync(try pending())
+        state.select(question: 0, option: 1)
+        let token = try #require(state.begin())
+        state.sync(try pending(extra: ["fresh": false]))
+        #expect(state.phase == .sending)
+        #expect(state.message == nil)
+        state.succeed(token: token, confirmed: false)
+        #expect(state.phase == .sent)
+        #expect(state.message == "Sent. Waiting for the terminal…")
     }
     @Test func blankTextIsOmittedBesideOptions() throws {
         let state = QuestionAnswerState(); state.sync(try pending("codex_plan"))

@@ -2,22 +2,23 @@ import Foundation
 import Observation
 
 @MainActor @Observable final class QuestionAnswerState {
-    enum Phase: Equatable { case idle, sending, confirmed, inProgress, stale, failed(String) }
+    enum Phase: Equatable { case idle, sending, confirmed, sent, inProgress, stale, failed(String) }
     private(set) var pending: AgentPendingQuestion?
     private(set) var phase: Phase = .idle
     private(set) var selections: [Int: Set<UInt32>] = [:]
     private(set) var texts: [Int: String] = [:]
     private var operation: UUID?
 
-    var isDisabled: Bool { pending?.fresh != true || [.sending, .confirmed, .inProgress, .stale].contains(phase) }
+    var isDisabled: Bool { pending?.fresh != true || [.sending, .confirmed, .sent, .inProgress, .stale].contains(phase) }
     var canSubmit: Bool { !isDisabled && answers != nil }
     var message: String? {
-        if pending?.fresh == false { return "Started in Terminal, finish it there." }
         switch phase {
+        case .idle: return pending?.fresh == false ? "Started in Terminal, finish it there." : nil
+        case .sent: return "Sent. Waiting for the terminal…"
         case .inProgress: return "Started in Terminal, finish it there."
         case .stale: return "Couldn't finish from the phone. The terminal shows where it stopped."
         case .failed(let message): return message
-        default: return nil
+        case .sending, .confirmed: return nil
         }
     }
     static func isVisible(pending: AgentPendingQuestion?, questions: Bool?) -> Bool { questions == true && pending != nil }
@@ -73,7 +74,7 @@ import Observation
         guard operation == token else { return }
         operation = nil
         // Even an unconfirmed response may have sent input. Never permit a resend.
-        phase = .confirmed
+        phase = confirmed ? .confirmed : .sent
     }
     func fail(token: UUID, error: AgentBridgeError) {
         guard operation == token else { return }
