@@ -479,13 +479,13 @@ fn codex_notes_continuations_are_joined_up_to_footer() {
     let (kind, screen) = fixtures()[6];
     let request = pending(kind);
     for (notes, expected) in [
-        ("› Cheese,\n    Basil", "Cheese, Basil"),
+        ("› Cheese,\n     Basil", "Cheese, Basil"),
         (
-            "› Cheese,\n    Basil and\n    extra toppings",
+            "› Cheese,\n     Basil and\n     extra toppings",
             "Cheese, Basil and extra toppings",
         ),
         (
-            "›\n    Continued after empty marker\n    on another row",
+            "›\n     Continued after empty marker\n     on another row",
             "Continued after empty marker on another row",
         ),
         ("›", ""),
@@ -669,5 +669,67 @@ fn identical_question_text_requires_exactly_one_full_option_match() {
         );
         request.questions[1].options[0].label = "Wrong second candidate".into();
         assert!(parse(kind, screen, &request).is_none());
+    }
+}
+
+#[test]
+fn structured_content_can_look_like_terminal_controls() {
+    for (index, from, description) in [
+        (0, "Choose small", "2. Restart the service"),
+        (0, "Choose small", "────────────────────────"),
+        (4, "Choose a small size.", "› note"),
+    ] {
+        let (kind, screen) = fixtures()[index];
+        let mut request = pending(kind);
+        request.questions[0].options[0].description = Some(description.into());
+        let updated = screen.replace(from, description);
+        let parsed = parse(kind, &updated, &request).unwrap();
+        assert_eq!(parsed.options[0].description.as_deref(), Some(description));
+    }
+    // A control-looking title continuation is also consumed by structured text.
+    let (kind, screen) = fixtures()[0];
+    let mut request = pending(kind);
+    request.questions[0].text = "Pick a size 2. Restart the service".into();
+    assert!(
+        parse(
+            kind,
+            &screen.replace("Pick a size", "Pick a size\n  2. Restart the service"),
+            &request
+        )
+        .is_some()
+    );
+}
+
+#[test]
+fn typed_control_lookalikes_use_continuation_indentation() {
+    for (index, from, to, expected) in [
+        (
+            2,
+            "❯ 4. [✔] Pepper",
+            "❯ 4. [✔] Pepper\n         Submit later",
+            "Pepper Submit later",
+        ),
+        (
+            9,
+            "› 3. Green",
+            "› 3. Green\n       3. another thought",
+            "Green 3. another thought",
+        ),
+    ] {
+        let (kind, screen) = fixtures()[index];
+        let request = pending(kind);
+        let updated = screen.replace(from, to);
+        assert_eq!(
+            parse(kind, &updated, &request)
+                .unwrap()
+                .free_text
+                .unwrap()
+                .text,
+            expected
+        );
+        let ambiguous = updated
+            .replace("         Submit later", "  Submit later")
+            .replace("       3. another thought", "    3. another thought");
+        assert!(parse(kind, &ambiguous, &request).is_none());
     }
 }

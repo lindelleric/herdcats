@@ -96,14 +96,47 @@ fn notes_text(row: &str) -> Option<&str> {
     }
 }
 
-// Consume visual continuations, keeping control rows outside the text span.
-fn option_end(rows: &[&str], start: usize, limit: usize) -> usize {
+fn indent(row: &str) -> usize {
+    row.chars().take_while(|c| c.is_whitespace()).count()
+}
+
+// Consume known content by its structured value, even when it resembles a control.
+fn known_end(rows: &[&str], start: usize, first: &str, expected: &str) -> Option<usize> {
+    let target = compact(expected);
+    let mut seen = compact(first);
+    let mut end = start + 1;
+    loop {
+        if seen == target {
+            return Some(end);
+        }
+        if !target.starts_with(&seen) {
+            return None;
+        }
+        seen.push_str(&compact(rows.get(end)?));
+        end += 1;
+    }
+}
+
+fn title_end(rows: &[&str], start: usize, expected: &str) -> Option<usize> {
+    let mut end = known_end(rows, start, rows.get(start)?, expected)?;
+    while rows.get(end).is_some_and(|r| r.trim().is_empty()) {
+        end += 1;
+    }
+    Some(end)
+}
+
+// Unknown typed text can continue only deeper than the option-number column.
+fn option_end(rows: &[&str], start: usize, limit: usize, multi: bool) -> usize {
+    let column = indent(rows[start])
+        + if numbered(rows[start]).is_some_and(|(_, _, selected)| selected) {
+            2
+        } else {
+            0
+        };
     (start + 1..limit)
         .find(|&i| {
-            numbered(rows[i]).is_some()
-                || submit(rows[i])
-                || rule(rows[i])
-                || notes_text(rows[i]).is_some()
+            !rows[i].trim().is_empty()
+                && (indent(rows[i]) <= column || (multi && indent(rows[i]) == 5 && submit(rows[i])))
         })
         .unwrap_or(limit)
 }
@@ -175,13 +208,14 @@ fn claude(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
             .then(|| review(rows, title, pending))
             .flatten();
     }
-    let first_option = (title + 1..rows.len()).find(|&i| numbered(rows[i]).is_some())?;
     let mut matches = pending
         .questions
         .iter()
         .enumerate()
-        .filter(|(_, q)| rows_equal(&rows[title..first_option], &q.text))
-        .filter_map(|(index, q)| claude_question(rows, first_option, title, index, q));
+        .filter_map(|(index, q)| {
+            let first_option = title_end(rows, title, &q.text)?;
+            claude_question(rows, first_option, index, q)
+        });
     let chosen = matches.next()?;
     if matches.next().is_some() {
         None
@@ -193,20 +227,26 @@ fn claude(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
 fn claude_question(
     rows: &[&str],
     first_option: usize,
-    title: usize,
     index: usize,
     q: &Question,
 ) -> Option<QuestionScreen> {
     let mut dialog = result(QuestionStep::ClaudeQuestion(index));
-    let divider = (title + 1..rows.len()).find(|&i| rule(rows[i]))?;
+    let mut divider = None;
     let mut submitted = false;
     let mut i = first_option;
-    while i < divider {
+    while i < rows.len() {
+        if rule(rows[i]) && indent(rows[i]) == 0 {
+            divider = Some(i);
+            break;
+        }
         if rows[i].trim().is_empty() {
             i += 1;
             continue;
         }
-        if rows[i].trim().trim_start_matches('❯').trim() == "Submit" && q.multi_select {
+        if submit(rows[i]) && q.multi_select {
+            if indent(rows[i]) != 5 && !rows[i].starts_with("❯    Submit") {
+                return None;
+            }
             if submitted || dialog.options.len() != q.options.len() + usize::from(q.allows_other) {
                 return None;
             }
@@ -218,6 +258,9 @@ fn claude_question(
             continue;
         }
         let (number, mut label, selected) = numbered(rows[i])?;
+        if indent(rows[i]) != if selected { 0 } else { 2 } {
+            return None;
+        }
         if number as usize != dialog.options.len() + 1 {
             return None;
         }
@@ -232,24 +275,23 @@ fn claude_question(
         } else {
             None
         };
-        let end = option_end(rows, i, divider);
+        let end;
         let mut description = None;
         if let Some(option) = q.options.get(dialog.options.len()) {
             if label != option.label {
                 return None;
             }
-            if let Some(expected) = &option.description {
-                if !rows_equal(&rows[i + 1..end], expected) {
-                    return None;
-                }
+            end = if let Some(expected) = &option.description {
                 description = Some(expected.clone());
-            } else if !rows_equal(&rows[i + 1..end], "") {
-                return None;
-            }
+                known_end(rows, i + 1, rows.get(i + 1)?, expected)?
+            } else {
+                i + 1
+            };
         } else {
             if dialog.options.len() != q.options.len() || !q.allows_other {
                 return None;
             }
+            end = option_end(rows, i, rows.len(), q.multi_select);
             let placeholder = if q.multi_select {
                 "Type something"
             } else {
@@ -284,6 +326,7 @@ fn claude_question(
     if dialog.options.len() != q.options.len() + usize::from(q.allows_other) {
         return None;
     }
+    let divider = divider?;
     let after: Vec<_> = rows[divider + 1..]
         .iter()
         .filter(|r| !r.trim().is_empty())
@@ -374,10 +417,7 @@ fn sync(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
     }
     let q = &pending.questions[index - 1];
     let title = (1..rows.len()).find(|&i| !rows[i].trim().is_empty())?;
-    let first_option = (title + 1..rows.len()).find(|&i| numbered(rows[i]).is_some())?;
-    if !rows_equal(&rows[title..first_option], &q.text) {
-        return None;
-    }
+    let first_option = title_end(rows, title, &q.text)?;
     let mut dialog = result(QuestionStep::CodexQuestion {
         index: index - 1,
         total,
@@ -390,30 +430,27 @@ fn sync(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
             continue;
         }
         if let Some((number, label, selected)) = numbered(row) {
+            if indent(row) != if selected { 2 } else { 4 } {
+                return None;
+            }
             if number as usize != dialog.options.len() + 1 {
                 return None;
             }
-            let end = option_end(rows, i, rows.len() - 1);
-            let mut text_rows = vec![label];
-            text_rows.extend_from_slice(&rows[i + 1..end]);
+            let end;
             let (label, description) = if let Some(option) = q.options.get(dialog.options.len()) {
                 let expected = format!(
                     "{}{}",
                     option.label,
                     option.description.as_deref().unwrap_or("")
                 );
-                if !rows_equal(&text_rows, &expected) {
-                    return None;
-                }
+                end = known_end(rows, i, label, &expected)?;
                 (option.label.clone(), option.description.clone())
             } else {
                 if dialog.options.len() != q.options.len() || !q.allows_other {
                     return None;
                 }
                 let description = "Optionally, add details in notes (tab)";
-                if !rows_equal(&text_rows, &format!("None of the above{description}")) {
-                    return None;
-                }
+                end = known_end(rows, i, label, &format!("None of the above{description}"))?;
                 ("None of the above".into(), Some(description.into()))
             };
             if selected {
@@ -428,11 +465,20 @@ fn sync(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
             i = end;
         } else {
             let notes = notes_text(row)?;
+            if indent(row) != 2 {
+                return None;
+            }
             // Notes can be active while an option remains highlighted.
             if dialog
                 .free_text
                 .as_ref()
                 .is_some_and(|f: &FreeText| f.active)
+            {
+                return None;
+            }
+            if rows[i + 1..rows.len() - 1]
+                .iter()
+                .any(|r| !r.trim().is_empty() && indent(r) <= 4)
             {
                 return None;
             }
@@ -463,11 +509,11 @@ fn sync(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
 fn asynchronous(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
     let body: Vec<_> = rows[1..]
         .iter()
-        .map(|r| r.trim())
-        .filter(|r| !r.is_empty())
+        .copied()
+        .filter(|r| !r.trim().is_empty())
         .collect();
-    if let Some(notice) = body.first()?.strip_prefix("? ") {
-        if body.len() != 2 || body[1] != "⇧← to answer" {
+    if let Some(notice) = body.first()?.trim().strip_prefix("? ") {
+        if body.len() != 2 || body[1].trim() != "⇧← to answer" {
             return None;
         }
         let (count, countdown) = notice.split_once(" · ")?;
@@ -486,13 +532,14 @@ fn asynchronous(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScre
         dialog.queued_count = Some(count);
         return Some(dialog);
     }
-    let first_option = (0..body.len()).find(|&i| numbered(body[i]).is_some())?;
     let mut matches = pending
         .questions
         .iter()
         .enumerate()
-        .filter(|(_, q)| rows_equal(&body[..first_option], &q.text))
-        .filter_map(|(index, q)| async_picker(&body, first_option, index, q));
+        .filter_map(|(index, q)| {
+            let first_option = title_end(&body, 0, &q.text)?;
+            async_picker(&body, first_option, index, q)
+        });
     let chosen = matches.next()?;
     if matches.next().is_some() {
         None
@@ -511,7 +558,14 @@ fn async_picker(
     let mut i = first_option;
     while i < body.len() - 1 {
         let (number, label, selected) = numbered(body[i])?;
-        let end = option_end(body, i, body.len() - 1);
+        if indent(body[i]) != if selected { 2 } else { 4 } {
+            return None;
+        }
+        let end = if let Some(option) = q.options.get(dialog.options.len()) {
+            known_end(body, i, label, &option.label)?
+        } else {
+            option_end(body, i, body.len() - 1, false)
+        };
         let mut text_rows = vec![label];
         text_rows.extend_from_slice(&body[i + 1..end]);
         let visible_label = joined(&text_rows);
@@ -716,9 +770,9 @@ fn anchor_rows(screen: &str, pending: &PendingQuestion) -> (Vec<String>, Vec<(us
                 }
             }
         }
-        if replacement.is_none() && rule(raw[i]) {
+        if replacement.is_none() && rule(raw[i]) && indent(raw[i]) == 0 {
             let mut end = i + 1;
-            while end < raw.len() && rule(raw[end]) {
+            while end < raw.len() && rule(raw[end]) && indent(raw[end]) == 0 {
                 end += 1;
             }
             replacement = Some((end, "─".into()));
