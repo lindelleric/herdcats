@@ -347,10 +347,10 @@ fn claude_spool_is_pending_before_the_call_is_written_and_resolves_after_answer_
                 .is_some_and(|bs| bs.iter().any(|b| b["name"] == "AskUserQuestion"))
         })
         .unwrap();
-    let record = spool_question(1792136860.328234);
+    let record = spool_question(1791849601.328234);
     let found = pending_claude_spool_questions(std::slice::from_ref(&record), &history[..call]);
     assert_eq!(found.len(), 1);
-    assert_eq!(found[0].request_id, "ask-prompt-1792136860328");
+    assert_eq!(found[0].request_id, "ask-prompt-1791849601328");
     assert_eq!(found[0].questions[0].text, "Pick a size");
     assert!(pending_claude_spool_questions(std::slice::from_ref(&record), &history).is_empty());
     let mut cancelled = history;
@@ -373,12 +373,12 @@ fn claude_spool_pairs_repeated_identical_inputs_one_to_one_by_time() {
     let history = rows(include_str!(
         "../../../compatibility/phase2/fixtures/claude-question-transcript.jsonl"
     ));
-    let records = [spool_question(2.0), spool_question(1.0)];
+    let records = [spool_question(1791849631.0), spool_question(1791849601.0)];
     let found = pending_claude_spool_questions(&records, &history);
     assert_eq!(found.len(), 1);
-    assert_eq!(found[0].request_id, "ask-prompt-2000");
+    assert_eq!(found[0].request_id, "ask-prompt-1791849631000");
     let mut two_answers = history.clone();
-    two_answers.extend(history);
+    two_answers.extend(answered_claude_at(Some("2026-10-13T00:00:30Z")));
     assert!(pending_claude_spool_questions(&records, &two_answers).is_empty());
 }
 #[test]
@@ -396,7 +396,7 @@ fn claude_spool_ignores_sidechain_meta_and_foreign_session_answers() {
             }
         }
         assert_eq!(
-            pending_claude_spool_questions(&[spool_question(1.0)], &excluded).len(),
+            pending_claude_spool_questions(&[spool_question(1791849601.0)], &excluded).len(),
             1,
             "{field}"
         );
@@ -416,7 +416,7 @@ fn claude_spool_ignores_sidechain_meta_and_foreign_session_answers() {
             }
         }
         assert_eq!(
-            pending_claude_spool_questions(&[spool_question(1.0)], &excluded_result).len(),
+            pending_claude_spool_questions(&[spool_question(1791849601.0)], &excluded_result).len(),
             1
         );
     }
@@ -434,7 +434,7 @@ fn claude_spool_rejects_truncated_malformed_and_unmatched_sessions() {
         "tool",
         "input",
     ] {
-        let mut record = spool_question(1.0);
+        let mut record = spool_question(1791849601.0);
         match case {
             "truncated" => record["truncated"] = json!(true),
             "payload_truncated" => record["payload"]["truncated"] = json!(true),
@@ -457,4 +457,80 @@ fn claude_spool_rejects_truncated_malformed_and_unmatched_sessions() {
             "{case}"
         );
     }
+}
+
+fn answered_claude_at(timestamp: Option<&str>) -> Vec<Value> {
+    let mut history = rows(include_str!(
+        "../../../compatibility/phase2/fixtures/claude-question-transcript.jsonl"
+    ));
+    for record in &mut history {
+        if record["type"] == "assistant" {
+            if let Some(timestamp) = timestamp {
+                record["timestamp"] = json!(timestamp);
+            } else {
+                record.as_object_mut().unwrap().remove("timestamp");
+            }
+        }
+    }
+    history
+}
+#[test]
+fn claude_spool_old_cancelled_question_does_not_consume_new_identical_request() {
+    let mut history = answered_claude_at(Some("2026-10-22T06:52:18Z"));
+    for record in &mut history {
+        if record["type"] == "user" {
+            record["timestamp"] = json!("2026-10-22T07:03:31Z");
+            if let Some(blocks) = record["message"]["content"].as_array_mut() {
+                for block in blocks {
+                    if block["type"] == "tool_result" {
+                        block["is_error"] = json!(true);
+                    }
+                }
+            }
+        }
+    }
+    let record = spool_question(1792652638.0); // 2026-10-22 07:03:58 UTC
+    let found = pending_claude_spool_questions(&[record], &history);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].request_id, "ask-prompt-1792652638000");
+}
+#[test]
+fn claude_spool_recent_answer_resolves_only_the_first_record_thirty_seconds_apart() {
+    let history = answered_claude_at(Some("2026-10-13T00:00:00Z"));
+    let first = spool_question(1791849601.0);
+    assert!(pending_claude_spool_questions(std::slice::from_ref(&first), &history).is_empty());
+    let second = spool_question(1791849631.0);
+    let found = pending_claude_spool_questions(&[second, first], &history);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].request_id, "ask-prompt-1791849631000");
+}
+#[test]
+fn claude_spool_requires_a_valid_call_timestamp_within_the_inclusive_window() {
+    let record = spool_question(1791849601.0);
+    for (timestamp, resolves) in [
+        (Some("2026-10-12T23:58:01Z"), true), // exactly 120s before record
+        (Some("2026-10-12T23:58:00.999Z"), false),
+        (Some("2026-10-13T00:00:03Z"), true), // exactly 2s after record
+        (Some("2026-10-13T00:00:03.001Z"), false),
+        (None, false),
+        (Some("invalid"), false),
+    ] {
+        let history = answered_claude_at(timestamp);
+        assert_eq!(
+            pending_claude_spool_questions(std::slice::from_ref(&record), &history).is_empty(),
+            resolves,
+            "{timestamp:?}"
+        );
+    }
+}
+#[test]
+fn claude_spool_ignores_out_of_window_answers_and_pairs_calls_in_timestamp_order() {
+    let old = answered_claude_at(Some("2026-10-12T23:00:00Z"));
+    let earlier = answered_claude_at(Some("2026-10-12T23:58:20Z"));
+    let recent = answered_claude_at(Some("2026-10-13T00:00:00Z"));
+    let mut history = recent;
+    history.extend(old);
+    history.extend(earlier);
+    let records = [spool_question(1791849631.0), spool_question(1791849601.0)];
+    assert!(pending_claude_spool_questions(&records, &history).is_empty());
 }

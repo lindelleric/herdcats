@@ -1,4 +1,5 @@
 //! Pure detection of pending questions from Claude hook records and native history.
+use crate::approval_match::utc_timestamp;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
@@ -141,13 +142,14 @@ pub fn pending_claude_spool_questions(
                         && b["name"] == "AskUserQuestion"
                         && results.contains(&(session, text(&b["id"])?))
                     {
-                        Some((session, &b["input"]))
+                        Some((utc_timestamp(&r["timestamp"])?, session, &b["input"]))
                     } else {
                         None
                     }
                 })
         })
         .collect();
+    answered.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut candidates: Vec<_> = records
         .iter()
         .filter_map(|r| {
@@ -185,13 +187,17 @@ pub fn pending_claude_spool_questions(
     candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
     candidates
         .into_iter()
-        .filter_map(|(_, session, input, request)| {
+        .filter_map(|(recorded_at, session, input, request)| {
             // Esc cancel also writes tool_use + tool_result, so it counts as answered.
-            // Consume oldest identical answered calls one-to-one; later repeats stay pending.
-            if let Some(index) = answered
-                .iter()
-                .position(|(s, i)| *s == session && *i == input)
-            {
+            // Pair oldest identical calls one-to-one only near the hook time.
+            // Older answered calls may predate hook installation; they must not
+            // retire a new identical request. Allow 2s clock skew and at most 120s delay.
+            if let Some(index) = answered.iter().position(|(timestamp, s, i)| {
+                *s == session
+                    && *i == input
+                    && *timestamp <= recorded_at + 2.0
+                    && recorded_at - *timestamp <= 120.0
+            }) {
                 answered.remove(index);
                 None
             } else {

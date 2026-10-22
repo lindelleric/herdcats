@@ -75,7 +75,7 @@ fn tool_result(block: &Value, id: &str) -> bool {
 
 /// Parse the UTC timestamp shape emitted by transcripts and rollouts, including
 /// fractional seconds. Reject malformed dates rather than normalizing them.
-fn utc_timestamp(value: &Value) -> Option<f64> {
+pub(crate) fn utc_timestamp(value: &Value) -> Option<f64> {
     fn decimal(s: &str) -> Option<i64> {
         if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
             return None;

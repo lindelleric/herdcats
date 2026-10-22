@@ -109,7 +109,8 @@ def claude_spool(rows):
     payload['tool_input'] = call['input']
     payload['session_id'] = rows[0]['sessionId']
     payload['prompt_id'] = next(r['promptId'] for r in rows if r.get('promptId'))
-    return [{'v': 1, 't': 1792136860.328, 'agent': 'claude', 'event': 'PermissionRequest',
+    # Fixed hook time is 1s after the sanitized tool_use (2026-10-13 00:00:00 UTC).
+    return [{'v': 1, 't': 1791849601.0, 'agent': 'claude', 'event': 'PermissionRequest',
              'session_id': payload['session_id'], 'pane': 'w1:p1', 'payload': payload}]
 
 

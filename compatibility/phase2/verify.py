@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Verify phase-2 captured evidence offline. Phase 1 is not currently wired into CI."""
+from datetime import datetime
 import hashlib
 import json
 import unittest
@@ -112,7 +113,7 @@ class QuestionEvidence(unittest.TestCase):
             self.assertEqual(len(spool), 1)
             record = spool[0]
             self.assertEqual(record['v'], 1)
-            self.assertEqual(record['t'], 1792136860.328)
+            self.assertEqual(record['t'], 1791849601.0)
             self.assertEqual(record['agent'], 'claude')
             self.assertEqual(record['event'], 'PermissionRequest')
             self.assertEqual(record['session_id'], rows[0]['sessionId'])
@@ -121,6 +122,9 @@ class QuestionEvidence(unittest.TestCase):
             call = next(b for r in rows if r['type'] == 'assistant'
                         for b in r['message']['content'] if b.get('name') == 'AskUserQuestion')
             self.assertEqual(record['payload']['tool_input'], call['input'])
+            call_record = next(r for r in rows if r['type'] == 'assistant'
+                               and any(b.get('name') == 'AskUserQuestion' for b in r['message']['content']))
+            self.assertEqual(record['t'] - datetime.fromisoformat(call_record['timestamp']).timestamp(), 1.0)
 
     def test_codex_sync_shapes_notes_and_resolution(self):
         rows = read('codex-sync-rollout.jsonl')

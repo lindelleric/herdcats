@@ -84,13 +84,13 @@
       "sha256": "5130a456e05aff039879b3da70368fad467f7903f1d05a2473f4f1dfa9f5c3da"
     },
     "claude-question-spool.jsonl": {
-      "bytes": 948,
-      "sha256": "a122d51a6e1162f14514e1b2c61f4b9b0f4d196b72c4131687cdc80148a388ec",
+      "bytes": 946,
+      "sha256": "c9a392c9e508aa1fda244dcc85148d01a825f52c9f4f868edf2a15257283b7f8",
       "derived": "Phase-1 PermissionRequest hook shape with phase-2 Claude question input, pseudonymous prompt_id and fixed timestamp; not a live spool capture."
     },
     "claude-question-one-spool.jsonl": {
-      "bytes": 710,
-      "sha256": "4b0807bf65135ae190ca25a089b6aad519ccd982ea1245058efe085ea0f1f9fc",
+      "bytes": 708,
+      "sha256": "2ba92b2d0b5b64313db46b7f31c5fd230c5bd9ded516215e8b1860433f4059e7",
       "derived": "Phase-1 PermissionRequest hook shape with phase-2 Claude question input, pseudonymous prompt_id and fixed timestamp; not a live spool capture."
     },
     "codex-sync-notes-placeholder-screen.txt": {
