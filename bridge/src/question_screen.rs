@@ -568,7 +568,11 @@ fn asynchronous(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScre
         if body.len() != 2 || body.get(1)?.trim() != "⇧← to answer" {
             return None;
         }
-        let (count, countdown) = notice.split_once(" · ")?;
+        let (count, countdown) = match notice.split_once(" · ") {
+            Some((count, countdown)) if !countdown.trim().is_empty() => (count, Some(countdown)),
+            Some(_) => return None,
+            None => (notice, None),
+        };
         let count = count
             .strip_suffix(" questions")
             .or_else(|| count.strip_suffix(" question"))?;
@@ -576,11 +580,11 @@ fn asynchronous(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScre
             return None;
         }
         let count: usize = count.parse().ok()?;
-        if count == 0 || countdown.trim().is_empty() {
+        if count == 0 {
             return None;
         }
         let mut dialog = result(QuestionStep::AsyncQueued);
-        dialog.countdown = Some(countdown.into());
+        dialog.countdown = countdown.map(str::to_owned);
         dialog.queued_count = Some(count);
         return Some(dialog);
     }
@@ -803,16 +807,21 @@ fn anchor_rows(screen: &str, pending: &PendingQuestion) -> (Vec<String>, Vec<(us
                 // The answer shortcut is a distinct short marker after the banner.
                 if candidate.ends_with("⇧←toanswer") {
                     let banner = candidate.trim_end_matches("⇧←toanswer");
-                    if let Some((count, countdown)) =
-                        banner.strip_prefix('?').and_then(|s| s.split_once('·'))
-                    {
+                    if let Some(banner) = banner.strip_prefix('?') {
+                        let (count, countdown) = match banner.split_once('·') {
+                            Some((count, countdown)) => (count, Some(countdown)),
+                            None => (banner, None),
+                        };
                         let digits = count
                             .chars()
                             .take_while(char::is_ascii_digit)
                             .collect::<String>();
                         let suffix = count.get(digits.len()..).unwrap_or("");
                         if matches!(suffix, "question" | "questions") {
-                            rows.push(format!("? {digits} {suffix} · {countdown}"));
+                            let countdown = countdown
+                                .map(|text| format!(" · {text}"))
+                                .unwrap_or_default();
+                            rows.push(format!("? {digits} {suffix}{countdown}"));
                             spans.push((start, end + 1));
                             replacement = Some((end + 1, "⇧← to answer".into()));
                         }
@@ -843,7 +852,8 @@ fn anchor_rows(screen: &str, pending: &PendingQuestion) -> (Vec<String>, Vec<(us
                 let done = if first.starts_with("Enter") {
                     candidate.ends_with("Esctocancel")
                 } else if candidate.starts_with("taboresctoclearnotes") {
-                    candidate.ends_with("entertosubmitall")
+                    candidate.ends_with("entertosubmitanswer")
+                        || candidate.ends_with("entertosubmitall")
                 } else {
                     candidate.ends_with("esctointerrupt")
                 };

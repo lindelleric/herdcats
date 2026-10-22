@@ -10,10 +10,13 @@ struct AgentBridgeParams: Encodable, Sendable {
     var recordContent: Bool? = nil
     var contentRef: String? = nil
     var offset: Int? = nil
+    var questions: Bool? = nil
     var approvals: Bool? = nil
     var requestId: String? = nil
     var option: UInt32? = nil
     var labelLines: [String]? = nil
+    var answers: [AgentQuestionAnswer]? = nil
+    var skip: Bool? = nil
 }
 enum AgentBridgeMethod: String, Sendable { case initialize, watch, history, content; case respond = "interaction.respond" }
 
@@ -63,7 +66,7 @@ actor AgentBridgeClient {
         agent: String? = nil,
         onHandshake: (@Sendable (AgentBridgeCapabilities?, String?) async -> Void)? = nil
     ) async throws {
-        let handshake = try await request(.initialize, params: AgentBridgeParams(protocol: 1, recordContent: true, approvals: true))
+        let handshake = try await request(.initialize, params: AgentBridgeParams(protocol: 1, recordContent: true, questions: true, approvals: true))
         guard handshake.protocol == 1, handshake.epoch?.isEmpty == false else {
             throw AgentBridgeError.protocolMismatch
         }
@@ -91,6 +94,20 @@ actor AgentBridgeClient {
         guard reply.requestId == requestId, let sent = reply.sent, AgentApprovalOption.validKey(sent),
             let confirmed = reply.confirmed else { throw AgentBridgeError.invalidFrame }
         return AgentApprovalResponse(requestId: requestId, sent: sent, confirmed: confirmed)
+    }
+
+    func respondQuestion(requestId: String, answers: [AgentQuestionAnswer]) async throws -> Bool {
+        try await questionResponse(AgentBridgeParams(requestId: requestId, answers: answers))
+    }
+    func skipQuestion(requestId: String) async throws -> Bool {
+        try await questionResponse(AgentBridgeParams(requestId: requestId, skip: true))
+    }
+    private func questionResponse(_ params: AgentBridgeParams) async throws -> Bool {
+        let reply = try await request(.respond, params: params)
+        guard reply.requestId == params.requestId, let confirmed = reply.confirmed else {
+            throw AgentBridgeError.invalidFrame
+        }
+        return confirmed
     }
 
     func open(
@@ -240,7 +257,9 @@ actor AgentBridgeClient {
                         if request.method == .history {
                             TimelineHistoryDiagnostics.record("history.rpc.remote_error client=\(self.id) request=\(id) reason=\(TimelineHistoryDiagnostics.reason(AgentBridgeError.unavailable(error.code)))", failure: true)
                         }
-                        request.continuation.resume(throwing: AgentBridgeError.unavailable(error.code))
+                        request.continuation.resume(throwing: error.stepsSent != nil
+                            ? AgentBridgeError.questionFailure(code: error.code, stepsSent: error.stepsSent)
+                            : AgentBridgeError.unavailable(error.code))
                     } else if let result = frame.result {
                         if request.method == .history {
                             TimelineHistoryDiagnostics.record("history.rpc.response client=\(self.id) request=\(id) entries=\(result.entries?.count ?? -1) generation=\(result.generation.map(String.init) ?? "missing")")

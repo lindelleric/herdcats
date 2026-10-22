@@ -27,6 +27,8 @@ enum ScreenshotFixtures {
         }
     }
     static var paneAgent: String {
+        if screen == "timeline-question-codex-plan" || screen == "timeline-question-codex-async" { return "codex" }
+        if screen == "timeline-question-claude" { return "claude" }
         if screen == "timeline-approval-codex" { return "codex" }
         if screen == "timeline-approval-claude" { return "claude" }
         let args = ProcessInfo.processInfo.arguments

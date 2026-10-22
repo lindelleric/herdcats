@@ -25,6 +25,7 @@ struct AgentTimelineView: View {
     @State private var waitingKey: WaitingTaskKey?
     @State private var phoneAnswersSelection: PhoneAnswersSelection?
     @State private var approvalResponse = ApprovalResponseState()
+    @State private var questionResponse = QuestionAnswerState()
     @State private var waitingRowHeight: CGFloat = 0
     @State private var sheetState = TimelineSheetState()
     @State private var approvalViewVisible = false
@@ -82,7 +83,7 @@ struct AgentTimelineView: View {
         WaitingTaskKey(hooks: hooksKey, owner: activeOwner, identity: timeline.identity, generation: timeline.generation,
             eligible: PhoneAnswersPresentation.eligible(approvals: bridgeCapabilities?.approvals,
                 ready: timeline.phase == .ready && connectionState.isReady && appModel.supportsHostServices,
-                blocked: timeline.agentStatus == "blocked", pending: timeline.pendingApproval != nil,
+                blocked: timeline.agentStatus == "blocked", pending: timeline.pendingApproval != nil || showsQuestion,
                 active: scenePhase == .active && appModel.isSceneActive))
     }
     private var showsWaitingRow: Bool { waitingTaskKey.eligible && waitingKey == waitingTaskKey }
@@ -93,6 +94,10 @@ struct AgentTimelineView: View {
     }
     private var showsApproval: Bool {
         ApprovalResponseState.isVisible(pending: timeline.pendingApproval, approvals: bridgeCapabilities?.approvals)
+    }
+
+    private var showsQuestion: Bool {
+        QuestionAnswerState.isVisible(pending: timeline.pendingQuestion, questions: bridgeCapabilities?.questions)
     }
 
     private var conversationItems: [TimelineConversationItem] {
@@ -179,6 +184,12 @@ struct AgentTimelineView: View {
                                 .id("\(contentScope):approval:\(pending.requestId)")
                                 .disabled(approvalResponse.isDisabled)
                             }
+                            if showsQuestion, let pending = timeline.pendingQuestion {
+                                QuestionCard(pending: pending, response: questionResponse,
+                                    onSubmit: { respondToQuestion(pending) },
+                                    onSkip: { respondToQuestion(pending, skip: true) })
+                                    .id("\(contentScope):question:\(pending.requestId)")
+                            }
                         } else {
                             availability
                         }
@@ -207,6 +218,14 @@ struct AgentTimelineView: View {
                 }
                 .onChange(of: timeline.pendingApproval?.requestId, initial: true) { _, requestId in
                     guard requestId != nil, showsApproval else { return }
+                    following = true
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    withAnimation(reduceMotion ? nil : .smooth(duration: 0.4)) {
+                        proxy.scrollTo("timeline-bottom", anchor: .bottom)
+                    }
+                }
+                .onChange(of: showsQuestion ? timeline.pendingQuestion?.requestId : nil, initial: true) { _, requestId in
+                    guard requestId != nil, showsQuestion else { return }
                     following = true
                     UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
                     withAnimation(reduceMotion ? nil : .smooth(duration: 0.4)) {
@@ -247,7 +266,7 @@ struct AgentTimelineView: View {
                         }
                 )
                 .onChange(of: timeline.revision) { _, _ in
-                    guard following, (!conversationItems.isEmpty || showsApproval) else { return }
+                    guard following, timeline.pendingQuestion == nil, (!conversationItems.isEmpty || showsApproval) else { return }
                     proxy.scrollTo("timeline-bottom", anchor: .bottom)
                 }
                 .onChange(of: timeline.identity) { _, _ in
@@ -312,6 +331,7 @@ struct AgentTimelineView: View {
         .clipped()
         .background(Theme.background)
         .onChange(of: timeline.pendingApproval, initial: true) { _, pending in approvalResponse.sync(pending) }
+        .onChange(of: timeline.pendingQuestion, initial: true) { _, pending in questionResponse.sync(pending) }
         .task(id: taskKey) { await run() }
         .task(id: waitingTaskKey) { await prepareWaitingRow() }
         .onAppear { approvalViewVisible = true; updateTimelineSheet() }
@@ -392,6 +412,7 @@ struct AgentTimelineView: View {
         .onDisappear {
             approvalViewVisible = false
             approvalResponse.reset()
+            questionResponse.reset()
             updateTimelineSheet()
             historyLoader.cancel(); cancelHelperInstallation(); contentFiles.reset()
         }
@@ -1164,9 +1185,39 @@ struct AgentTimelineView: View {
         }
     }
 
+    @MainActor private func respondToQuestion(_ pending: AgentPendingQuestion, skip: Bool = false) {
+        guard showsQuestion, let owner = activeOwner, let client = activeClient,
+            connectionState.isReady, scenePhase == .active,
+            let current = timeline.pendingQuestion, current == pending else { return }
+        questionResponse.sync(current)
+        let answers = questionResponse.answers
+        guard let token = questionResponse.begin(skip: skip) else { return }
+        let ownedConnection = connectionState
+        Task { @MainActor in
+            do {
+                let confirmed: Bool
+                if skip { confirmed = try await client.skipQuestion(requestId: current.requestId) }
+                else { confirmed = try await client.respondQuestion(requestId: current.requestId, answers: answers ?? []) }
+                guard approvalViewVisible, activeOwner == owner, connectionState == ownedConnection, scenePhase == .active,
+                    timeline.phase == .ready, timeline.identity == current.identity,
+                    timeline.generation == current.generation else { return }
+                questionResponse.sync(timeline.pendingQuestion)
+                questionResponse.succeed(token: token, confirmed: confirmed)
+                if confirmed { HapticFeedback.impact(.light) }
+            } catch {
+                guard approvalViewVisible, activeOwner == owner, connectionState == ownedConnection, scenePhase == .active,
+                    timeline.phase == .ready, timeline.identity == current.identity,
+                    timeline.generation == current.generation else { return }
+                questionResponse.sync(timeline.pendingQuestion)
+                questionResponse.fail(token: token, error: (error as? AgentBridgeError) ?? .closed)
+            }
+        }
+    }
+
     @MainActor private func run() async {
         historyLoader.cancel()
         approvalResponse.reset()
+        questionResponse.reset()
         let owner = UUID()
         activeOwner = owner
         timeline.begin(owner: owner, paneId: paneId)
@@ -1194,6 +1245,9 @@ struct AgentTimelineView: View {
                 if AgentTimelineScreenshotFixture.showsApproval {
                     bridgeCapabilities = AgentBridgeCapabilities(claudeTimeline: true, codexTimeline: true, recordContent: true, approvals: true)
                 }
+                if AgentTimelineScreenshotFixture.showsQuestion {
+                    bridgeCapabilities = AgentBridgeCapabilities(claudeTimeline: true, codexTimeline: true, recordContent: true, approvals: true, questions: true)
+                }
                 Self.publishBridgeVersion(bridgeVersion, to: bridgeUpgrade, owner: owner, activeOwner: activeOwner)
                 do {
                     try timeline.consume(AgentTimelineScreenshotFixture.frame(
@@ -1204,6 +1258,10 @@ struct AgentTimelineView: View {
                         try timeline.consume(AgentTimelineScreenshotFixture.approvalFrame(paneId: paneId, agent: ScreenshotFixtures.paneAgent), owner: owner)
                         approvalResponse.sync(timeline.pendingApproval)
                         updateTimelineSheet()
+                    }
+                    if AgentTimelineScreenshotFixture.showsQuestion {
+                        try timeline.consume(AgentTimelineScreenshotFixture.questionFrame(paneId: paneId), owner: owner)
+                        questionResponse.sync(timeline.pendingQuestion)
                     }
                 } catch { timeline.end(owner: owner, error: (error as? AgentBridgeError) ?? .invalidFrame) }
                 return
@@ -1363,6 +1421,7 @@ struct AgentTimelineView: View {
         Self.publishBridgeVersion(version, to: bridgeUpgrade, owner: owner, activeOwner: activeOwner)
         try timeline.consume(frame, owner: owner)
         approvalResponse.sync(timeline.pendingApproval)
+        questionResponse.sync(timeline.pendingQuestion)
     }
     @MainActor private func mergeHistoryPreservingPosition(
         _ page: AgentBridgePayload, owner: UUID, generation: UInt64

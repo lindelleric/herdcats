@@ -22,7 +22,7 @@ KEEP = {'herdcats-probe', 'Size', 'Pick a size', 'Small', 'Large', 'Choose small
         'Pick toppings (select all that apply; enter multiple choices in the free-text field).',
         'Cheese', 'Olives', 'Basil', 'Pepper', 'Cheese, Basil', 'Cheese, Basil, Pepper',
         'user_note: Cheese, Basil', 'Color', 'Pick a color', 'Pick a color?', 'Red', 'Blue', 'Choose red', 'Choose blue', 'Color: Pick a color',
-        'Red (Choose red)', 'Blue (Choose blue)', 'Green'}
+        'Red (Choose red)', 'Blue (Choose blue)', 'Green', 'None of the above', 'Choose Small.', 'Choose Large.'}
 KEEP.update(f'Add {label}{period}' for label in ('cheese', 'olives', 'basil') for period in ('', '.'))
 
 
@@ -124,7 +124,9 @@ SCREENS = [
     ('claude-question-review', 'claude-review-screen', '←', '2. Cancel'),
     ('codex-sync-first', 'codex-sync-q1-screen', 'Question 1/2', 'enter to submit answer'),
     ('codex-sync-last', 'codex-sync-after-digit1', 'Question 2/2', 'enter to submit all'),
+    ('codex-sync-notes-first', 'codex-sync-notes-first-screen', 'Question 1/2', 'enter to submit answer'),
     ('codex-sync-notes', 'codex-sync-notes', 'Question 2/2', 'enter to submit all'),
+    ('codex-async-queued-nocountdown', 'codex-async-queued-nocountdown-screen', 'Queued follow-up inputs', '⇧← to answer'),
     ('codex-async-queued', 'codex-async-queued-screen', 'Queued follow-up inputs', '⇧← to answer'),
     ('codex-async-picker', 'codex-async-picker-screen', 'Queued follow-up inputs', 'main prompt'),
     ('codex-async-other', 'codex-async-other-typed-screen', 'Queued follow-up inputs', 'main prompt'),

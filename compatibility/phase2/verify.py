@@ -37,7 +37,7 @@ class QuestionEvidence(unittest.TestCase):
         self.assertEqual(manifest['versions']['claude'], '2.1.307')
         self.assertEqual(manifest['versions']['codex'], '0.163.0')
         self.assertEqual(set(manifest['files']), {p.name for p in (ROOT / 'fixtures').iterdir()})
-        self.assertEqual(len(manifest['files']), 24)
+        self.assertEqual(len(manifest['files']), 26)
         self.assertIn('not a live screen capture', manifest['files']['codex-sync-notes-placeholder-screen.txt']['derived'])
         for name in ('claude-question-spool.jsonl', 'claude-question-one-spool.jsonl'):
             self.assertIn('not a live spool capture', manifest['files'][name]['derived'])
@@ -196,8 +196,10 @@ class QuestionEvidence(unittest.TestCase):
             'claude-question-review': ['Review your answers', '→ Cheese, Basil, Pepper', '1. Submit answers', '2. Cancel'],
             'codex-sync-first': ['Question 1/2 (2 unanswered)', 'None of the above', 'enter to submit answer'],
             'codex-sync-last': ['Question 2/2 (1 unanswered)', 'enter to submit all'],
+            'codex-sync-notes-first': ['Question 1/2 (2 unanswered)', 'Pick a size', 'Small', 'Large', '› 3. None of the above', '› Add notes', 'tab or esc to clear notes | enter to submit answer'],
             'codex-sync-notes': ['› Cheese, Basil', 'tab or esc to clear notes'],
             'codex-sync-notes-placeholder': ['› Add notes', 'tab or esc to clear notes'],
+            'codex-async-queued-nocountdown': ['? 1 question', '⇧← to answer'],
             'codex-async-queued': ['? 1 question · 9s', '⇧← to answer'],
             'codex-async-picker': ['Color: Pick a color', '› 1. Red (Choose red)', '3. Other', '⌃] skip'],
             'codex-async-other': ['› 3. Green', 'enter submit', '⇧→ main prompt'],

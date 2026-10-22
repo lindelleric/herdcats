@@ -87,11 +87,13 @@
 		B227DE75EBEB03CE846DEA6C /* AgentTimelineModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7A31DD5DCC846135C375DF7 /* AgentTimelineModels.swift */; };
 		B7801D3E7508D04650BF5A6C /* HerdcatsTests+PanePreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82FA99D7D65E274174CC0C80 /* HerdcatsTests+PanePreferences.swift */; };
 		B7FAC1B861FD33EACE03CEA0 /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = 0FED306997E0591F9F6ADDEC /* Citadel */; };
+		BA413D7BBDF280308E43AA5F /* QuestionModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 439259A2B15DEC16FC9F545F /* QuestionModels.swift */; };
 		BB1651D0FDA79CA074A81155 /* PaneLiveInputMetrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E270DA3D5F97969E016849B /* PaneLiveInputMetrics.swift */; };
 		BBE717D1FC9D281A05E84276 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B2DFBC036CAD6C0FCEF7CC29 /* Assets.xcassets */; };
 		BE62C40EA8E1B66A9707BDF5 /* PaneLastUpdated.swift in Sources */ = {isa = PBXBuildFile; fileRef = 324E0765A02EFCD22169C48E /* PaneLastUpdated.swift */; };
 		C1DA263E370CFE1E08F3487B /* PanePersistentShellTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2383B8A18E364E6440F23DD /* PanePersistentShellTests.swift */; };
 		C495634352F58C7A2BC36C9C /* ApprovalCardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6C602A993C0E0FC042B1D3A /* ApprovalCardTests.swift */; };
+		C6AAEA290C4445B631477E6B /* QuestionAnswerState.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2574C878298C238467F43D1 /* QuestionAnswerState.swift */; };
 		C82FE02A63F71FEEF9DF666C /* PaneLiveInputQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECEE34F261F2623618C5770F /* PaneLiveInputQueue.swift */; };
 		CEC27F8163C92B00CD38EE22 /* SpaceDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 795CA6C4625F7448B13868B0 /* SpaceDetailView.swift */; };
 		D1A9C334FA2B179A16BC74A7 /* HerdrConnection+Remote.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A1137CF91FF8580175F53E3 /* HerdrConnection+Remote.swift */; };
@@ -113,6 +115,8 @@
 		F1F32F26B2D9D1C8862F0C2B /* TimelineComposePolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B77A856E34D38155B6C302A /* TimelineComposePolicyTests.swift */; };
 		F215F4FDF6AC3471D74DFFB2 /* ConnectionIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16E4B2585764F574B8BEA8B9 /* ConnectionIdentity.swift */; };
 		F55899A6B73E66CCFE51730F /* PlainTextInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = 121986C4CFF47D9ACC6C4E0B /* PlainTextInput.swift */; };
+		F62E23A79F938096405DD200 /* QuestionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AA651ECCA572E1B7EA98DD4 /* QuestionTests.swift */; };
+		FB535ABF635C97B3647543CF /* QuestionCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 690A325C18C2D89D90900F04 /* QuestionCard.swift */; };
 		FC0FAD0E7DC7F9C68F88EB34 /* HerdrConnection+PaneInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCCA0CEF6A22B0EBA75E8922 /* HerdrConnection+PaneInput.swift */; };
 		FE4876BF2B8AA2FC6A56B7EE /* HerdcatsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9F59CB2840187527B1A6D5D /* HerdcatsTests.swift */; };
 		FE6E743FF60F467084C9D390 /* QuotaUnavailable.swift in Sources */ = {isa = PBXBuildFile; fileRef = 693BA4491F3178B3C64D8348 /* QuotaUnavailable.swift */; };
@@ -162,6 +166,7 @@
 		3D131A13A8538A7842D07CE5 /* ApprovalModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovalModels.swift; sourceTree = "<group>"; };
 		4167D7DC162957205584E7E2 /* PaneInputCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneInputCoordinator.swift; sourceTree = "<group>"; };
 		425BF5E146238F8C6215AFA1 /* CodexTimelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexTimelineTests.swift; sourceTree = "<group>"; };
+		439259A2B15DEC16FC9F545F /* QuestionModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuestionModels.swift; sourceTree = "<group>"; };
 		43D1609F00AF85022EF107AA /* PaneDictation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneDictation.swift; sourceTree = "<group>"; };
 		4A3BFF904815E2BD66B154D9 /* AgentTimelineState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentTimelineState.swift; sourceTree = "<group>"; };
 		4B2050D63FBE492E4583C383 /* ConnectionTimeout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionTimeout.swift; sourceTree = "<group>"; };
@@ -176,6 +181,7 @@
 		59460EB647F68FC33C825D67 /* HerdrConnection+Queries.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HerdrConnection+Queries.swift"; sourceTree = "<group>"; };
 		5E030A59A32EEE2D37BBF028 /* Herdcats.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Herdcats.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		6349F51A9FF576CFF9455B92 /* ConnectionSettingsView+Card.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ConnectionSettingsView+Card.swift"; sourceTree = "<group>"; };
+		690A325C18C2D89D90900F04 /* QuestionCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuestionCard.swift; sourceTree = "<group>"; };
 		693BA4491F3178B3C64D8348 /* QuotaUnavailable.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuotaUnavailable.swift; sourceTree = "<group>"; };
 		6C7B6E6D948BEF8026CA725D /* PhoneAnswersViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneAnswersViews.swift; sourceTree = "<group>"; };
 		6C922AABFF229CB5E4A9417E /* HerdcatsTests+Quota.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HerdcatsTests+Quota.swift"; sourceTree = "<group>"; };
@@ -196,6 +202,7 @@
 		8865B2ACCDE7337BC2481A2D /* HerdcatsTests+RecentConnections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HerdcatsTests+RecentConnections.swift"; sourceTree = "<group>"; };
 		88DBA9853C7313FB0D808A34 /* ApprovalResponseState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovalResponseState.swift; sourceTree = "<group>"; };
 		895293DDBB9E064DE802A838 /* SettingsScreen+Sections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SettingsScreen+Sections.swift"; sourceTree = "<group>"; };
+		8AA651ECCA572E1B7EA98DD4 /* QuestionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuestionTests.swift; sourceTree = "<group>"; };
 		8BC70F0B4AB3ADF429A92F00 /* QuotaModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuotaModels.swift; sourceTree = "<group>"; };
 		8D67B69724707A16FD4618DF /* LicensesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LicensesView.swift; sourceTree = "<group>"; };
 		902C762017C8EEFB00E85C2F /* ConnectView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectView.swift; sourceTree = "<group>"; };
@@ -244,6 +251,7 @@
 		EE90364BE3B58ED4C550DFBE /* HerdrSetupGuideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSetupGuideView.swift; sourceTree = "<group>"; };
 		EED17C5CD76FB35981A9D96C /* HerdcatsTests+SpaceAndKeyParsing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HerdcatsTests+SpaceAndKeyParsing.swift"; sourceTree = "<group>"; };
 		EF5D074F27B1A73850A67894 /* ConnectionSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionSettingsView.swift; sourceTree = "<group>"; };
+		F2574C878298C238467F43D1 /* QuestionAnswerState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuestionAnswerState.swift; sourceTree = "<group>"; };
 		F2DBC72D55F63C7915ECC5EB /* ConnectionOwnership.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionOwnership.swift; sourceTree = "<group>"; };
 		F7A31DD5DCC846135C375DF7 /* AgentTimelineModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentTimelineModels.swift; sourceTree = "<group>"; };
 		F8CA019F2DDA830AC9B7D1D0 /* test_release_preparation.py */ = {isa = PBXFileReference; lastKnownFileType = text.script.python; path = test_release_preparation.py; sourceTree = "<group>"; };
@@ -270,6 +278,7 @@
 				DB45C84164D30E2FA6AEB5C2 /* AgySignIn.swift */,
 				3D131A13A8538A7842D07CE5 /* ApprovalModels.swift */,
 				85BDAAC12F57BDD3F41B090C /* HerdrModels.swift */,
+				439259A2B15DEC16FC9F545F /* QuestionModels.swift */,
 				8BC70F0B4AB3ADF429A92F00 /* QuotaModels.swift */,
 				693BA4491F3178B3C64D8348 /* QuotaUnavailable.swift */,
 			);
@@ -344,6 +353,8 @@
 				88DBA9853C7313FB0D808A34 /* ApprovalResponseState.swift */,
 				9CC8A4387368F9C508CA1733 /* PhoneAnswersState.swift */,
 				6C7B6E6D948BEF8026CA725D /* PhoneAnswersViews.swift */,
+				F2574C878298C238467F43D1 /* QuestionAnswerState.swift */,
+				690A325C18C2D89D90900F04 /* QuestionCard.swift */,
 			);
 			path = AgentTimeline;
 			sourceTree = "<group>";
@@ -449,6 +460,7 @@
 				217943F1848BADFC038A2932 /* PaneLiveModifierComposerTests.swift */,
 				D2383B8A18E364E6440F23DD /* PanePersistentShellTests.swift */,
 				568BEE7592258AE6D1351685 /* PhoneAnswersTests.swift */,
+				8AA651ECCA572E1B7EA98DD4 /* QuestionTests.swift */,
 				97046A3F25D35B65A7CA7425 /* test_attachment_storage.py */,
 				F8CA019F2DDA830AC9B7D1D0 /* test_release_preparation.py */,
 				4E50F78F5521566900207BF2 /* TestSupport.swift */,
@@ -679,6 +691,9 @@
 				EA4B43FB5BA1E321D48FB43F /* PhoneAnswersState.swift in Sources */,
 				04D36BEEA3B8F68E4BA78156 /* PhoneAnswersViews.swift in Sources */,
 				F55899A6B73E66CCFE51730F /* PlainTextInput.swift in Sources */,
+				C6AAEA290C4445B631477E6B /* QuestionAnswerState.swift in Sources */,
+				FB535ABF635C97B3647543CF /* QuestionCard.swift in Sources */,
+				BA413D7BBDF280308E43AA5F /* QuestionModels.swift in Sources */,
 				7195C57B2E149360F277984A /* QuotaModels.swift in Sources */,
 				89EA180917DAB55768B929B4 /* QuotaScreen.swift in Sources */,
 				FE6E743FF60F467084C9D390 /* QuotaUnavailable.swift in Sources */,
@@ -725,6 +740,7 @@
 				D82A1C06AA4BDA852E848F59 /* PaneLiveModifierComposerTests.swift in Sources */,
 				C1DA263E370CFE1E08F3487B /* PanePersistentShellTests.swift in Sources */,
 				94AC58A3F50301701A8D5562 /* PhoneAnswersTests.swift in Sources */,
+				F62E23A79F938096405DD200 /* QuestionTests.swift in Sources */,
 				91E87E159072AC4363BB0F7A /* TestSupport.swift in Sources */,
 				F1F32F26B2D9D1C8862F0C2B /* TimelineComposePolicyTests.swift in Sources */,
 			);
