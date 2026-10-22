@@ -714,3 +714,25 @@ fn one_question_claude_multiselect_text_auto_checks_and_is_reviewed() {
         ]
     );
 }
+
+#[test]
+fn codex_first_notes_live_capture_matches_plan_after_tab() {
+    let (mut pending, _) = fixture(QuestionKind::CodexPlan, "codex-sync-first");
+    pending.questions[0].options[0].description = Some("Choose Small.".into());
+    pending.questions[0].options[1].description = Some("Choose Large.".into());
+    let initial =
+        include_str!("../../../compatibility/phase2/fixtures/codex-sync-first-screen.txt")
+            .replace("Choose a small size.", "Choose Small.")
+            .replace("Choose a large size.", "Choose Large.");
+    let initial = question_screen::parse(pending.kind, &initial, &pending).unwrap();
+    let steps = plan(pending.kind, &pending, &initial,
+        &json!({"answers":[{"index":0,"options":[3],"text":"medium please"},{"index":1,"options":[1]}]})).unwrap();
+    let notes = question_screen::parse(
+        pending.kind,
+        include_str!("../../../compatibility/phase2/fixtures/codex-sync-notes-first-screen.txt"),
+        &pending,
+    )
+    .unwrap();
+    assert_eq!(steps[1].input, Input::Keys(vec!["tab".into()]));
+    assert!(steps[1].expected.matches(Some(&notes)));
+}

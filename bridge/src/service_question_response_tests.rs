@@ -754,3 +754,33 @@ fn question_response_claude_desk_navigation_is_not_fresh_and_sends_no_input() {
         }
     }
 }
+
+#[test]
+fn question_response_codex_plan_passes_live_non_last_notes_footer() {
+    let (mut service, root, herdr, path) = question_fixture("codex_plan");
+    let source = fs::read_to_string(&path).unwrap()
+        .replace("Choose a small size.", "Choose Small.")
+        .replace("Choose a large size.", "Choose Large.");
+    fs::write(&path, source).unwrap();
+    let first = question_screen_fixture("codex-sync-first")
+        .replace("Choose a small size.", "Choose Small.")
+        .replace("Choose a large size.", "Choose Large.");
+    herdr.lock().unwrap().screen = first.clone();
+    let pending = interactions(&mut service).remove(0);
+    let notes = question_screen_fixture("codex-sync-notes-first");
+    script_question(&herdr, vec![
+        first.replace("› 1.", "  1.").replace("  3.", "› 3."),
+        notes.clone(),
+        notes.replace("› Add notes", "› medium please"),
+        question_screen_fixture("codex-sync-last"),
+        String::new(),
+    ]);
+    let emitted = respond(&mut service, question_params(&pending,
+        json!([{"index":0,"options":[3],"text":"medium please"},{"index":1,"options":[1]}])));
+    assert_question_success(&emitted, &pending);
+    assert_eq!(herdr.lock().unwrap().inputs, vec![
+        keys_input(&["down", "down"]), keys_input(&["tab"]),
+        text_input("medium please"), keys_input(&["enter"]), keys_input(&["1"]),
+    ]);
+    cleanup(&service, root);
+}

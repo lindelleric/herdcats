@@ -549,6 +549,7 @@ fn every_fixture_survives_hard_wrapping_at_narrow_widths() {
     ] {
         cases.push((one_multi.clone(), screen));
     }
+    cases.push(first_notes_capture());
     for (request, screen) in cases {
         let original = parse(request.kind, screen, &request).unwrap();
         for width in [40, 30, 24] {
@@ -1093,4 +1094,34 @@ fn claude_first_question_requires_the_cursor_on_option_one_to_be_fresh() {
         let no_cursor = parse(request.kind, &raw.replace("❯ 1.", "  1."), &request).unwrap();
         assert!(!no_cursor.is_fresh(&request));
     }
+}
+
+fn first_notes_capture() -> (PendingQuestion, &'static str) {
+    let mut request = pending(QuestionKind::CodexPlan);
+    request.questions[0].options[0].description = Some("Choose Small.".into());
+    request.questions[0].options[1].description = Some("Choose Large.".into());
+    (
+        request,
+        include_str!("../../../compatibility/phase2/fixtures/codex-sync-notes-first-screen.txt"),
+    )
+}
+
+#[test]
+fn non_last_codex_notes_footer_parses_live_capture() {
+    let (request, screen) = first_notes_capture();
+    let parsed = parse(request.kind, screen, &request).unwrap();
+    assert_eq!(
+        parsed.step,
+        QuestionStep::CodexQuestion { index: 0, total: 2 }
+    );
+    assert_eq!(parsed.cursor, Some(QuestionCursor::Notes));
+    assert_eq!(parsed.highlighted, Some(3));
+    assert_eq!(
+        parsed.free_text,
+        Some(FreeText {
+            active: true,
+            text: String::new()
+        })
+    );
+    assert_eq!(parsed.unanswered, Some(2));
 }

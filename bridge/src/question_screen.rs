@@ -843,7 +843,8 @@ fn anchor_rows(screen: &str, pending: &PendingQuestion) -> (Vec<String>, Vec<(us
                 let done = if first.starts_with("Enter") {
                     candidate.ends_with("Esctocancel")
                 } else if candidate.starts_with("taboresctoclearnotes") {
-                    candidate.ends_with("entertosubmitall")
+                    candidate.ends_with("entertosubmitanswer")
+                        || candidate.ends_with("entertosubmitall")
                 } else {
                     candidate.ends_with("esctointerrupt")
                 };
