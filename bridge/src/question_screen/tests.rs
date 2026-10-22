@@ -533,7 +533,15 @@ fn every_fixture_survives_hard_wrapping_at_narrow_widths() {
                     } else {
                         chars
                             .chunks(width)
-                            .map(|chunk| chunk.iter().collect::<String>())
+                            .enumerate()
+                            .map(|(index, chunk)| {
+                                let text = chunk.iter().collect::<String>();
+                                if index > 0 && line.trim().starts_with(['●', '→']) {
+                                    format!("     {text}")
+                                } else {
+                                    text
+                                }
+                            })
                             .collect()
                     }
                 })
@@ -732,4 +740,39 @@ fn typed_control_lookalikes_use_continuation_indentation() {
             .replace("       3. another thought", "    3. another thought");
         assert!(parse(kind, &ambiguous, &request).is_none());
     }
+}
+
+#[test]
+fn review_answer_continuations_keep_bullet_and_arrow_text() {
+    let (kind, screen) = fixtures()[3];
+    let request = pending(kind);
+    for continuation in ["● bullet", "→ arrow", "● bullet\n     → arrow"] {
+        let updated = screen.replace("→ Large", &format!("→ Large\n     {continuation}"));
+        let parsed = parse(kind, &updated, &request).unwrap();
+        assert_eq!(parsed.step, QuestionStep::ClaudeReview);
+        assert_ne!(
+            parsed.fingerprint,
+            parse(kind, screen, &request).unwrap().fingerprint
+        );
+    }
+}
+
+#[test]
+fn async_footer_as_typed_continuation_is_not_a_control() {
+    let (kind, screen) = fixtures()[9];
+    let request = pending(kind);
+    let footer = "enter submit   ⌃] skip   ⇧→ main prompt";
+    let updated = screen.replace("› 3. Green", &format!("› 3. Green\n       {footer}"));
+    let parsed = parse(kind, &updated, &request).unwrap();
+    assert_eq!(parsed.free_text.unwrap().text, format!("Green {footer}"));
+    let rows = updated.lines().collect::<Vec<_>>();
+    assert_eq!(parsed.fingerprint, fingerprint(&rows));
+    let truncated = updated.replace(&format!("\n  {footer}"), "");
+    assert!(parse(kind, &truncated, &request).is_none());
+    // Even a marker at the footer column cannot hide further picker content.
+    let followed = updated.replace(
+        &format!("\n  {footer}"),
+        &format!("\n  {footer}\n       more typed text"),
+    );
+    assert!(parse(kind, &followed, &request).is_none());
 }

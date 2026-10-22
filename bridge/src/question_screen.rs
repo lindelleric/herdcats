@@ -344,32 +344,24 @@ fn claude_question(
 fn review(rows: &[&str], title: usize, pending: &PendingQuestion) -> Option<QuestionScreen> {
     let body: Vec<_> = rows[title + 1..]
         .iter()
-        .map(|r| r.trim())
-        .filter(|r| !r.is_empty())
+        .copied()
+        .filter(|r| !r.trim().is_empty())
         .collect();
     let mut i = 0;
     for q in &pending.questions {
-        let first = body.get(i)?.strip_prefix("● ")?;
-        i += 1;
-        let start = i;
-        while body
-            .get(i)
-            .is_some_and(|r| !r.starts_with(['●', '→']) && *r != "Ready to submit your answers?")
-        {
-            i += 1;
-        }
-        let mut question_rows = vec![first];
-        question_rows.extend_from_slice(&body[start..i]);
-        if !rows_equal(&question_rows, &q.text) {
+        // Captured review fields: question marker at column 1, answer at column 3.
+        if indent(body.get(i)?) != 1 {
             return None;
         }
-        let first = body.get(i)?.strip_prefix('→')?.trim();
-        i += 1;
-        let start = i;
-        while body
-            .get(i)
-            .is_some_and(|r| !r.starts_with(['●', '→']) && *r != "Ready to submit your answers?")
-        {
+        let first = body[i].trim().strip_prefix("● ")?;
+        i = known_end(&body, i, first, &q.text)?;
+        if indent(body.get(i)?) != 3 {
+            return None;
+        }
+        let first = body[i].trim().strip_prefix('→')?.trim();
+        let start = i + 1;
+        i = start;
+        while body.get(i).is_some_and(|row| indent(row) > 3) {
             i += 1;
         }
         let mut answer_rows = vec![first];
@@ -619,21 +611,27 @@ fn anchor_rows(screen: &str, pending: &PendingQuestion) -> (Vec<String>, Vec<(us
     let mut rows = Vec::new();
     let mut spans = Vec::new();
     let fixed = [
-        "Review your answers",
-        "Ready to submit your answers?",
-        "• Queued follow-up inputs",
-        "⇧← to answer",
-        "enter submit   ⌃] skip   ⇧→ main prompt",
+        ("Review your answers", 0),
+        ("Ready to submit your answers?", 0),
+        ("• Queued follow-up inputs", 0),
+        ("⇧← to answer", 4),
+        ("enter submit   ⌃] skip   ⇧→ main prompt", 2),
     ];
     let mut i = 0;
     while i < raw.len() {
         let start = i;
         let first = raw[i].trim();
         let mut replacement = None;
-        for expected in fixed {
+        for (expected, column) in fixed {
+            if indent(raw[i]) != column {
+                continue;
+            }
             let target = compact(expected);
             let mut candidate = String::new();
             for (offset, row) in raw[i..].iter().enumerate() {
+                if indent(row) > if column == 2 { 4 } else { column.max(2) } {
+                    break;
+                }
                 candidate.push_str(&compact(row));
                 if !target.starts_with(&candidate) {
                     break;
@@ -648,10 +646,20 @@ fn anchor_rows(screen: &str, pending: &PendingQuestion) -> (Vec<String>, Vec<(us
             }
         }
         if replacement.is_none()
-            && (first.starts_with("← ") || first.starts_with("☐ ") || first.starts_with("☒ "))
+            && ((first.starts_with("← ") && indent(raw[i]) == 0)
+                || ((first.starts_with("☐ ") || first.starts_with("☒ ")) && indent(raw[i]) <= 1))
         {
             let mut candidate = String::new();
             for (end, row) in raw.iter().enumerate().skip(i) {
+                if indent(row)
+                    > if indent(raw[i]) == 2 {
+                        4
+                    } else {
+                        indent(raw[i]).max(2)
+                    }
+                {
+                    break;
+                }
                 candidate.push_str(&compact(row));
                 let mut rest = candidate.as_str();
                 let multiple = pending.questions.len() > 1;
@@ -692,9 +700,18 @@ fn anchor_rows(screen: &str, pending: &PendingQuestion) -> (Vec<String>, Vec<(us
                 }
             }
         }
-        if replacement.is_none() && first.starts_with("Question ") {
+        if replacement.is_none() && first.starts_with("Question ") && indent(raw[i]) == 2 {
             let mut candidate = String::new();
             for (end, row) in raw.iter().enumerate().skip(i) {
+                if indent(row)
+                    > if indent(raw[i]) == 2 {
+                        4
+                    } else {
+                        indent(raw[i]).max(2)
+                    }
+                {
+                    break;
+                }
                 candidate.push_str(&compact(row));
                 if let Some(body) = candidate
                     .strip_prefix("Question")
@@ -713,9 +730,12 @@ fn anchor_rows(screen: &str, pending: &PendingQuestion) -> (Vec<String>, Vec<(us
                 }
             }
         }
-        if replacement.is_none() && first.starts_with("? ") {
+        if replacement.is_none() && first.starts_with("? ") && indent(raw[i]) == 2 {
             let mut candidate = String::new();
             for (end, row) in raw.iter().enumerate().skip(i) {
+                if indent(row) > 4 {
+                    break;
+                }
                 candidate.push_str(&compact(row));
                 // The answer shortcut is a distinct short marker after the banner.
                 if candidate.ends_with("⇧←toanswer") {
@@ -742,10 +762,20 @@ fn anchor_rows(screen: &str, pending: &PendingQuestion) -> (Vec<String>, Vec<(us
             }
         }
         if replacement.is_none()
-            && (first.starts_with("Enter to select") || first.starts_with("tab "))
+            && ((first.starts_with("Enter to select") && indent(raw[i]) == 0)
+                || (first.starts_with("tab ") && indent(raw[i]) == 2))
         {
             let mut candidate = String::new();
             for (end, row) in raw.iter().enumerate().skip(i) {
+                if indent(row)
+                    > if indent(raw[i]) == 2 {
+                        4
+                    } else {
+                        indent(raw[i]).max(2)
+                    }
+                {
+                    break;
+                }
                 candidate.push_str(&compact(row));
                 let done = if first.starts_with("Enter") {
                     candidate.ends_with("Esctocancel")
@@ -778,11 +808,16 @@ fn anchor_rows(screen: &str, pending: &PendingQuestion) -> (Vec<String>, Vec<(us
             replacement = Some((end, "─".into()));
         }
         if replacement.is_none() {
-            if let Some((number, label, selected)) = numbered(raw[i]) {
+            if let Some((number, label, selected)) = numbered(raw[i])
+                .filter(|(_, _, selected)| indent(raw[i]) == if *selected { 0 } else { 2 })
+            {
                 let expected = "Chat about this";
                 let mut candidate = compact(label);
                 for (end, row) in raw.iter().enumerate().skip(i) {
                     if end > i {
+                        if indent(row) > 2 {
+                            break;
+                        }
                         candidate.push_str(&compact(row));
                     }
                     if !compact(expected).starts_with(&candidate) {
@@ -823,10 +858,17 @@ pub fn parse(
         let candidate = match kind {
             QuestionKind::ClaudeAsk => {
                 let row = rows[start].trim();
-                row.starts_with("← ") || row.starts_with("☐ ") || row.starts_with("☒ ")
+                (indent(raw[spans[start].0]) == 0 && row.starts_with("← "))
+                    || (indent(raw[spans[start].0]) <= 1
+                        && (row.starts_with("☐ ") || row.starts_with("☒ ")))
             }
-            QuestionKind::CodexPlan => rows[start].trim().starts_with("Question "),
-            QuestionKind::CodexAsync => rows[start].trim() == "• Queued follow-up inputs",
+            QuestionKind::CodexPlan => {
+                indent(raw[spans[start].0]) == 2 && rows[start].trim().starts_with("Question ")
+            }
+            QuestionKind::CodexAsync => {
+                indent(raw[spans[start].0]) == 0
+                    && rows[start].trim() == "• Queued follow-up inputs"
+            }
         };
         if !candidate {
             continue;
@@ -841,11 +883,17 @@ pub fn parse(
                     || rows[i].contains("enter to submit all")
             }
             QuestionKind::CodexAsync => {
-                rows[i].trim() == "⇧← to answer"
-                    || rows[i].trim() == "enter submit   ⌃] skip   ⇧→ main prompt"
+                (matches!(indent(raw[spans[i].0]), 2 | 4) && rows[i].trim() == "⇧← to answer")
+                    || (indent(raw[spans[i].0]) == 2
+                        && rows[i].trim() == "enter submit   ⌃] skip   ⇧→ main prompt")
             }
         });
         for end in ends {
+            // A footer-looking content row cannot truncate the rest of the picker.
+            let next = (spans[end].1..raw.len()).find(|&i| !raw[i].trim().is_empty());
+            if next.is_some_and(|i| indent(raw[i]) > 4) {
+                continue;
+            }
             let slice = &rows[start..=end];
             let dialog = match kind {
                 QuestionKind::ClaudeAsk => claude(slice, pending),
