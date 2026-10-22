@@ -607,3 +607,67 @@ fn short_control_anchors_also_accept_explicit_continuations() {
         .is_some()
     );
 }
+
+#[test]
+fn footer_lookalikes_in_content_do_not_end_dialogs() {
+    for (index, from, to) in [
+        (0, "Choose small", "Choose small; Esc to cancel"),
+        (4, "Pick a size", "Pick a size; enter to submit all"),
+        (
+            8,
+            "Color: Pick a color",
+            "enter submit   ⌃] skip   ⇧→ main prompt",
+        ),
+    ] {
+        let (kind, screen) = fixtures()[index];
+        let mut request = pending(kind);
+        if index == 0 {
+            request.questions[0].options[0].description = Some(to.into());
+        } else {
+            request.questions[0].text = to.into();
+        }
+        let updated = screen.replace(from, to);
+        let parsed = parse(kind, &updated, &request).unwrap();
+        assert_eq!(parsed.options.len(), 3);
+        assert!(parse(kind, &format!("{updated}\n{updated}"), &request).is_none());
+    }
+}
+
+#[test]
+fn identical_question_text_requires_exactly_one_full_option_match() {
+    for index in [0, 8] {
+        let (kind, screen) = fixtures()[index];
+        let mut request = pending(kind);
+        if kind == QuestionKind::CodexAsync {
+            request.questions.push(request.questions[0].clone());
+        } else {
+            let header = request.questions[1].header.clone();
+            request.questions[1] = request.questions[0].clone();
+            request.questions[1].header = header;
+        }
+        request.questions[1].options[0].label = "Different option".into();
+        let parsed = parse(kind, screen, &request).unwrap();
+        assert_eq!(
+            parsed.step,
+            if kind == QuestionKind::ClaudeAsk {
+                QuestionStep::ClaudeQuestion(0)
+            } else {
+                QuestionStep::AsyncPicker(0)
+            }
+        );
+        request.questions[1].options[0].label = request.questions[0].options[0].label.clone();
+        assert!(parse(kind, screen, &request).is_none());
+        request.questions[0].options[0].label = "Wrong first candidate".into();
+        let parsed = parse(kind, screen, &request).unwrap();
+        assert_eq!(
+            parsed.step,
+            if kind == QuestionKind::ClaudeAsk {
+                QuestionStep::ClaudeQuestion(1)
+            } else {
+                QuestionStep::AsyncPicker(1)
+            }
+        );
+        request.questions[1].options[0].label = "Wrong second candidate".into();
+        assert!(parse(kind, screen, &request).is_none());
+    }
+}

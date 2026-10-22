@@ -1,5 +1,5 @@
 //! Screen parsing anchored to structured pending questions. All dialog rows enter the fingerprint.
-use crate::question_match::{PendingQuestion, QuestionKind};
+use crate::question_match::{PendingQuestion, Question, QuestionKind};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QuestionStep {
@@ -176,16 +176,28 @@ fn claude(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
             .flatten();
     }
     let first_option = (title + 1..rows.len()).find(|&i| numbered(rows[i]).is_some())?;
-    let matches: Vec<_> = pending
+    let mut matches = pending
         .questions
         .iter()
         .enumerate()
         .filter(|(_, q)| rows_equal(&rows[title..first_option], &q.text))
-        .collect();
-    let [(index, q)] = matches.as_slice() else {
-        return None;
-    };
-    let mut dialog = result(QuestionStep::ClaudeQuestion(*index));
+        .filter_map(|(index, q)| claude_question(rows, first_option, title, index, q));
+    let chosen = matches.next()?;
+    if matches.next().is_some() {
+        None
+    } else {
+        Some(chosen)
+    }
+}
+
+fn claude_question(
+    rows: &[&str],
+    first_option: usize,
+    title: usize,
+    index: usize,
+    q: &Question,
+) -> Option<QuestionScreen> {
+    let mut dialog = result(QuestionStep::ClaudeQuestion(index));
     let divider = (title + 1..rows.len()).find(|&i| rule(rows[i]))?;
     let mut submitted = false;
     let mut i = first_option;
@@ -475,20 +487,31 @@ fn asynchronous(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScre
         return Some(dialog);
     }
     let first_option = (0..body.len()).find(|&i| numbered(body[i]).is_some())?;
-    let matches: Vec<_> = pending
+    let mut matches = pending
         .questions
         .iter()
         .enumerate()
         .filter(|(_, q)| rows_equal(&body[..first_option], &q.text))
-        .collect();
-    let [(index, q)] = matches.as_slice() else {
-        return None;
-    };
-    let mut dialog = result(QuestionStep::AsyncPicker(*index));
+        .filter_map(|(index, q)| async_picker(&body, first_option, index, q));
+    let chosen = matches.next()?;
+    if matches.next().is_some() {
+        None
+    } else {
+        Some(chosen)
+    }
+}
+
+fn async_picker(
+    body: &[&str],
+    first_option: usize,
+    index: usize,
+    q: &Question,
+) -> Option<QuestionScreen> {
+    let mut dialog = result(QuestionStep::AsyncPicker(index));
     let mut i = first_option;
     while i < body.len() - 1 {
         let (number, label, selected) = numbered(body[i])?;
-        let end = option_end(&body, i, body.len() - 1);
+        let end = option_end(body, i, body.len() - 1);
         let mut text_rows = vec![label];
         text_rows.extend_from_slice(&body[i + 1..end]);
         let visible_label = joined(&text_rows);
@@ -754,7 +777,7 @@ pub fn parse(
         if !candidate {
             continue;
         }
-        let end = (start + 1..rows.len()).find(|&i| match kind {
+        let ends = (start + 1..rows.len()).filter(|&i| match kind {
             QuestionKind::ClaudeAsk => {
                 rows[i].contains("Esc to cancel")
                     || rows[i].trim().trim_start_matches('❯').trim() == "2. Cancel"
@@ -768,19 +791,19 @@ pub fn parse(
                     || rows[i].trim() == "enter submit   ⌃] skip   ⇧→ main prompt"
             }
         });
-        let Some(end) = end else {
-            continue;
-        };
-        let slice = &rows[start..=end];
-        let dialog = match kind {
-            QuestionKind::ClaudeAsk => claude(slice, pending),
-            QuestionKind::CodexPlan => sync(slice, pending),
-            QuestionKind::CodexAsync => asynchronous(slice, pending),
-        };
-        if let Some(mut dialog) = dialog {
-            dialog.fingerprint = fingerprint(&raw[spans[start].0..spans[end].1]);
-            if chosen.replace(dialog).is_some() {
-                return None;
+        for end in ends {
+            let slice = &rows[start..=end];
+            let dialog = match kind {
+                QuestionKind::ClaudeAsk => claude(slice, pending),
+                QuestionKind::CodexPlan => sync(slice, pending),
+                QuestionKind::CodexAsync => asynchronous(slice, pending),
+            };
+            if let Some(mut dialog) = dialog {
+                dialog.fingerprint = fingerprint(&raw[spans[start].0..spans[end].1]);
+                if chosen.replace(dialog).is_some() {
+                    return None;
+                }
+                break;
             }
         }
     }
