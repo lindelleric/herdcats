@@ -143,7 +143,7 @@
     "ios/Herdcats/Features/AgentTimeline/AgentTimelineState.swift",
     "ios/Herdcats/Features/AgentTimeline/AgentTimelineView.swift"
   ],
-  "onboarding_release_gate": "Helper 0.2.2 published after explicit user approval; four native jobs passed. App pins 0.2.2; minimum compatible version is 0.2.0 (0.2.0 hosts remain compatible without auto drawers or blocking panes; optional upgrade in timeline menu).",
+  "onboarding_release_gate": "Helper 0.3.0 published after explicit user approval; four native jobs passed. App pins 0.3.0; minimum compatible version is 0.2.0 (0.2.0 hosts remain compatible without auto drawers or blocking panes; optional upgrade in timeline menu).",
   "first_use_drawer": {
     "size": "large detent with drag indicator",
     "preference_scope": "ConnectionIdentity.storageKey (SSH host, port, user and route identity)",
@@ -153,7 +153,7 @@
     "screenshot": ".lavish/timeline-first-use-drawer.png"
   },
   "one_click_setup": {
-    "helper_version": "0.2.2",
+    "helper_version": "0.3.0",
     "direct_ssh_only": true,
     "opening_timeline_installs": false,
     "uses_sudo": false,
@@ -249,7 +249,7 @@
       "original_image": "Passed focused follow-up: actual Quick Look controller, asynchronously rendered original image and full fallback source. /private/tmp/hc-rich-image-original-green.log"
     },
     "review": "Independent reviewer found no P0/P1; unfamiliar text-block P2 fixed with regression",
-    "helper_release": "https://github.com/zhiyao/herdcats/releases/tag/herdcats-bridge-v0.2.2",
+    "helper_release": "https://github.com/zhiyao/herdcats/releases/tag/herdcats-bridge-v0.3.0",
     "screenshots": [
       ".lavish/timeline-rich-content.png",
       ".lavish/timeline-original-image.png"

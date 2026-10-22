@@ -1,6 +1,6 @@
 {
   "component": "herdcats-bridge",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "protocol": 1,
   "herdr_protocol": 22,
   "supported_agent": "Claude and Codex with exact session references",
@@ -52,10 +52,10 @@
     "Published native release builds/tests verified in CI",
     "Public installer smoke verified on Apple Silicon in a temporary directory",
     "Binaries not Developer ID signed/notarized",
-    "Approval events and guarded responses exist on main only (unreleased, shipping in bridge 0.3.0); the published and pinned 0.2.2 reports approvals: false. Native app approval UI, questions and saved-machine routing remain gated"
+    "Native approvals and questions are available from 0.3.0 with capability negotiation and opt-ins. Claude approval/question cards and Codex approval cards require the hook; Codex question cards do not. Saved-machine routing remains unavailable"
   ],
   "onboarding": {
-    "status": "0.2.2 published and pinned; minimum compatible version 0.2.0",
+    "status": "0.3.0 published and pinned; minimum compatible version 0.2.0",
     "app_flow": [
       "For a supported agent, missing helper automatically opens near-full-screen Timeline benefits and host-helper setup guidance",
       "Dismiss or Use Terminal for now selects Terminal and remembers the SSH-host choice",
@@ -65,7 +65,7 @@
       "After uncertain installation, check existing helper before allowing a retry; retain Manual setup copy instructions",
       "Check again remains in guidance when unavailable; verified native Timeline closes the sheet and restores its default"
     ],
-    "command": "curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v0.2.2/install.sh | sh -s -- --version 0.2.2",
+    "command": "curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v0.3.0/install.sh | sh -s -- --version 0.3.0",
     "user_dependencies": [
       "POSIX shell utilities including link",
       "curl",
@@ -76,10 +76,10 @@
       "Linux glibc2.35+ arm64/x86_64"
     ],
     "release_workflow": ".github/workflows/bridge-release.yml",
-    "publication": "Four native builds and draft assembly passed in CI39362219012; user approved publication",
+    "publication": "Four native builds and draft assembly passed in CI39789135682; user approved publication",
     "download_boundary": "HTTPS release assets and same-channel SHA256SUMS; checksums are integrity checks, not independent signing",
     "build_dependencies": "Rust and Python are required only for source-build/development path below",
-    "app_installer_integrity": "App pins bridge 0.2.2 and install.sh SHA256 before execution; minimum compatible bridge version is 0.2.0 (hosts with 0.2.0 remain compatible without blocking panes or auto drawers; optional upgrade offered in timeline menu). Installer checks native binary checksum.",
+    "app_installer_integrity": "App pins bridge 0.3.0 and install.sh SHA256 before execution; minimum compatible bridge version is 0.2.0 (hosts with 0.2.0 remain compatible without blocking panes or auto drawers; optional upgrade offered in timeline menu). Installer checks native binary checksum.",
     "agent_support": "UI uses agent-neutral language and detects the current pane agent; Timeline is offered for implemented adapters (currently Claude and Codex). Other agents retain Terminal and Compose.",
     "record_content": "App requires negotiated record_content support; older helpers reopen setup and require explicit replacement. Images and unfamiliar records expose complete source bytes."
   }

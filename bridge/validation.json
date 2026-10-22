@@ -10,7 +10,7 @@
     "phase0_result": "passed",
     "installer": 9,
     "installer_result": "passed against debug and release binaries in temporary directories",
-    "release_build": "0.2.2 native CI builds passed (CI39362219012) and 128 rust tests passed",
+    "release_build": "0.3.0 native CI builds passed (CI39789135682) and 344 rust tests passed",
     "setup_distribution_python": 33,
     "setup_distribution_result": "33 passed, including9 tests executing the actual mobile probe/install shell scripts"
   },
@@ -62,12 +62,12 @@
     "installed_on_user_host": false,
     "published_release": true,
     "ci": "macOS Apple Silicon/Intel and Linux arm64/x86_64 native tests, Clippy, builds and packaging passed",
-    "release_workflow": "Four native builds and draft assembly passed in CI39362219012; published after checksum/platform checks and explicit user approval",
+    "release_workflow": "Four native builds and draft assembly passed in CI39789135682; published after checksum/platform checks and explicit user approval",
     "public_install_script": "bridge/scripts/install.sh; no Rust/Python requirement for users",
-    "mobile_one_click": "Explicit direct-SSH action; app-pinned script digest (0.2.2), minimum compatible bridge 0.2.0, bounded command, separate replacement authorization, check-first recovery and manual fallback",
+    "mobile_one_click": "Explicit direct-SSH action; app-pinned script digest (0.3.0), minimum compatible bridge 0.2.0, bounded command, separate replacement authorization, check-first recovery and manual fallback",
     "mobile_live_ssh": "Public0.1.3 installed in isolated temporary HOME over disposable loopback SSH; verified timeout cleanup, exit7 propagation and parent connection health. /private/tmp/hc-oneclick-live-green.log"
   },
-  "release_evidence": "compatibility/release/v0.2.2.json",
+  "release_evidence": "compatibility/release/v0.3.0.json",
   "patch_review_fixes": {
     "status": "0.1.3 published and installer verified; Claude pass2 CLEAN: No P0 or P1 issues remain",
     "findings": [

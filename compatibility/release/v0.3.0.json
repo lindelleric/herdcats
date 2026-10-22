@@ -1,0 +1,41 @@
+{
+  "date": "2026-10-22",
+  "status": "published_and_pinned",
+  "version": "0.3.0",
+  "tag": "herdcats-bridge-v0.3.0",
+  "source_commit": "53390e0776a6c3c0b308eefc62756318016d1c23",
+  "url": "https://github.com/zhiyao/herdcats/releases/tag/herdcats-bridge-v0.3.0",
+  "ci_url": "https://github.com/zhiyao/herdcats/actions/runs/39789135682",
+  "native_builds": [
+    "darwin-arm64",
+    "darwin-x86_64",
+    "linux-arm64",
+    "linux-x86_64"
+  ],
+  "native_ci_result": "All four native test/Clippy/build/package jobs and draft assembly passed",
+  "binary_sha256": {
+    "herdcats-bridge-darwin-arm64": "0e012da9c84f08c7b63a9fbded5472a939bb68755d8b67b433aacfca366928ea",
+    "herdcats-bridge-darwin-x86_64": "82328f019e52ae952f1af482dc2d2c8ca2f93c9995d44d39278b402be68ded9f",
+    "herdcats-bridge-linux-arm64": "0979c4250855eedd230af28c9560c7562024e7704386068c793daf438080bd7b",
+    "herdcats-bridge-linux-x86_64": "5d787883eeb41479c34eb93d55447e412e1ae19ae025c9467fd74e8eb6b68f2a"
+  },
+  "installer_sha256": "abc709fd23eed7e8ba395f21aec7a31415c8d79d8e32655748d14514f3322025",
+  "validation": {
+    "rust_tests": 344,
+    "installer_distribution_tests": 33,
+    "clippy": "passed",
+    "ios_unit_tests": 507,
+    "release_ci": "CI39789135682: four native test/Clippy/build/package jobs and draft assembly passed",
+    "published_assets_verified": "SHA256SUMS matched all four binaries; released install.sh identical to the repo at the tag; darwin-arm64 --version reported 0.3.0 with agents claude,codex",
+    "ios_unit_result": "Passed: 507 tests reported, including 2 opt-in skips; xcodebuild test -only-testing:HerdcatsTests on iPhone 16 Pro Max iOS 18.5. Xcode resolved compatible package versions for this run; generated Package.resolved changes restored after testing.",
+    "installer_distribution_result": "33 passed: test_install.py (9), test_package.py (3), test_download_install.py (10), test_mobile_launcher.py (2), test_mobile_helper_install.py (9), run directly as CI scripts"
+  },
+  "publication_authorization": "Tagged and published by the user",
+  "minimum_compatible_version": "0.2.0",
+  "limits": [
+    "Approvals and questions are answerable from the phone through the terminal with guarded keys from bridge 0.3.0, with capability negotiation and opt-ins. Claude approval/question cards and Codex approval cards require the hook; Codex question cards do not. Saved-machine routing remains unavailable",
+    "Codex requires an exact session reference from Herdr; the shared background server can be turned off from the app with confirmation, and stopping it disconnects attached Codex sessions",
+    "Verified source hard limit 64MiB; retained entries 1000; references to retired entries unavailable",
+    "macOS binaries unsigned/unnotarized"
+  ]
+}

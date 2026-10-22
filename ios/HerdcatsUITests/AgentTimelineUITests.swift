@@ -204,7 +204,7 @@ final class AgentTimelineUITests: XCTestCase {
             XCTAssertTrue(feedback.waitForExistence(timeout: 5))
             XCTAssertFalse(app.buttons["timeline-tool-tool:read"].exists)
             if scenario == "replacement" {
-                XCTAssertEqual(install.label, "Replace Herdcats Bridge with 0.2.2")
+                XCTAssertEqual(install.label, "Replace Herdcats Bridge with 0.3.0")
                 install.tap()
                 XCTAssertTrue(app.buttons["timeline-tool-tool:read"].waitForExistence(timeout: 5))
             } else if scenario == "uncertain" {
@@ -298,7 +298,7 @@ final class AgentTimelineUITests: XCTestCase {
         launch(app)
         let install = app.buttons["timeline-helper-install"]
         XCTAssertTrue(install.waitForExistence(timeout: 5))
-        XCTAssertEqual(install.label, "Upgrade to 0.2.2")
+        XCTAssertEqual(install.label, "Upgrade to 0.3.0")
         XCTAssertTrue(app.staticTexts["A newer Herdcats Bridge is available"].exists)
         install.tap()
         XCTAssertTrue(app.buttons["timeline-tool-tool:read"].waitForExistence(timeout: 5))
@@ -310,7 +310,7 @@ final class AgentTimelineUITests: XCTestCase {
         launch(appExternal)
         let installExt = appExternal.buttons["timeline-helper-install"]
         XCTAssertTrue(installExt.waitForExistence(timeout: 5))
-        XCTAssertEqual(installExt.label, "Upgrade to 0.2.2")
+        XCTAssertEqual(installExt.label, "Upgrade to 0.3.0")
         installExt.tap()
         let feedback = appExternal.staticTexts["timeline-setup-feedback"]
         XCTAssertTrue(feedback.waitForExistence(timeout: 5))
@@ -602,7 +602,7 @@ final class AgentTimelineUITests: XCTestCase {
         let upgradeButton = appUpgradePane.buttons["timeline-helper-setup"]
         XCTAssertTrue(upgradeButton.waitForExistence(timeout: 5))
         XCTAssertEqual(upgradeButton.label, "Upgrade Herdcats Bridge")
-        XCTAssertTrue(appUpgradePane.staticTexts["Herdcats Bridge 0.1.4 on this computer can't show Codex conversations. Upgrade to 0.2.2."].exists)
+        XCTAssertTrue(appUpgradePane.staticTexts["Herdcats Bridge 0.1.4 on this computer can't show Codex conversations. Upgrade to 0.3.0."].exists)
         XCTAssertFalse(appUpgradePane.buttons["timeline-helper-retry"].exists)
         saveNamedScreenshot(appUpgradePane.screenshot(), name: "codex-pane-needs-upgrade")
 
@@ -613,7 +613,7 @@ final class AgentTimelineUITests: XCTestCase {
         XCTAssertTrue(appUpgradePane.navigationBars["Upgrade Herdcats Bridge"].exists)
         XCTAssertTrue(appUpgradePane.staticTexts["A newer Herdcats Bridge is available"].exists)
         XCTAssertTrue(appUpgradePane.buttons["timeline-helper-install"].exists)
-        XCTAssertEqual(appUpgradePane.buttons["timeline-helper-install"].label, "Upgrade to 0.2.2")
+        XCTAssertEqual(appUpgradePane.buttons["timeline-helper-install"].label, "Upgrade to 0.3.0")
         saveNamedScreenshot(appUpgradePane.screenshot(), name: "upgrade-drawer")
         appUpgradePane.terminate()
 
