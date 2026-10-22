@@ -13,19 +13,19 @@
   },
   "capabilities": {
     "claude_timeline": "true when transcript root is available; per-pane source validation still required",
-    "codex_timeline": "true when the Codex root exists; per-pane source validation still required; prompts/questions/routed_hosts stay false",
+    "codex_timeline": "true when the Codex root exists; per-pane source validation still required; prompts/routed_hosts stay false",
     "codex_daemon_config": true,
     "codex_daemon_stop": true,
     "git": false,
     "prompts": false,
     "approvals": true,
-    "questions": false,
+    "questions": true,
     "routed_hosts": false,
     "record_content": "true; rich entries and bounded content retrieval are enabled only when initialize params.record_content is true"
   },
   "subcommands": {
     "herdcats-bridge codex-config daemon-status": "Reports running/not_running/unknown state of the managed daemon and updater, and config.toml auto_start setting; exits 0 and prints JSON",
-    "herdcats-bridge codex-config disable-daemon [--stop-running]": "Sets features.daemon_auto_start = false in Codex config.toml; with --stop-running, also safely stops the running managed daemon and updater (note: stopping disconnects sessions attached to the daemon, which must be restarted); exits 0 and prints status/error JSON whose optional daemon/updater fields are one of stopped, not_running, stop_failed, unknown (stop_failed = still running after the stop passes — including a process that started or restarted mid-operation — or any stop command failed, exited nonzero, or timed out; unknown = a possibly-matching process is alive but its identity could not be verified; it is never signalled)"
+    "herdcats-bridge codex-config disable-daemon [--stop-running]": "Sets features.daemon_auto_start = false in Codex config.toml; with --stop-running, also safely stops the running managed daemon and updater (note: stopping disconnects sessions attached to the daemon, which must be restarted); exits 0 and prints status/error JSON whose optional daemon/updater fields are one of stopped, not_running, stop_failed, unknown (stop_failed = still running after the stop passes \u2014 including a process that started or restarted mid-operation \u2014 or any stop command failed, exited nonzero, or timed out; unknown = a possibly-matching process is alive but its identity could not be verified; it is never signalled)"
   },
   "requests": [
     {
@@ -33,7 +33,8 @@
       "params": {
         "protocol": 1,
         "record_content": "optional bool; false by default for older clients",
-        "approvals": "optional bool; false by default; opts into interaction events and responses"
+        "approvals": "optional bool; false by default; opts into approval interaction events and responses",
+        "questions": "optional bool; false by default; independently opts into question interaction events and responses"
       },
       "result_fields": [
         "protocol",
@@ -111,7 +112,7 @@
         "sent": "string; exactly one Claude digit shortcut, Codex letter shortcut, or esc; never Enter",
         "confirmed": "boolean; true when the visible screen no longer parses as the same dialog; false if it remains or confirmation reads fail"
       },
-      "requires": "initialize with params.approvals true and a watch with a resolved native identity; approvals capability is true for both Claude and Codex",
+      "requires": "initialize with params.approvals true for approvals or params.questions true for questions, and a watch with a resolved native identity",
       "validation": [
         "The request_id must equal the last emitted pending approval for the current watch identity and generation.",
         "Re-read the visible screen and parse with the same hook command; dialog content and option keys must match the emitted dialog. A highlight-only change is allowed.",
@@ -120,13 +121,27 @@
         "A fresh Herdr snapshot must still show the same native occupant blocked in the same pane and terminal."
       ],
       "errors": {
-        "unsupported_capability": "Client did not opt in with initialize params.approvals true.",
+        "unsupported_capability": "Client did not opt in to the corresponding approvals or questions capability.",
         "not_watching": "No active watch.",
         "timeline_unavailable": "The watch has no resolved identity or its timeline is unavailable.",
-        "stale": "No matching emitted request, changed/unreadable dialog or source, resolved/aborted or superseded call, or changed/unblocked/missing pane. No keys are sent.",
-        "mismatch": "The option number is invalid or its label_lines differ from the exact rows shown. No keys are sent."
+        "stale": "No matching emitted request, changed/unreadable dialog or source, resolved/aborted or superseded call, or changed/unblocked/missing pane. Preflight and approval errors send no input. During question execution, includes steps_sent: number of input steps dispatched, conservatively counting a failed send whose delivery may be uncertain.",
+        "mismatch": "The option number is invalid or its label_lines differ from the exact rows shown. No keys are sent. For questions, answers do not fit the request.",
+        "in_progress": "Question screen is no longer fresh; no input sent.",
+        "invalid": "Invalid answer indices, cardinality, option numbers or text."
       },
-      "effect": "After validation, send exactly one shortcut without Enter. Re-read the visible screen for up to about 2 seconds with short waits. Return confirmed: false rather than an error if the key was sent but disappearance could not be confirmed; do not automatically resend. Write the result, then poll so interaction.resolved can follow promptly."
+      "effect": "After validation, send exactly one shortcut without Enter. Re-read the visible screen for up to about 2 seconds with short waits. Return confirmed: false rather than an error if the key was sent but disappearance could not be confirmed; do not automatically resend. Write the result, then poll so interaction.resolved can follow promptly.",
+      "question_params": {
+        "request_id": "string from interaction.pending",
+        "answers": "array of {index: zero-based question index, options: [one-based option number], text?: string}; answer every question exactly once; omit for skip",
+        "skip": "true only for Codex async; omit answers"
+      },
+      "question_validation": [
+        "Each answer requires at least one option or non-empty text, including multi-select: submitting a multi-select with nothing chosen is not supported (unverified terminal behaviour), so answer it in Terminal. Single-select accepts at most one option; multi-select accepts several. Option numbers exclude the free-text row. Codex Plan requires exactly one option, including None of the above for a text-only answer.",
+        "Text is a single line of at most 500 characters with no control characters.",
+        "Respond only from a fresh screen. Recheck the pending request, identity, blocked status and fresh visible screen before sending; verify the expected next screen between steps. Stop on mismatch with stale and steps_sent."
+      ],
+      "question_result": "request_id and confirmed: boolean; true when the dialog is observed gone after the final input (or after the last Codex Plan digit). False if final confirmation fails or the unchanged final dialog remains for about 1 second. Never resend automatically.",
+      "question_effect": "Revalidate the newest pending request without the polling cache, identity, occupant, blocked status and fresh visible screen before input. Execute the pure key/text plan, polling the visible screen every 100ms for at most about 1 second after each step. Re-read before later inputs and revalidate the occupant before sending. Stop with stale and steps_sent on an unexpected state or intermediate read/send failure. Send the optional final Codex Plan Enter only if the selected last picker is still visible; skip it if the dialog has gone. Write the result, then poll so interaction.resolved can follow."
     }
   ],
   "envelopes": {
@@ -142,7 +157,8 @@
     "failure": {
       "id": "request ID or null for invalid frame/ID",
       "error": {
-        "code": "stable string"
+        "code": "stable string",
+        "steps_sent": "optional integer on question execution stale errors; key lists and text inputs each count as one step"
       }
     },
     "notification": {
@@ -232,7 +248,20 @@
         "label_lines": "array of visible label rows, preserving row boundaries; never join rows when echoing a response",
         "key": "string parsed from the screen: Claude digit shortcut, Codex letter shortcut, or esc; the client echoes number and label_lines, not a key"
       },
-      "effect": "Show only the newest correlated Pending request when the pane is blocked and exactly one visible dialog matches its hook command. Emit only on a changed request, dialog content/keys, or selection (and after identity/generation reset). A replacement request emits interaction.resolved for the old request first."
+      "effect": "Show only the newest correlated Pending request when the pane is blocked and exactly one visible dialog matches its hook command. Emit only on a changed request, dialog content/keys, or selection (and after identity/generation reset). A replacement request emits interaction.resolved for the old request first.",
+      "question_fields": {
+        "identity": "same watched timeline identity",
+        "generation": "u64 timeline generation",
+        "kind": "question",
+        "request_id": "Claude ask-<payload.prompt_id>-<record t in whole milliseconds> from the hook spool, or Codex call_id",
+        "agent": "claude or codex",
+        "question_kind": "claude | codex_plan | codex_async",
+        "questions": "array of {index: zero-based integer, header: string|null, text: string, options: [{number: one-based integer, label: string, description: string|null}], multi_select: boolean, allows_other: boolean}; free-text row excluded from options",
+        "step": "object: {kind: claude_question, index}, {kind: claude_review}, {kind: codex_question, index, total}, {kind: async_queued}, or {kind: async_picker, index}; indices are zero-based",
+        "fresh": "boolean; untouched first Claude tab with cursor on option 1 and no checks/text or completed tabs; Codex Plan Question 1/n with n unanswered and no notes; async queued or picker cursor on 1 without text",
+        "countdown": "string|null; visible Codex async countdown"
+      },
+      "question_effect": "Enabled only by initialize params.questions true. Match newest pending Claude question from its recording hook spool plus answered transcript calls, or Codex question from the rollout alone, while blocked; cache Claude by spool and transcript stamps and Codex by rollout stamp, re-read visible screen each poll. Suppress secret questions, multi-question async requests, async requests when more than one async call is pending in the session, async queued banners whose count is not exactly 1, and screens that do not parse. Approvals take priority. Emit on changed step or fresh state (also countdown/payload changes)."
     },
     "interaction.resolved": {
       "fields": [
@@ -241,11 +270,11 @@
         "request_id"
       ],
       "field_types": {
-        "identity": "object; identity of the previously emitted approval, including on occupant replacement",
-        "generation": "u64; generation of the previously emitted approval",
-        "request_id": "string; previously emitted Claude tool_use_id or Codex rollout call_id"
+        "identity": "object; identity of the previously emitted interaction, including on occupant replacement",
+        "generation": "u64; generation of the previously emitted interaction",
+        "request_id": "string; previously emitted request ID: Claude approval tool_use_id, Claude question ask-<prompt_id>-<milliseconds>, or Codex rollout call_id"
       },
-      "effect": "Clear the matching pending approval once when the call resolves/aborts, the pane leaves blocked, the dialog disappears or becomes uncertain, or the identity changes. initialize and unwatch reset pending state without emitting this event. Same-identity source_changing retries preserve the existing approval without emitting interaction.resolved."
+      "effect": "Clear the matching pending interaction once when the call resolves/aborts, the pane leaves blocked, the dialog disappears or becomes uncertain, or the identity changes. initialize and unwatch reset pending state without emitting this event. Same-identity source_changing retries preserve the existing interaction without emitting interaction.resolved."
     }
   },
   "entry_fields": {
@@ -282,7 +311,7 @@
     "Bounded source prefix reread on change, new complete records parsed incrementally.",
     "Negotiated content retrieval covers complete original records and blocks within the verified 64MiB source; only references on retained entries are readable.",
     "Claude captured2.1.296 schema coverage; no general version promise.",
-    "Optional four-platform installer and native iOS client. Bridge approval events and guarded responses support Claude and Codex in unreleased builds from main (shipping in 0.3.0; published 0.2.2 reports approvals: false); native app approval UI, prompts, questions and saved-machine routing remain gated."
+    "Optional four-platform installer and native iOS client. Bridge approval events and guarded responses support Claude and Codex in unreleased builds from main (shipping in 0.3.0; published 0.2.2 reports approvals: false); native app approval/question UI, prompts and saved-machine routing remain gated."
   ],
   "errors": [
     "ambiguous_session",
@@ -330,7 +359,9 @@
     "unsupported_agent",
     "unsupported_capability",
     "unsupported_herdr_protocol",
-    "unsupported_session_source"
+    "unsupported_session_source",
+    "invalid",
+    "in_progress"
   ],
   "transient_read_behavior": "source_changing retries without clearing verified cache for the same identity; after repeated retries (threshold 10), emits timeline.updated with delayed: true while keeping verified history until recovery clears it. A changed occupant still clears old state.",
   "approval_policy": {
@@ -340,6 +371,12 @@
     "eligibility": "Require all three: a spool record correlated to a still-pending native call, Herdr agent_status blocked, and exactly one dialog parsed from source visible anchored to the hook command. Never use scrollback/recent text or guess an uncorrelated request.",
     "bounds": "Keep every pending frame below wire_frame_bytes. Suppress an oversized approval instead of truncating command, metadata or labels.",
     "input_failures": "Approval spool/screen/tail read failures yield no card and do not themselves emit timeline.unavailable. Same-identity timeline source_changing retries preserve an already emitted card until verification can resume.",
-    "capability": "approvals: true advertises bridge support for Claude and Codex; initialize params.approvals must be true to enable interaction events, responses and approval reads (unreleased until 0.3.0; clients must gate on this capability, not on bridge_version); cards still require installed recording hooks and verified live inputs. prompts and questions remain false."
+    "capability": "approvals: true advertises bridge support for Claude and Codex; initialize params.approvals must be true to enable interaction events, responses and approval reads (unreleased until 0.3.0; clients must gate on this capability, not on bridge_version); cards still require installed recording hooks and verified live inputs. Questions advertise true with a separate initialize params.questions opt-in; prompts remain false."
+  },
+  "question_policy": {
+    "sources": "Claude question cards require the recording PermissionRequest hook installed: pending AskUserQuestion requests come from its session spool, since the transcript writes the call only after answering or Esc cancel. Pair identical inputs one-to-one against answered transcript tool calls in timestamp order, requiring a valid call timestamp no more than 2 seconds after or 120 seconds before its spool record. Missing spool means no Claude question card. Codex question cards use the rollout alone and require no recording hook. Read only for blocked panes.",
+    "eligibility": "Newest pending request, no secrets, exactly one question and exactly one pending async call for Codex async, a queued banner count of exactly 1 if queued, and exactly one parsed visible question screen. Approval cards take priority.",
+    "resolution": "Resolve when request is no longer pending, pane leaves blocked, screen no longer parses, or identity changes. Same-identity source_changing preserves pending state. initialize/unwatch silently reset.",
+    "bounds": "Suppress oversized events rather than truncating question text or options."
   }
 }

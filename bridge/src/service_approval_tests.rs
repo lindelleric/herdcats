@@ -218,6 +218,7 @@ fn test_watch() -> Watch {
         last_daemon_status: None,
         pending: None,
         approval_cache: None,
+        question_cache: None,
         source_pane: None,
     }
 }
@@ -228,34 +229,34 @@ fn approval_state_emits_only_changes_and_resolves_before_replacement() {
     let mut watch = test_watch();
     let mut out = Vec::new();
     service
-        .update_pending(&mut out, &mut watch, Some(test_pending("one")))
+        .update_pending(&mut out, &mut watch, Some(PendingInteraction::Approval(test_pending("one"))))
         .unwrap();
     let first = frames(std::mem::take(&mut out));
     assert_eq!(first.len(), 1);
     assert_eq!(first[0]["event"], "interaction.pending");
     assert_eq!(first[0]["data"]["description"], "verbatim hook description");
     service
-        .update_pending(&mut out, &mut watch, Some(test_pending("one")))
+        .update_pending(&mut out, &mut watch, Some(PendingInteraction::Approval(test_pending("one"))))
         .unwrap();
     assert!(out.is_empty());
     let mut selected = test_pending("one");
     selected.dialog.selected = Some(1);
     service
-        .update_pending(&mut out, &mut watch, Some(selected))
+        .update_pending(&mut out, &mut watch, Some(PendingInteraction::Approval(selected)))
         .unwrap();
     assert_eq!(frames(std::mem::take(&mut out))[0]["data"]["selected"], 1);
     let mut changed = test_pending("one");
     changed.dialog.selected = Some(1);
     changed.dialog.options[0].label_lines = vec!["Changed".into(), "second row".into()];
     service
-        .update_pending(&mut out, &mut watch, Some(changed))
+        .update_pending(&mut out, &mut watch, Some(PendingInteraction::Approval(changed)))
         .unwrap();
     assert_eq!(
         frames(std::mem::take(&mut out))[0]["data"]["options"][0]["label_lines"],
         json!(["Changed", "second row"])
     );
     service
-        .update_pending(&mut out, &mut watch, Some(test_pending("two")))
+        .update_pending(&mut out, &mut watch, Some(PendingInteraction::Approval(test_pending("two"))))
         .unwrap();
     let replacement = frames(std::mem::take(&mut out));
     assert_eq!(replacement.len(), 2);
@@ -278,14 +279,14 @@ fn approval_state_uses_old_identity_on_resolution_and_rejects_oversized_frame() 
     let mut watch = test_watch();
     let mut out = Vec::new();
     service
-        .update_pending(&mut out, &mut watch, Some(test_pending("one")))
+        .update_pending(&mut out, &mut watch, Some(PendingInteraction::Approval(test_pending("one"))))
         .unwrap();
     out.clear();
     let mut replacement = test_pending("one");
     replacement.identity.native_session_id = OTHER.into();
     replacement.generation = 2;
     service
-        .update_pending(&mut out, &mut watch, Some(replacement))
+        .update_pending(&mut out, &mut watch, Some(PendingInteraction::Approval(replacement)))
         .unwrap();
     let emitted = frames(std::mem::take(&mut out));
     assert_eq!(emitted.len(), 2);
@@ -295,7 +296,7 @@ fn approval_state_uses_old_identity_on_resolution_and_rejects_oversized_frame() 
     let mut large = test_pending("large");
     large.request.tool_input["description"] = json!("\"".repeat(MAX_RECORD / 2));
     service
-        .update_pending(&mut out, &mut watch, Some(large))
+        .update_pending(&mut out, &mut watch, Some(PendingInteraction::Approval(large)))
         .unwrap();
     let emitted = frames(std::mem::take(&mut out));
     assert_eq!(emitted.len(), 1);
@@ -304,7 +305,7 @@ fn approval_state_uses_old_identity_on_resolution_and_rejects_oversized_frame() 
     let mut large = test_pending("large");
     large.request.tool_input["description"] = json!("x".repeat(MAX_RECORD));
     service
-        .update_pending(&mut out, &mut watch, Some(large))
+        .update_pending(&mut out, &mut watch, Some(PendingInteraction::Approval(large)))
         .unwrap();
     assert!(out.is_empty());
 }

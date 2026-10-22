@@ -1,5 +1,23 @@
 use super::*;
-use crate::question_match::{pending_claude_questions, pending_codex_questions};
+use crate::question_match::{pending_claude_spool_questions, pending_codex_questions};
+use serde_json::Value;
+
+fn claude_questions(transcript: &[Value]) -> Vec<PendingQuestion> {
+    let mut records: Vec<Value> = [
+        include_str!("../../../compatibility/phase2/fixtures/claude-question-spool.jsonl"),
+        include_str!("../../../compatibility/phase2/fixtures/claude-question-one-spool.jsonl"),
+    ]
+    .into_iter()
+    .flat_map(str::lines)
+    .map(|l| serde_json::from_str(l).unwrap())
+    .collect();
+    records.retain(|r| {
+        transcript
+            .first()
+            .is_some_and(|t| r["session_id"] == t["sessionId"])
+    });
+    pending_claude_spool_questions(&records, transcript)
+}
 
 fn pending(kind: QuestionKind) -> PendingQuestion {
     let source = match kind {
@@ -18,7 +36,7 @@ fn pending(kind: QuestionKind) -> PendingQuestion {
         .map(|r| serde_json::from_str(r).unwrap())
         .collect();
     if kind == QuestionKind::ClaudeAsk {
-        pending_claude_questions(&records)
+        claude_questions(&records)
     } else {
         pending_codex_questions(&records)
     }
@@ -380,7 +398,7 @@ fn claude_one_question_capture_has_no_review_step() {
             .map(|line| serde_json::from_str(line).unwrap())
             .collect::<Vec<_>>()
     };
-    let requests = pending_claude_questions(&records(include_str!(
+    let requests = claude_questions(&records(include_str!(
         "../../../compatibility/phase2/fixtures/claude-question-one-transcript-pending.jsonl"
     )));
     assert_eq!(requests.len(), 1);
@@ -388,7 +406,7 @@ fn claude_one_question_capture_has_no_review_step() {
     assert_eq!(request.questions.len(), 1);
     assert_eq!(request.questions[0].text, "Pick a color?");
     assert!(
-        pending_claude_questions(&records(include_str!(
+        claude_questions(&records(include_str!(
             "../../../compatibility/phase2/fixtures/claude-question-one-transcript.jsonl"
         )))
         .is_empty()
@@ -518,9 +536,19 @@ fn every_fixture_survives_hard_wrapping_at_narrow_widths() {
     .map(|line| serde_json::from_str(line).unwrap())
     .collect::<Vec<_>>();
     cases.push((
-        pending_claude_questions(&records).remove(0),
+        claude_questions(&records).remove(0),
         include_str!("../../../compatibility/phase2/fixtures/claude-question-one-screen.txt"),
     ));
+    let mut one_multi = pending(QuestionKind::ClaudeAsk);
+    one_multi.questions.remove(0);
+    for screen in [
+        include_str!("../../../compatibility/phase2/fixtures/claude-question-one-multi-screen.txt"),
+        include_str!(
+            "../../../compatibility/phase2/fixtures/claude-question-one-multi-review-screen.txt"
+        ),
+    ] {
+        cases.push((one_multi.clone(), screen));
+    }
     for (request, screen) in cases {
         let original = parse(request.kind, screen, &request).unwrap();
         for width in [40, 30, 24] {
@@ -603,7 +631,7 @@ fn short_control_anchors_also_accept_explicit_continuations() {
     .lines()
     .map(|line| serde_json::from_str(line).unwrap())
     .collect::<Vec<_>>();
-    let request = pending_claude_questions(&records).remove(0);
+    let request = claude_questions(&records).remove(0);
     let screen =
         include_str!("../../../compatibility/phase2/fixtures/claude-question-one-screen.txt");
     assert!(
@@ -793,7 +821,7 @@ fn review_title_can_be_an_ordinary_question() {
     .lines()
     .map(|line| serde_json::from_str(line).unwrap())
     .collect::<Vec<_>>();
-    let mut request = pending_claude_questions(&records).remove(0);
+    let mut request = claude_questions(&records).remove(0);
     request.questions[0].text = "Review your answers".into();
     let screen =
         include_str!("../../../compatibility/phase2/fixtures/claude-question-one-screen.txt");
@@ -822,7 +850,7 @@ fn arbitrary_control_text_and_truncations_never_panic() {
     .map(|line| serde_json::from_str(line).unwrap())
     .collect::<Vec<_>>();
     screens.push((
-        pending_claude_questions(&records).remove(0),
+        claude_questions(&records).remove(0),
         include_str!("../../../compatibility/phase2/fixtures/claude-question-one-screen.txt"),
     ));
     let texts = [
@@ -924,7 +952,7 @@ fn markers_inside_typed_text_never_truncate_a_successful_parse() {
     .map(|line| serde_json::from_str(line).unwrap())
     .collect::<Vec<_>>();
     cases.push((
-        pending_claude_questions(&records).remove(0),
+        claude_questions(&records).remove(0),
         include_str!("../../../compatibility/phase2/fixtures/claude-question-one-screen.txt"),
         "  3. Type something.",
         "❯ 3. ",
@@ -956,5 +984,113 @@ fn markers_inside_typed_text_never_truncate_a_successful_parse() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn codex_plan_add_notes_placeholder_is_empty_but_similar_typed_notes_are_preserved() {
+    let request = pending(QuestionKind::CodexPlan);
+    let screen = include_str!(
+        "../../../compatibility/phase2/fixtures/codex-sync-notes-placeholder-screen.txt"
+    );
+    let parsed = parse(request.kind, screen, &request).unwrap();
+    assert_eq!(parsed.cursor, Some(QuestionCursor::Notes));
+    assert_eq!(parsed.highlighted, Some(1));
+    assert_eq!(
+        parsed.free_text,
+        Some(FreeText {
+            active: true,
+            text: String::new()
+        })
+    );
+    assert!(!parsed.is_fresh(&request));
+    for notes in [
+        "Add notes please",
+        "Add  notes",
+        "Add notes\n     more text",
+    ] {
+        let parsed = parse(request.kind, &screen.replace("Add notes", notes), &request).unwrap();
+        assert!(!parsed.free_text.unwrap().text.is_empty());
+    }
+}
+
+#[test]
+fn one_question_claude_multiselect_capture_uses_tabs_and_review() {
+    let mut request = pending(QuestionKind::ClaudeAsk);
+    request.questions.remove(0);
+    let screen =
+        include_str!("../../../compatibility/phase2/fixtures/claude-question-one-multi-screen.txt");
+    let review = include_str!(
+        "../../../compatibility/phase2/fixtures/claude-question-one-multi-review-screen.txt"
+    );
+    let question = parse(request.kind, screen, &request).unwrap();
+    assert_eq!(question.step, QuestionStep::ClaudeQuestion(0));
+    assert!(question.is_fresh(&request));
+    assert_eq!(
+        question
+            .options
+            .iter()
+            .map(|o| o.checked)
+            .collect::<Vec<_>>(),
+        vec![Some(false); 4]
+    );
+    let reviewed = parse(request.kind, review, &request).unwrap();
+    assert_eq!(reviewed.step, QuestionStep::ClaudeReview);
+    assert_eq!(reviewed.review_answers, vec!["Cheese,Basil"]);
+    assert!(!reviewed.is_fresh(&request));
+    assert!(
+        parse(
+            request.kind,
+            &screen.replace("←  ☐ Toppings  ✔ Submit  →", " ☐ Toppings"),
+            &request
+        )
+        .is_none()
+    );
+    request.questions[0].multi_select = false;
+    assert!(parse(request.kind, screen, &request).is_none());
+    assert!(parse(request.kind, review, &request).is_none());
+    let bare = screen
+        .replace("←  ☐ Toppings  ✔ Submit  →", " ☐ Toppings")
+        .replace("[ ] ", "")
+        .replace("Type something", "Type something.")
+        .replace("     Submit\n", "");
+    assert!(parse(request.kind, &bare, &request).is_some());
+}
+
+#[test]
+fn claude_first_question_requires_the_cursor_on_option_one_to_be_fresh() {
+    let mut multi = pending(QuestionKind::ClaudeAsk);
+    multi.questions.remove(0);
+    let multi_raw =
+        include_str!("../../../compatibility/phase2/fixtures/claude-question-one-multi-screen.txt");
+    let single = pending(QuestionKind::ClaudeAsk);
+    let single_raw =
+        include_str!("../../../compatibility/phase2/fixtures/claude-question-single-screen.txt");
+    for (request, raw, moved, cursor) in [
+        (
+            multi,
+            multi_raw,
+            multi_raw
+                .replace("❯ 1.", "  1.")
+                .replace("     Submit", "❯    Submit"),
+            QuestionCursor::Submit,
+        ),
+        (
+            single,
+            single_raw,
+            single_raw.replace("❯ 1.", "  1.").replace("  2.", "❯ 2."),
+            QuestionCursor::Option(2),
+        ),
+    ] {
+        assert!(
+            parse(request.kind, raw, &request)
+                .unwrap()
+                .is_fresh(&request)
+        );
+        let parsed = parse(request.kind, &moved, &request).unwrap();
+        assert_eq!(parsed.cursor, Some(cursor));
+        assert!(!parsed.is_fresh(&request));
+        let no_cursor = parse(request.kind, &raw.replace("❯ 1.", "  1."), &request).unwrap();
+        assert!(!no_cursor.is_fresh(&request));
     }
 }

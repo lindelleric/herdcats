@@ -9,6 +9,9 @@ use crate::{
     herdr::{Client, Pane},
     hooks::Agent,
     resolver::Resolver,
+    question_match::{self, PendingQuestion, QuestionKind},
+    question_keys::{self, ExpectedScreen, Input, Step},
+    question_screen::{self, QuestionScreen, QuestionStep},
     spool,
 };
 use serde::Serialize;
@@ -20,6 +23,24 @@ use std::{
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+#[derive(Debug)]
+struct InteractionError {
+    code: &'static str,
+    steps_sent: Option<usize>,
+}
+impl From<&'static str> for InteractionError {
+    fn from(code: &'static str) -> Self { Self { code, steps_sent: None } }
+}
+impl InteractionError {
+    fn stale_after(steps_sent: usize) -> Self { Self { code: "stale", steps_sent: Some(steps_sent) } }
+    fn data(&self) -> Value {
+        let mut data = json!({"code":self.code});
+        if let Some(steps_sent) = self.steps_sent { data["steps_sent"] = json!(steps_sent); }
+        data
+    }
+}
+type InteractionResult<T> = std::result::Result<T, InteractionError>;
 
 #[derive(Clone, PartialEq, Serialize)]
 struct Identity {
@@ -73,6 +94,60 @@ impl PendingApproval {
         })
     }
 }
+struct PendingQuestionEvent {
+    identity: Identity,
+    generation: u64,
+    request: PendingQuestion,
+    screen: QuestionScreen,
+    fresh: bool,
+}
+enum PendingInteraction {
+    Approval(PendingApproval),
+    Question(PendingQuestionEvent),
+}
+impl PendingInteraction {
+    fn data(&self) -> Value {
+        match self {
+            Self::Approval(p) => p.data(),
+            Self::Question(p) => {
+                let questions: Vec<_> = p.request.questions.iter().enumerate().map(|(index, q)| {
+                    let mut options: Vec<_> = q.options.iter().enumerate().map(|(i, o)|
+                        json!({"number":i + 1,"label":o.label,"description":o.description})).collect();
+                    if p.request.kind == QuestionKind::CodexPlan && q.allows_other {
+                        options.push(json!({"number":options.len() + 1,"label":"None of the above",
+                            "description":"Optionally, add details in notes (tab)"}));
+                    }
+                    json!({"index":index,"header":q.header,"text":q.text,"options":options,
+                        "multi_select":q.multi_select,"allows_other":q.allows_other})
+                }).collect();
+                let step = match p.screen.step {
+                    QuestionStep::ClaudeQuestion(index) => json!({"kind":"claude_question","index":index}),
+                    QuestionStep::ClaudeReview => json!({"kind":"claude_review"}),
+                    QuestionStep::CodexQuestion { index, total } => json!({"kind":"codex_question","index":index,"total":total}),
+                    QuestionStep::AsyncQueued => json!({"kind":"async_queued"}),
+                    QuestionStep::AsyncPicker(index) => json!({"kind":"async_picker","index":index}),
+                };
+                let kind = match p.request.kind {
+                    QuestionKind::ClaudeAsk => "claude", QuestionKind::CodexPlan => "codex_plan",
+                    QuestionKind::CodexAsync => "codex_async",
+                };
+                json!({"identity":p.identity,"generation":p.generation,"request_id":p.request.request_id,
+                    "agent":p.identity.agent,"kind":"question","question_kind":kind,
+                    "questions":questions,"step":step,"fresh":p.fresh,"countdown":p.screen.countdown})
+            }
+        }
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum QuestionInputStamp {
+    Claude(ApprovalInputStamp),
+    Codex(ApprovalFileStamp),
+}
+struct QuestionMatchCache {
+    identity: Identity,
+    stamp: QuestionInputStamp,
+    request: Option<PendingQuestion>,
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ApprovalFileStamp {
     dev: u64,
@@ -122,8 +197,9 @@ struct Watch {
     // would not reset the generation for the new occupant.
     unavailable_agent: Option<String>,
     last_daemon_status: Option<&'static str>,
-    pending: Option<PendingApproval>,
+    pending: Option<PendingInteraction>,
     approval_cache: Option<ApprovalMatchCache>,
+    question_cache: Option<QuestionMatchCache>,
     source_pane: Option<Pane>,
 }
 pub struct Service {
@@ -137,6 +213,7 @@ pub struct Service {
     initialized: bool,
     include_content: bool,
     include_approvals: bool,
+    include_questions: bool,
     watch: Option<Watch>,
     codex_daemon_cache: Option<(std::time::Instant, &'static str)>,
     // The CONFIGURED (never canonicalized) Codex home. CodexResolver::new
@@ -208,6 +285,7 @@ impl Service {
             initialized: false,
             include_content: false,
             include_approvals: false,
+            include_questions: false,
             watch: None,
             codex_daemon_cache: None,
             codex_home: None,
@@ -317,14 +395,16 @@ impl Service {
             // previous occupant's cached transcript.
             watch.identity = None;
             watch.approval_cache = None;
+            watch.question_cache = None;
         }
         if pane.agent_status != "blocked" {
             watch.approval_cache = None;
+            watch.question_cache = None;
         }
         watch.source_pane = Some(pane.clone());
         // Clone only the descriptor. Tail reading happens after timeline work,
         // using the same adapter-verified source and no additional path lookup.
-        let approval_file = if self.include_approvals && pane.agent_status == "blocked" {
+        let approval_file = if (self.include_approvals || self.include_questions) && pane.agent_status == "blocked" {
             file.try_clone().ok()
         } else {
             None
@@ -377,6 +457,7 @@ impl Service {
             Err(code) => {
                 watch.source_pane = None;
                 watch.approval_cache = None;
+                watch.question_cache = None;
                 watch.source_changing_count = 0;
                 watch.delayed = false;
                 let is_codex_no_session = watch.agent.as_deref() == Some("codex")
@@ -436,6 +517,7 @@ impl Service {
                     .collect();
                 if reset {
                     watch.approval_cache = None;
+                    watch.question_cache = None;
                     self.generation += 1;
                     let mut body = page(&data.entries, data.entries.len());
                     body["identity"] = json!(identity);
@@ -495,10 +577,18 @@ impl Service {
                 watch.unknown_records = data.unknown_records;
                 watch.dropped_entries = data.dropped_entries;
                 watch.previous = data.entries.clone();
-                if self.include_approvals && status == "blocked" {
-                    pending = approval_file.and_then(|file| {
-                        self.read_pending(&identity, file, &mut watch.approval_cache)
-                    });
+                if status == "blocked" {
+                    if let Some(file) = approval_file {
+                        if self.include_approvals {
+                            pending = file.try_clone().ok().and_then(|file|
+                                self.read_pending(&identity, file, &mut watch.approval_cache))
+                                .map(PendingInteraction::Approval);
+                        }
+                        if pending.is_none() && self.include_questions {
+                            pending = self.read_question(&identity, file, &mut watch.question_cache)
+                                .map(PendingInteraction::Question);
+                        }
+                    }
                 }
                 watch.identity = Some(identity);
                 watch.status = status;
@@ -508,7 +598,7 @@ impl Service {
                 watch.generation = watch.follower.generation;
             }
         }
-        if self.include_approvals && !preserve_pending {
+        if (self.include_approvals || self.include_questions) && !preserve_pending {
             self.update_pending(out, &mut watch, pending)?;
         }
         self.watch = Some(watch);
@@ -606,11 +696,76 @@ impl Service {
             identity: identity.clone(), generation: self.generation, request, dialog,
         })
     }
+    fn question_input_stamp(&self, identity: &Identity, file: &std::fs::File) -> Option<QuestionInputStamp> {
+        match Agent::parse(&identity.agent)? {
+            Agent::Claude => self.approval_input_stamp(identity, file).map(QuestionInputStamp::Claude),
+            Agent::Codex => {
+                let meta = file.metadata().ok()?;
+                meta.is_file().then(|| QuestionInputStamp::Codex(ApprovalFileStamp::of(&meta)))
+            }
+        }
+    }
+    fn matched_question(
+        &self,
+        identity: &Identity,
+        file: std::fs::File,
+        cache: &mut Option<QuestionMatchCache>,
+    ) -> Option<PendingQuestion> {
+        let stamp = match self.question_input_stamp(identity, &file) {
+            Some(stamp) => stamp,
+            None => { *cache = None; return None; }
+        };
+        if let Some(cached) = cache.as_ref()
+            .filter(|c| c.identity == *identity && c.stamp == stamp) {
+            cached.request.clone()
+        } else {
+            *cache = None;
+            let history = crate::follower::read_tail(file.try_clone().ok()?).ok()?;
+            let requests = match Agent::parse(&identity.agent)? {
+                Agent::Claude => {
+                    let mut records = spool::read_session(self.spool_dir.as_deref()?, Agent::Claude,
+                        &identity.native_session_id);
+                    records.retain(|r| r["session_id"] == identity.native_session_id
+                        && r["payload"]["session_id"] == identity.native_session_id);
+                    question_match::pending_claude_spool_questions(&records, &history)
+                },
+                Agent::Codex => question_match::pending_codex_questions(&history),
+            };
+            // A queued banner cannot identify which async call shift+left opens,
+            // even when the calls have identical questions. Preserve Plan selection.
+            let async_count = requests.iter().filter(|r| r.kind == QuestionKind::CodexAsync).count();
+            let request = requests.into_iter().last()
+                .filter(|r| r.kind != QuestionKind::CodexAsync || async_count == 1);
+            if self.question_input_stamp(identity, &file).as_ref() != Some(&stamp) { return None; }
+            *cache = Some(QuestionMatchCache { identity: identity.clone(), stamp, request: request.clone() });
+            request
+        }
+    }
+    fn read_question(
+        &self,
+        identity: &Identity,
+        file: std::fs::File,
+        cache: &mut Option<QuestionMatchCache>,
+    ) -> Option<PendingQuestionEvent> {
+        let request = self.matched_question(identity, file, cache)?;
+        if request.questions.iter().any(|q| q.secret)
+            || (request.kind == QuestionKind::CodexAsync && request.questions.len() != 1) {
+            return None;
+        }
+        let visible = self.client.read_visible(&identity.pane_id).ok()?;
+        let screen = question_screen::parse(request.kind, &visible, &request)?;
+        if screen.step == QuestionStep::AsyncQueued && screen.queued_count != Some(1) {
+            return None;
+        }
+        let fresh = screen.is_fresh(&request);
+        Some(PendingQuestionEvent { identity: identity.clone(), generation: self.generation,
+            request, screen, fresh })
+    }
     fn update_pending(
         &mut self,
         out: &mut impl Write,
         watch: &mut Watch,
-        pending: Option<PendingApproval>,
+        pending: Option<PendingInteraction>,
     ) -> io::Result<()> {
         // Include the actual event envelope and a possible preceding resolved
         // event's sequence increment when checking the bounded wire frame.
@@ -619,43 +774,57 @@ impl Service {
                 "seq":self.sequence.saturating_add(2),"data":pending.data()});
             serde_json::to_vec(&frame).is_ok_and(|bytes| bytes.len() < MAX_RECORD)
         });
-        let same_request = match (&watch.pending, &pending) {
-            (Some(old), Some(new)) => old.identity == new.identity
-                && old.generation == new.generation
-                && old.request.request_id == new.request.request_id,
-            _ => false,
-        };
-        if !same_request {
-            if let Some(old) = watch.pending.take() {
-                self.event(out, "interaction.resolved", json!({"identity":old.identity,
-                    "generation":old.generation,"request_id":old.request.request_id}))?;
-            }
+        let old_data = watch.pending.as_ref().map(PendingInteraction::data);
+        let new_data = pending.as_ref().map(PendingInteraction::data);
+        let same_request = old_data.as_ref().zip(new_data.as_ref()).is_some_and(|(old, new)|
+            ["identity", "generation", "request_id", "kind"].iter().all(|key| old[key] == new[key]));
+        if !same_request && let Some(old) = watch.pending.take() {
+            let old = old.data();
+            self.event(out, "interaction.resolved", json!({"identity":old["identity"],
+                "generation":old["generation"],"request_id":old["request_id"]}))?;
         }
         if let Some(new) = pending {
-            let changed = watch.pending.as_ref().is_none_or(|old| {
-                old.dialog.canonical() != new.dialog.canonical()
-                    || old.dialog.selected != new.dialog.selected
-            });
-            if changed {
+            let dialog_changed = match (watch.pending.as_ref(), &new) {
+                (Some(PendingInteraction::Approval(old)), PendingInteraction::Approval(new)) =>
+                    old.dialog.canonical() != new.dialog.canonical(),
+                _ => false,
+            };
+            if old_data != new_data || dialog_changed {
                 self.event(out, "interaction.pending", new.data())?;
-                watch.pending = Some(new);
             }
+            watch.pending = Some(new);
         }
         Ok(())
     }
-    fn respond_interaction(&self, params: &Value) -> Result<Value> {
-        if !self.include_approvals {
-            return Err("unsupported_capability");
+    fn respond_interaction(&self, params: &Value) -> InteractionResult<Value> {
+        let question_response = params.get("answers").is_some() || params.get("skip").is_some();
+        if (!self.include_approvals && !self.include_questions) || (question_response && !self.include_questions) {
+            return Err("unsupported_capability".into());
         }
         let watch = self.watch.as_ref().ok_or("not_watching")?;
         let identity = watch.identity.as_ref().filter(|_| watch.unavailable.is_none())
             .ok_or("timeline_unavailable")?;
-        let pending = watch.pending.as_ref().ok_or("stale")?;
-        if params["request_id"].as_str() != Some(&pending.request.request_id)
-            || pending.identity != *identity || pending.generation != self.generation
-        {
-            return Err("stale");
+        match watch.pending.as_ref().ok_or("stale")? {
+            PendingInteraction::Approval(pending) => {
+                if !self.include_approvals { return Err("unsupported_capability".into()); }
+                if params["request_id"].as_str() != Some(&pending.request.request_id)
+                    || pending.identity != *identity || pending.generation != self.generation {
+                    return Err("stale".into());
+                }
+                if question_response { return Err("mismatch".into()); }
+                self.respond_approval(params, watch, identity, pending).map_err(Into::into)
+            }
+            PendingInteraction::Question(pending) => {
+                if !self.include_questions { return Err("unsupported_capability".into()); }
+                if params["request_id"].as_str() != Some(&pending.request.request_id)
+                    || pending.identity != *identity || pending.generation != self.generation {
+                    return Err("stale".into());
+                }
+                self.respond_question(params, watch, identity, pending)
+            }
         }
+    }
+    fn respond_approval(&self, params: &Value, watch: &Watch, identity: &Identity, pending: &PendingApproval) -> Result<Value> {
         let command = pending.request.tool_input["command"].as_str().ok_or("stale")?;
         let screen = self.client.read_visible(&identity.pane_id).map_err(|_| "stale")?;
         let current = approval_screen::parse(pending.request.agent, &screen, command).ok_or("stale")?;
@@ -716,6 +885,97 @@ impl Service {
         }
         Ok(json!({"request_id":pending.request.request_id,"sent":key,"confirmed":confirmed}))
     }
+    fn question_pane_file(&self, identity: &Identity) -> Result<std::fs::File> {
+        let snapshot = self.client.snapshot().map_err(|_| "stale")?;
+        let pane = snapshot.panes.iter().find(|p| p.pane_id == identity.pane_id).ok_or("stale")?;
+        if pane.agent_status != "blocked" || pane.terminal_id != identity.terminal_id
+            || pane.agent.as_deref() != Some(&identity.agent) { return Err("stale"); }
+        let adapter = self.adapter_for(&identity.agent).ok_or("stale")?;
+        let (session, file) = adapter.resolve_and_open(pane).map_err(|_| "stale")?;
+        if session != identity.native_session_id { return Err("stale"); }
+        Ok(file)
+    }
+    fn respond_question(&self, params: &Value, watch: &Watch, identity: &Identity, pending: &PendingQuestionEvent) -> InteractionResult<Value> {
+        if !pending.fresh { return Err("in_progress".into()); }
+        // Reopen the last verified reference, then independently validate the fresh
+        // occupant. Neither the transcript match nor screen may come from a cache.
+        let source = watch.source_pane.as_ref().ok_or("stale")?;
+        let adapter = self.adapter_for(&identity.agent).ok_or("stale")?;
+        let (session, _) = adapter.resolve_and_open(source).map_err(|_| "stale")?;
+        if session != identity.native_session_id { return Err("stale".into()); }
+        let file = self.question_pane_file(identity)?;
+        let newest = self.matched_question(identity, file, &mut None).ok_or("stale")?;
+        if newest != pending.request { return Err("stale".into()); }
+        let visible = self.client.read_visible(&identity.pane_id).map_err(|_| "stale")?;
+        let current = question_screen::parse(newest.kind, &visible, &newest).ok_or("stale")?;
+        if current.step == QuestionStep::AsyncQueued && current.queued_count != Some(1) {
+            return Err("stale".into());
+        }
+        if !current.is_fresh(&newest) { return Err("in_progress".into()); }
+        let steps = question_keys::plan(newest.kind, &newest, &current, params)?;
+        let confirmed = self.execute_question(identity, &newest, current, &steps)?;
+        Ok(json!({"request_id":newest.request_id,"confirmed":confirmed}))
+    }
+    fn execute_question(&self, identity: &Identity, pending: &PendingQuestion, mut current: QuestionScreen, steps: &[Step]) -> InteractionResult<bool> {
+        let mut steps_sent = 0;
+        for (index, step) in steps.iter().enumerate() {
+            if index > 0 {
+                let occupant = self.question_pane_file(identity);
+                // A guard read immediately before each later input catches desk
+                // edits and a last picker that disappeared after the digit check.
+                let visible = self.client.read_visible_with_timeout(&identity.pane_id, Duration::from_secs(1))
+                    .map_err(|_| InteractionError::stale_after(steps_sent))?;
+                let parsed = question_screen::parse(pending.kind, &visible, pending);
+                if step.only_if.is_some() && parsed.is_none() { return Ok(true); }
+                let parsed = parsed.ok_or_else(|| InteractionError::stale_after(steps_sent))?;
+                // A remaining dialog must still belong to this blocked occupant.
+                // Disappearance needs no further input, even if the pane is idle.
+                occupant.map_err(|_| InteractionError::stale_after(steps_sent))?;
+                if !steps[index-1].expected.matches(Some(&parsed))
+                    || step.only_if.as_ref().is_some_and(|guard| !guard.matches(&parsed)) {
+                    return Err(InteractionError::stale_after(steps_sent));
+                }
+                current = parsed;
+            }
+            // Count dispatched input attempts conservatively: a transport failure
+            // may happen after Herdr received the input. Never retry that input.
+            steps_sent += 1;
+            let sent = match &step.input {
+                Input::Keys(keys) => self.client.send_keys(&identity.pane_id, &keys.iter().map(String::as_str).collect::<Vec<_>>()),
+                Input::Text(text) => self.client.send_text(&identity.pane_id, text),
+            };
+            sent.map_err(|_| InteractionError::stale_after(steps_sent))?;
+            let deadline = Instant::now() + Duration::from_secs(1);
+            let final_input = matches!(step.expected, ExpectedScreen::Gone);
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    if final_input { return Ok(false); }
+                    return Err(InteractionError::stale_after(steps_sent));
+                }
+                let visible = match self.client.read_visible_with_timeout(&identity.pane_id, remaining) {
+                    Ok(visible) => visible,
+                    Err(_) if final_input => return Ok(false),
+                    Err(_) => return Err(InteractionError::stale_after(steps_sent)),
+                };
+                let parsed = question_screen::parse(pending.kind, &visible, pending);
+                if step.expected.matches(parsed.as_ref()) {
+                    match parsed {
+                        Some(parsed) => { current = parsed; break; }
+                        None => return Ok(true),
+                    }
+                }
+                // On final submission an unchanged dialog means unconfirmed;
+                // any different parsed dialog is a state mismatch, not success.
+                if final_input && parsed.as_ref().is_none_or(|s| s.fingerprint != current.fingerprint) {
+                    return Err(InteractionError::stale_after(steps_sent));
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if !remaining.is_zero() { thread::sleep(Duration::from_millis(100).min(remaining)); }
+            }
+        }
+        Ok(false)
+    }
     pub fn request(&mut self, bytes: &[u8], out: &mut impl Write) -> io::Result<()> {
         self.request_with_refresh(bytes, out, |follower, file, session| {
             follower.refresh_file(file, session)
@@ -741,6 +1001,7 @@ impl Service {
             self.initialized = false;
             self.include_content = params["record_content"] == true;
             self.include_approvals = params["approvals"] == true;
+            self.include_questions = params["questions"] == true;
             self.watch = None;
             if params["protocol"] != 1 {
                 return Self::error(out, id, "protocol_mismatch");
@@ -753,7 +1014,7 @@ impl Service {
             let codex_available = self.adapter_for("codex").is_some_and(|a| a.is_available());
             return Self::write(
                 out,
-                &json!({"id":id,"result":{"protocol":1,"bridge_version":env!("CARGO_PKG_VERSION"),"epoch":self.epoch,"capabilities":{"claude_timeline":claude_available,"record_content":true,"codex_timeline":codex_available,"codex_daemon_config":true,"codex_daemon_stop":true,"git":false,"prompts":false,"approvals":true,"questions":false,"routed_hosts":false}}}),
+                &json!({"id":id,"result":{"protocol":1,"bridge_version":env!("CARGO_PKG_VERSION"),"epoch":self.epoch,"capabilities":{"claude_timeline":claude_available,"record_content":true,"codex_timeline":codex_available,"codex_daemon_config":true,"codex_daemon_stop":true,"git":false,"prompts":false,"approvals":true,"questions":true,"routed_hosts":false}}}),
             );
         }
         if !self.initialized {
@@ -765,7 +1026,7 @@ impl Service {
                     Self::write(out, &json!({"id":id,"result":result}))?;
                     self.poll(out)
                 }
-                Err(code) => Self::error(out, id, code),
+                Err(error) => Self::write(out, &json!({"id":id,"error":error.data()})),
             },
             "watch" => {
                 let Some(pane) = params["pane_id"]
@@ -795,6 +1056,7 @@ impl Service {
                     last_daemon_status: None,
                     pending: None,
                     approval_cache: None,
+                    question_cache: None,
                     source_pane: None,
                 });
                 Self::write(out, &json!({"id":id,"result":{"watching":pane}}))?;
@@ -969,6 +1231,14 @@ mod tests {
         read_error_after_send: bool,
         keys: Vec<Value>,
         screens_after_send: std::collections::VecDeque<String>,
+        allow_question_input: bool,
+        inputs: Vec<Value>,
+        // One render sequence per input; extra guard reads retain the last render.
+        screens_after_input: std::collections::VecDeque<std::collections::VecDeque<String>>,
+        active_input_screens: std::collections::VecDeque<String>,
+        screens_before_input: std::collections::VecDeque<String>,
+        terminal_after_input: Option<String>,
+        status_after_inputs: Option<(usize, String)>,
         hide_pane: bool,
         terminal_id: Option<String>,
         session_override: Option<String>,
@@ -1018,7 +1288,12 @@ mod tests {
                     "pane.read" => {
                         assert_eq!(request["params"], json!({"pane_id":"w1:p1","source":"visible"}));
                         state.reads += 1;
-                        if !state.keys.is_empty() {
+                        if state.allow_question_input {
+                            if let Some(screen) = state.screens_before_input.pop_front()
+                                .or_else(|| state.active_input_screens.pop_front()) {
+                                state.screen = screen;
+                            }
+                        } else if !state.keys.is_empty() {
                             if let Some(screen) = state.screens_after_send.pop_front() {
                                 state.screen = screen;
                             }
@@ -1027,12 +1302,30 @@ mod tests {
                     }
                     "pane.send_keys" => {
                         let keys = request["params"]["keys"].as_array().unwrap();
-                        assert_eq!(keys.len(), 1);
-                        assert!(keys.iter().all(|key| !["enter", "\n", "\r"].contains(&key.as_str().unwrap())));
+                        if !state.allow_question_input {
+                            assert_eq!(keys.len(), 1);
+                            assert!(keys.iter().all(|key| !["enter", "\n", "\r"].contains(&key.as_str().unwrap())));
+                        }
                         state.keys.push(request["params"].clone());
+                        state.inputs.push(json!({"method":"pane.send_keys","params":request["params"]}));
+                        state.active_input_screens = state.screens_after_input.pop_front().unwrap_or_default();
+                        json!({})
+                    }
+                    "pane.send_text" => {
+                        assert!(state.allow_question_input);
+                        assert_eq!(request["params"]["pane_id"], "w1:p1");
+                        assert!(request["params"]["text"].is_string());
+                        assert_eq!(request["params"].as_object().unwrap().len(), 2);
+                        state.inputs.push(json!({"method":"pane.send_text","params":request["params"]}));
+                        state.active_input_screens = state.screens_after_input.pop_front().unwrap_or_default();
                         json!({})
                     }
                     "session.snapshot" => {
+                        if let Some((count, status)) = state.status_after_inputs.clone()
+                            && state.inputs.len() >= count { state.status = Some(status); }
+                        if !state.inputs.is_empty() && let Some(terminal) = state.terminal_after_input.clone() {
+                            state.terminal_id = Some(terminal);
+                        }
                         let agent = state.agent.as_deref().unwrap_or("claude");
                         let mut snapshot = json!({"protocol":22,"version":"0.9.3","panes":[{"pane_id":"w1:p1","terminal_id":state.terminal_id.as_deref().unwrap_or("terminal-one"),"workspace_id":"w1","tab_id":"w1:t1","agent":agent,"agent_status":state.status.as_deref().unwrap_or("idle"),"foreground_cwd":"/fixture/work","revision":1,"agent_session":{"agent":agent,"source":format!("herdr:{agent}"),"kind":"id","value":state.session_override.clone().unwrap_or_else(|| session_for_server.lock().unwrap().clone())}}]});
                         if state.hide_pane {
@@ -1063,6 +1356,8 @@ mod tests {
         (service, root, session, herdr)
     }
     include!("service_approval_tests.rs");
+    include!("service_question_tests.rs");
+    include!("service_question_response_tests.rs");
     include!("service_response_tests.rs");
     fn cleanup(service: &Service, root: PathBuf) {
         // Wake and terminate the fixture thread without a valid request.

@@ -56,16 +56,16 @@
       "sha256": "a2fcdeacef0ea9bee314babc8eb24cf5182a10edbf69b2a0cf09ccecb33fb79e"
     },
     "claude-question-one-transcript-pending.jsonl": {
-      "bytes": 2786,
-      "sha256": "b458901021d92be0e30bd2e7f27513fd6172615e1c3557b76643ae83d2ddef70"
+      "bytes": 855,
+      "sha256": "a8f2d90124d5ec52cfd79ba4d073b6971f6391e8155d9f5d0d0299c7316e42e6"
     },
     "claude-question-transcript.jsonl": {
       "bytes": 8319,
       "sha256": "a508afeab38ea2f68ab14b772e3df19e65996ed5561c228c50b1a097196124f6"
     },
     "claude-question-transcript-pending.jsonl": {
-      "bytes": 3024,
-      "sha256": "11cae22f508b28b932f0563c0ea3e1b1c53947e81ef4d3e0ec2fc0f8f341d6a4"
+      "bytes": 855,
+      "sha256": "5a5ef82ed893c6a34f3d927bce16befc276f48aa83c0c11576b0e5f0a56d9206"
     },
     "codex-sync-rollout.jsonl": {
       "bytes": 5275,
@@ -82,6 +82,29 @@
     "codex-async-rollout-pending.jsonl": {
       "bytes": 9120,
       "sha256": "5130a456e05aff039879b3da70368fad467f7903f1d05a2473f4f1dfa9f5c3da"
+    },
+    "claude-question-spool.jsonl": {
+      "bytes": 946,
+      "sha256": "c9a392c9e508aa1fda244dcc85148d01a825f52c9f4f868edf2a15257283b7f8",
+      "derived": "Phase-1 PermissionRequest hook shape with phase-2 Claude question input, pseudonymous prompt_id and fixed timestamp; not a live spool capture."
+    },
+    "claude-question-one-spool.jsonl": {
+      "bytes": 708,
+      "sha256": "2ba92b2d0b5b64313db46b7f31c5fd230c5bd9ded516215e8b1860433f4059e7",
+      "derived": "Phase-1 PermissionRequest hook shape with phase-2 Claude question input, pseudonymous prompt_id and fixed timestamp; not a live spool capture."
+    },
+    "codex-sync-notes-placeholder-screen.txt": {
+      "bytes": 367,
+      "sha256": "2de9d9d51c552d839eb49b02289d334d6123d64c728fb72226088e7f1fef62b9",
+      "derived": "Derived from codex-sync-notes-screen.txt by replacing the notes text with Add notes, matching the empty placeholder observed 2026-10-22; not a live screen capture."
+    },
+    "claude-question-one-multi-screen.txt": {
+      "bytes": 814,
+      "sha256": "9f64d4c198cbb1d4603f2a2f06c52814fcc5edf1f4ae6037a452a0c63894f4aa"
+    },
+    "claude-question-one-multi-review-screen.txt": {
+      "bytes": 159,
+      "sha256": "5d69ab50f02506a67c9ec92b629743304d49833915b6e7acfe90d044e58cc7e8"
     }
   }
 }

@@ -3,7 +3,7 @@ use crate::question_match::{PendingQuestion, Question, QuestionKind};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QuestionStep {
-    /// A single Claude question submits directly and has no review step.
+    /// A one-question Claude single-select submits directly; multi-select uses review.
     ClaudeQuestion(usize),
     ClaudeReview,
     CodexQuestion {
@@ -43,8 +43,30 @@ pub struct QuestionScreen {
     pub free_text: Option<FreeText>,
     pub countdown: Option<String>,
     pub queued_count: Option<usize>,
+    pub unanswered: Option<usize>,
+    pub completed_tabs: bool,
+    /// Codex retains its highlighted option while the notes editor has focus.
+    pub highlighted: Option<u32>,
+    /// Whitespace-free review answers, stable across terminal hard wrapping.
+    pub review_answers: Vec<String>,
     /// Lossless length-delimited rows, including whitespace, selection, and footer.
     pub fingerprint: Vec<u8>,
+}
+
+impl QuestionScreen {
+    pub fn is_fresh(&self, pending: &PendingQuestion) -> bool {
+        let untouched = self.options.iter().all(|o| o.checked != Some(true))
+            && self.free_text.as_ref().is_none_or(|t| t.text.is_empty() && !t.active);
+        untouched && match self.step {
+            QuestionStep::ClaudeQuestion(0) => !self.completed_tabs
+                && self.cursor == Some(QuestionCursor::Option(1)),
+            QuestionStep::CodexQuestion { index: 0, total } => self.unanswered == Some(total),
+            QuestionStep::AsyncQueued => true,
+            QuestionStep::AsyncPicker(0) => self.cursor == Some(QuestionCursor::Option(1))
+                && pending.questions.len() == 1,
+            _ => false,
+        }
+    }
 }
 
 fn fingerprint(rows: &[&str]) -> Vec<u8> {
@@ -155,6 +177,10 @@ fn result(step: QuestionStep) -> QuestionScreen {
         free_text: None,
         countdown: None,
         queued_count: None,
+        unanswered: None,
+        completed_tabs: false,
+        highlighted: None,
+        review_answers: Vec::new(),
         fingerprint: Vec::new(),
     }
 }
@@ -172,8 +198,14 @@ fn rule(row: &str) -> bool {
     !row.is_empty() && row.chars().all(|c| c == '─')
 }
 
+/// observed 2026-10-22: a single multi-select still uses tabs and review;
+/// only a single single-select question submits directly from its bare picker.
+pub(crate) fn claude_has_review(pending: &PendingQuestion) -> bool {
+    pending.questions.len() > 1 || pending.questions.first().is_some_and(|q| q.multi_select)
+}
+
 fn tab_matches(row: &str, pending: &PendingQuestion) -> bool {
-    if pending.questions.len() == 1 {
+    if pending.questions.len() == 1 && !claude_has_review(pending) {
         let Some(header) = pending.questions[0].header.as_deref() else {
             return false;
         };
@@ -224,7 +256,7 @@ fn claude(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
     if matches.next().is_some() {
         return None;
     }
-    let reviewed = if pending.questions.len() > 1 {
+    let reviewed = if claude_has_review(pending) {
         let review_end = title_end(rows, title, "Review your answers");
         review_end.and_then(|end| review(rows, end.saturating_sub(1), pending))
     } else {
@@ -232,7 +264,10 @@ fn claude(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
     };
     match (question, reviewed) {
         (Some(_), Some(_)) => None,
-        (Some(dialog), None) | (None, Some(dialog)) => Some(dialog),
+        (Some(mut dialog), None) | (None, Some(mut dialog)) => {
+            dialog.completed_tabs = rows[0].contains('☒');
+            Some(dialog)
+        },
         (None, None) => None,
     }
 }
@@ -363,6 +398,7 @@ fn review(rows: &[&str], title: usize, pending: &PendingQuestion) -> Option<Ques
         .filter(|r| !r.trim().is_empty())
         .collect();
     let mut i = 0;
+    let mut answers = Vec::new();
     for q in &pending.questions {
         // Captured review fields: question marker at column 1, answer at column 3.
         if indent(body.get(i)?) != 1 {
@@ -381,6 +417,7 @@ fn review(rows: &[&str], title: usize, pending: &PendingQuestion) -> Option<Ques
         }
         let mut answer_rows = vec![first];
         answer_rows.extend_from_slice(body.get(start..i)?);
+        answers.push(compact(&joined(&answer_rows)));
         if rows_equal(&answer_rows, "") {
             return None;
         }
@@ -389,6 +426,7 @@ fn review(rows: &[&str], title: usize, pending: &PendingQuestion) -> Option<Ques
         return None;
     }
     let mut dialog = result(QuestionStep::ClaudeReview);
+    dialog.review_answers = answers;
     for (offset, expected) in ["Submit answers", "Cancel"].iter().enumerate() {
         let (number, label, selected) = numbered(body.get(i + 1 + offset)?)?;
         if number as usize != offset + 1 || label != *expected {
@@ -417,7 +455,6 @@ fn sync(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
     if total != pending.questions.len()
         || index == 0
         || index > total
-        || remaining == 0
         || remaining > total
     {
         return None;
@@ -429,6 +466,7 @@ fn sync(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
         index: index - 1,
         total,
     });
+    dialog.unanswered = Some(remaining);
     let mut i = first_option;
     while i < rows.len().checked_sub(1)? {
         let row = rows.get(i)?;
@@ -461,6 +499,7 @@ fn sync(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
                 ("None of the above".into(), Some(description.into()))
             };
             if selected {
+                dialog.highlighted = Some(number);
                 cursor(&mut dialog, QuestionCursor::Option(number))?;
             }
             dialog.options.push(ScreenOption {
@@ -496,7 +535,11 @@ fn sync(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
                 text: {
                     let mut text_rows = vec![notes];
                     text_rows.extend_from_slice(rows.get(i + 1..rows.len().checked_sub(1)?)?);
-                    joined(&text_rows)
+                    let text = joined(&text_rows);
+                    // observed 2026-10-22: Codex 0.163.0 shows Add notes while
+                    // the active editor is empty. Literal identical input is
+                    // indistinguishable; the following typed-text check fails safe.
+                    if text == "Add notes" { String::new() } else { text }
                 },
             });
             i = rows.len().checked_sub(1)?;
@@ -682,11 +725,11 @@ fn anchor_rows(screen: &str, pending: &PendingQuestion) -> (Vec<String>, Vec<(us
                 }
                 candidate.push_str(&compact(row));
                 let mut rest = candidate.as_str();
-                let multiple = pending.questions.len() > 1;
-                if multiple {
+                let tabbed = claude_has_review(pending);
+                if tabbed {
                     rest = rest.strip_prefix('←').unwrap_or("");
                 }
-                let mut canonical = if multiple {
+                let mut canonical = if tabbed {
                     "←  ".to_string()
                 } else {
                     String::new()
@@ -708,8 +751,8 @@ fn anchor_rows(screen: &str, pending: &PendingQuestion) -> (Vec<String>, Vec<(us
                     canonical.push_str(&format!("{state} {header}  "));
                     true
                 });
-                if valid && rest == if multiple { "✔Submit→" } else { "" } {
-                    if multiple {
+                if valid && rest == if tabbed { "✔Submit→" } else { "" } {
+                    if tabbed {
                         canonical.push_str("✔ Submit  →");
                     }
                     replacement = Some((end + 1, canonical));

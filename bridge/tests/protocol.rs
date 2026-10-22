@@ -165,7 +165,8 @@ impl Peer {
         assert_eq!(x["result"]["capabilities"]["codex_daemon_stop"], true);
         assert_eq!(x["result"]["capabilities"]["codex_daemon_config"], true);
         assert_eq!(x["result"]["capabilities"]["approvals"], true);
-        for capability in ["git", "prompts", "questions", "routed_hosts"] {
+        assert_eq!(x["result"]["capabilities"]["questions"], true);
+        for capability in ["git", "prompts", "routed_hosts"] {
             assert_eq!(x["result"]["capabilities"][capability], false);
         }
     }
@@ -750,9 +751,9 @@ fn protocol_documents_approval_capability_request_and_event_fields() {
         .find(|request| request["method"] == "initialize").unwrap();
     assert!(initialize["params"]["approvals"].as_str().unwrap().contains("false by default"));
     assert!(protocol["approval_policy"]["capability"].as_str().unwrap().contains("initialize params.approvals"));
-    for capability in ["prompts", "questions"] {
-        assert_eq!(protocol["capabilities"][capability], false);
-    }
+    assert_eq!(protocol["capabilities"]["prompts"], false);
+    assert_eq!(protocol["capabilities"]["questions"], true);
+    assert!(initialize["params"]["questions"].as_str().unwrap().contains("false by default"));
     let respond = protocol["requests"].as_array().unwrap().iter()
         .find(|request| request["method"] == "interaction.respond").unwrap();
     for field in ["request_id", "option", "label_lines"] {

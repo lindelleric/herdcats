@@ -1,4 +1,5 @@
-//! Pure detection of pending questions from transcripts and rollouts.
+//! Pure detection of pending questions from Claude hook records and native history.
+use crate::approval_match::utc_timestamp;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
@@ -102,6 +103,111 @@ fn questions(value: &Value, kind: QuestionKind) -> Option<Vec<Question>> {
     values.iter().map(|q| question(q, kind)).collect()
 }
 
+/// Claude writes AskUserQuestion tool_use only when the picker finishes. The
+/// recording hook is the pending source; transcript pairs retire spool records.
+pub fn pending_claude_spool_questions(
+    records: &[Value],
+    transcript: &[Value],
+) -> Vec<PendingQuestion> {
+    let main = |r: &&Value| r["isSidechain"] != true && r["isMeta"] != true;
+    let results: HashSet<_> = transcript
+        .iter()
+        .filter(main)
+        .filter(|r| r["type"] == "user")
+        .flat_map(|r| {
+            r["message"]["content"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|b| {
+                    if b["type"] != "tool_result" {
+                        return None;
+                    }
+                    Some((text(&r["sessionId"])?, text(&b["tool_use_id"])?))
+                })
+        })
+        .collect();
+    let mut answered: Vec<_> = transcript
+        .iter()
+        .filter(main)
+        .filter(|r| r["type"] == "assistant")
+        .flat_map(|r| {
+            r["message"]["content"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|b| {
+                    let session = text(&r["sessionId"])?;
+                    if b["type"] == "tool_use"
+                        && b["name"] == "AskUserQuestion"
+                        && results.contains(&(session, text(&b["id"])?))
+                    {
+                        Some((utc_timestamp(&r["timestamp"])?, session, &b["input"]))
+                    } else {
+                        None
+                    }
+                })
+        })
+        .collect();
+    answered.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut candidates: Vec<_> = records
+        .iter()
+        .filter_map(|r| {
+            let payload = &r["payload"];
+            let session = text(&r["session_id"])?;
+            if r["event"] != "PermissionRequest"
+                || r["agent"] != "claude"
+                || payload["tool_name"] != "AskUserQuestion"
+                || payload["session_id"] != session
+                || r["truncated"] == true
+                || payload["truncated"] == true
+            {
+                return None;
+            }
+            let prompt = text(&payload["prompt_id"])?;
+            let time = r["t"].as_f64()?;
+            let millis = (time * 1000.0).floor();
+            if !millis.is_finite() || millis < 0.0 || millis >= u64::MAX as f64 {
+                return None;
+            }
+            let questions = questions(&payload["tool_input"], QuestionKind::ClaudeAsk)?;
+            Some((
+                time,
+                session,
+                &payload["tool_input"],
+                PendingQuestion {
+                    request_id: format!("ask-{prompt}-{}", millis as u64),
+                    kind: QuestionKind::ClaudeAsk,
+                    turn_id: None,
+                    questions,
+                },
+            ))
+        })
+        .collect();
+    candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
+    candidates
+        .into_iter()
+        .filter_map(|(recorded_at, session, input, request)| {
+            // Esc cancel also writes tool_use + tool_result, so it counts as answered.
+            // Pair oldest identical calls one-to-one only near the hook time.
+            // Older answered calls may predate hook installation; they must not
+            // retire a new identical request. Allow 2s clock skew and at most 120s delay.
+            if let Some(index) = answered.iter().position(|(timestamp, s, i)| {
+                *s == session
+                    && *i == input
+                    && *timestamp <= recorded_at + 2.0
+                    && recorded_at - *timestamp <= 120.0
+            }) {
+                answered.remove(index);
+                None
+            } else {
+                Some(request)
+            }
+        })
+        .collect()
+}
+
+/// Retained for offline transcript consumers/tests; live pickers require the hook spool.
 pub fn pending_claude_questions(transcript: &[Value]) -> Vec<PendingQuestion> {
     let mut pending = Vec::new();
     for record in transcript {
@@ -204,7 +310,10 @@ pub fn pending_codex_questions(rollout: &[Value]) -> Vec<PendingQuestion> {
             if payload["type"] == "task_started" {
                 current_turn = turn(payload).map(str::to_owned);
             }
-            // Expiry/skip at turn end is inferred; those paths were not captured.
+            // observed 2026-10-22 (Codex 0.163.0): async skip writes no reply
+            // record. The model keeps sleeping and the call remains pending until
+            // turn end; the missing banner/picker prevents a card meanwhile.
+            // Expiry via turn end remains inferred rather than captured.
             if matches!(
                 payload["type"].as_str(),
                 Some("task_complete" | "turn_aborted")
