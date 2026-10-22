@@ -1,18 +1,17 @@
 Herdcats Bridge (`herdcats-bridge`) is the optional companion on your computer that powers native Claude and Codex Timelines in Herdcats.
 
 Changes in this release:
-- New `herdcats-bridge codex-config daemon-status` reports whether Codex's shared background server (its daemon) and the server's updater are running, and whether Codex starts the server automatically.
-- `herdcats-bridge codex-config disable-daemon --stop-running` turns off automatic start and then stops the running server and its updater. Herdcats runs it only after you tap the button and confirm. Without --stop-running the command only changes config.toml, as before.
-- Stopping the server disconnects every Codex session attached to it. Restart those sessions; new sessions start without the shared server. To turn automatic start back on: codex features enable daemon_auto_start
-- A process is stopped only after its identity is checked against Codex's own records (owner, start time, boot and executable location). Anything that can't be verified is reported as unknown and left alone. A stop that fails, times out, or finds the server restarted is reported as stop_failed.
-- When a Codex pane isn't identified yet, Timeline events now say whether the shared server is running, so Herdcats can explain what to do.
+- Answer Claude and Codex approval prompts from your phone. Herdcats shows the dialog's options exactly as the terminal does; the bridge sends one guarded keystroke only after checking that the same dialog is still on screen, and confirms it closed. Options that loosen permissions need a swipe.
+- Answer Claude AskUserQuestion and Codex questions (Plan mode and queued questions) from your phone, including multi-select and a typed answer. The bridge types your answers step by step, re-reads the screen after each step and stops if anything looks different. A picker you already started at your desk is left for you to finish there.
+- New `herdcats-bridge hooks status|install|uninstall --agent claude|codex`. The optional hook only records the request so the phone can show it; it never answers anything, and the terminal dialog still appears. Install makes a backup, never touches other hooks, and uninstall removes the recorded requests. Codex asks you to review a new hook once at your desk.
+- Codex timelines no longer show internal answer records or empty assistant messages after a question.
 
 Install on the computer Herdcats connects to with SSH, the one that runs Herdr and your agents:
 
 curl -fsSL https://github.com/zhiyao/herdcats/releases/download/herdcats-bridge-v__BRIDGE_VERSION__/install.sh | sh -s -- --version __BRIDGE_VERSION__
 
-Requires macOS 13+ or Linux with glibc 2.35+ (Ubuntu 22.04+), curl and SHA-256 tooling. Apple Silicon, Intel Mac, Linux arm64 and x86_64 binaries are included. Herdr protocol 22 and an exact Claude or Codex session reference are required. No root access, Rust, Python, hooks or persistent service required. Existing installation upgrades require --replace.
+Requires macOS 13+ or Linux with glibc 2.35+ (Ubuntu 22.04+), curl and SHA-256 tooling. Apple Silicon, Intel Mac, Linux arm64 and x86_64 binaries are included. Herdr protocol 22 and an exact Claude or Codex session reference are required. No root access, Rust, Python or persistent service required. Phone answers for Claude, and for Codex approvals, use an optional recording hook that Herdcats installs only after you confirm. Existing installation upgrades require --replace.
 
-Checksums detect damaged downloads; they are provided through the same HTTPS release channel. These binaries are not Developer ID signed/notarized. Native question/approval responses and saved-machine routing remain unavailable; use Terminal for those interactions.
+Checksums detect damaged downloads; they are provided through the same HTTPS release channel. These binaries are not Developer ID signed/notarized. Saved-machine routing remains unavailable.
 
 After installing, return to Herdcats and tap Check again.
