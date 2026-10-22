@@ -37,7 +37,7 @@ class QuestionEvidence(unittest.TestCase):
         self.assertEqual(manifest['versions']['claude'], '2.1.307')
         self.assertEqual(manifest['versions']['codex'], '0.163.0')
         self.assertEqual(set(manifest['files']), {p.name for p in (ROOT / 'fixtures').iterdir()})
-        self.assertEqual(len(manifest['files']), 22)
+        self.assertEqual(len(manifest['files']), 24)
         self.assertIn('not a live screen capture', manifest['files']['codex-sync-notes-placeholder-screen.txt']['derived'])
         for name in ('claude-question-spool.jsonl', 'claude-question-one-spool.jsonl'):
             self.assertIn('not a live spool capture', manifest['files'][name]['derived'])
@@ -189,6 +189,8 @@ class QuestionEvidence(unittest.TestCase):
     def test_screen_evidence(self):
         expected = {
             'claude-question-single': ['☐ Size', 'Pick a size', '3. Type something.', '4. Chat about this'],
+            'claude-question-one-multi': ['←  ☐ Toppings  ✔ Submit  →', '1. [ ] Cheese', 'Type something', 'Submit', 'Chat about this', '↑/↓ to navigate'],
+            'claude-question-one-multi-review': ['←  ☒ Toppings  ✔ Submit  →', 'Review your answers', '● Pick toppings', '→ Cheese, Basil', '1. Submit answers', '2. Cancel'],
             'claude-question-multi': ['1. [✔] Cheese', '2. [ ] Olives', '3. [✔] Basil', 'Submit'],
             'claude-question-other': ['❯ 4. [✔] Pepper'],
             'claude-question-review': ['Review your answers', '→ Cheese, Basil, Pepper', '1. Submit answers', '2. Cancel'],

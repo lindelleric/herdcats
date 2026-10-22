@@ -116,6 +116,8 @@ def claude_spool(rows):
 
 SCREENS = [
     ('claude-question-one', 'claude-one-screen', '☐ Color', 'Esc to cancel'),
+    ('claude-question-one-multi', 'claude-one-multi-screen', '←', 'Esc to cancel'),
+    ('claude-question-one-multi-review', 'claude-one-multi-review', '←', '2. Cancel'),
     ('claude-question-single', 'claude-q1-screen', '←', 'Esc to cancel'),
     ('claude-question-multi', 'claude-q2-toggled-screen', '←', 'Esc to cancel'),
     ('claude-question-other', 'claude-q2-other-typed-screen', '←', 'Esc to cancel'),
@@ -134,23 +136,27 @@ def main():
     parser.add_argument('--raw', type=Path)
     parser.add_argument('--spike-root')
     parser.add_argument('--from-fixtures', action='store_true', help='rebuild derived evidence from sanitized fixtures')
+    parser.add_argument('--screens-only', nargs='+', choices=[item[0] for item in SCREENS], help='refresh selected disposable screen captures without rebuilding transcript captures')
     args = parser.parse_args()
+    if args.from_fixtures and args.screens_only:
+        parser.error('--from-fixtures and --screens-only cannot be combined')
     if args.from_fixtures:
         outputs = {}
     else:
         if args.raw is None or args.spike_root is None:
             parser.error('--raw and --spike-root are required unless --from-fixtures is used')
         outputs = {dest + '-screen.txt': phase1.screen(args.raw / (src + '.txt'), start, args.spike_root, end)
-                   for dest, src, start, end in SCREENS}
-        for dest, src, kind, keep in [
-            ('claude-question-one-transcript', 'claude-one-transcript', 'claude', phase1.keep_claude),
-            ('claude-question-transcript', 'claude-transcript', 'claude', phase1.keep_claude),
-            ('codex-sync-rollout', 'codex-sync-rollout', 'sync', phase1.keep_codex),
-            ('codex-async-rollout', 'codex-async-rollout', 'async', phase1.keep_codex),
-        ]:
-            rows = records(args.raw / (src + '.jsonl'), keep)
-            outputs[dest + '.jsonl'] = dump(rows)
-            outputs[dest + '-pending.jsonl'] = dump(pending(rows, kind))
+                   for dest, src, start, end in SCREENS if not args.screens_only or dest in args.screens_only}
+        if not args.screens_only:
+            for dest, src, kind, keep in [
+                ('claude-question-one-transcript', 'claude-one-transcript', 'claude', phase1.keep_claude),
+                ('claude-question-transcript', 'claude-transcript', 'claude', phase1.keep_claude),
+                ('codex-sync-rollout', 'codex-sync-rollout', 'sync', phase1.keep_codex),
+                ('codex-async-rollout', 'codex-async-rollout', 'async', phase1.keep_codex),
+            ]:
+                rows = records(args.raw / (src + '.jsonl'), keep)
+                outputs[dest + '.jsonl'] = dump(rows)
+                outputs[dest + '-pending.jsonl'] = dump(pending(rows, kind))
     for prefix in ('claude-question', 'claude-question-one'):
         name = prefix + '-transcript.jsonl'
         source = outputs.get(name) if name in outputs else (ROOT / 'fixtures' / name).read_text()
@@ -165,10 +171,10 @@ def main():
         for forbidden in FORBIDDEN:
             if forbidden in text:
                 raise ValueError(f'{name}: redaction left {forbidden!r}')
-    manifest = json.loads((ROOT / 'manifest.json').read_text()) if args.from_fixtures else {}
+    manifest = json.loads((ROOT / 'manifest.json').read_text()) if args.from_fixtures or args.screens_only else {}
     versions = manifest.get('versions', {'claude': '2.1.307', 'codex': '0.163.0'})
     try:
-        if not args.from_fixtures:
+        if not args.from_fixtures and not args.screens_only:
             versions['herdr'] = subprocess.check_output(['herdr', '--version'], text=True).strip().removeprefix('herdr ')
     except (OSError, subprocess.CalledProcessError):
         pass

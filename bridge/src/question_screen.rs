@@ -3,7 +3,7 @@ use crate::question_match::{PendingQuestion, Question, QuestionKind};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QuestionStep {
-    /// A single Claude question submits directly and has no review step.
+    /// A one-question Claude single-select submits directly; multi-select uses review.
     ClaudeQuestion(usize),
     ClaudeReview,
     CodexQuestion {
@@ -197,8 +197,14 @@ fn rule(row: &str) -> bool {
     !row.is_empty() && row.chars().all(|c| c == '─')
 }
 
+/// observed 2026-10-22: a single multi-select still uses tabs and review;
+/// only a single single-select question submits directly from its bare picker.
+pub(crate) fn claude_has_review(pending: &PendingQuestion) -> bool {
+    pending.questions.len() > 1 || pending.questions.first().is_some_and(|q| q.multi_select)
+}
+
 fn tab_matches(row: &str, pending: &PendingQuestion) -> bool {
-    if pending.questions.len() == 1 {
+    if pending.questions.len() == 1 && !claude_has_review(pending) {
         let Some(header) = pending.questions[0].header.as_deref() else {
             return false;
         };
@@ -249,7 +255,7 @@ fn claude(rows: &[&str], pending: &PendingQuestion) -> Option<QuestionScreen> {
     if matches.next().is_some() {
         return None;
     }
-    let reviewed = if pending.questions.len() > 1 {
+    let reviewed = if claude_has_review(pending) {
         let review_end = title_end(rows, title, "Review your answers");
         review_end.and_then(|end| review(rows, end.saturating_sub(1), pending))
     } else {
@@ -718,11 +724,11 @@ fn anchor_rows(screen: &str, pending: &PendingQuestion) -> (Vec<String>, Vec<(us
                 }
                 candidate.push_str(&compact(row));
                 let mut rest = candidate.as_str();
-                let multiple = pending.questions.len() > 1;
-                if multiple {
+                let tabbed = claude_has_review(pending);
+                if tabbed {
                     rest = rest.strip_prefix('←').unwrap_or("");
                 }
-                let mut canonical = if multiple {
+                let mut canonical = if tabbed {
                     "←  ".to_string()
                 } else {
                     String::new()
@@ -744,8 +750,8 @@ fn anchor_rows(screen: &str, pending: &PendingQuestion) -> (Vec<String>, Vec<(us
                     canonical.push_str(&format!("{state} {header}  "));
                     true
                 });
-                if valid && rest == if multiple { "✔Submit→" } else { "" } {
-                    if multiple {
+                if valid && rest == if tabbed { "✔Submit→" } else { "" } {
+                    if tabbed {
                         canonical.push_str("✔ Submit  →");
                     }
                     replacement = Some((end + 1, canonical));

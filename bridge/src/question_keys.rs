@@ -6,7 +6,7 @@
 use crate::{
     Result,
     question_match::{PendingQuestion, QuestionKind},
-    question_screen::{QuestionCursor, QuestionScreen, QuestionStep},
+    question_screen::{QuestionCursor, QuestionScreen, QuestionStep, claude_has_review},
 };
 use serde_json::Value;
 use std::ops::RangeInclusive;
@@ -212,7 +212,7 @@ fn next_claude(pending: &PendingQuestion, index: usize, answers: &[Answer]) -> E
             QuestionStep::ClaudeQuestion(index + 1),
             QuestionCursor::Option(1),
         ))
-    } else if pending.questions.len() == 1 {
+    } else if !claude_has_review(pending) {
         ExpectedScreen::Gone
     } else {
         let mut review = dialog(QuestionStep::ClaudeReview, QuestionCursor::Option(1));
@@ -255,7 +255,7 @@ fn claude(
             for &number in &answer.options {
                 state.checked.push(number);
                 // Digits toggle without moving the current cursor (captured).
-                // unverified: the same toggles for a one-question multi-select request.
+                // observed 2026-10-22: one-question multi-select toggles use the same tabbed flow.
                 key(
                     &mut steps,
                     number.to_string(),
@@ -274,7 +274,7 @@ fn claude(
         if let Some(text) = &answer.text {
             state.cursor = Some(QuestionCursor::Option(other));
             state.text_active = true;
-            // unverified: single-select free text navigation and submission, including one-question Claude.
+            // observed 2026-10-22: single-select text uses down, text, Enter, both inside tabs and in a bare one-question picker.
             down(
                 &mut steps,
                 other.checked_sub(cursor).ok_or("mismatch")?,
@@ -283,6 +283,7 @@ fn claude(
             cursor = other;
             state.text = text.clone();
             if q.multi_select {
+                // observed 2026-10-22: typing into the free-text row auto-checks it.
                 state.checked.push(other);
             }
             push(
@@ -293,17 +294,17 @@ fn claude(
         }
         if q.multi_select {
             state.cursor = Some(QuestionCursor::Submit);
-            // unverified: one-question multi-select uses the same Submit row as the captured tabs.
+            // observed 2026-10-22: Submit on one-question multi-select leads to review.
             down(
                 &mut steps,
                 (other + 1).checked_sub(cursor).ok_or("mismatch")?,
                 &state,
             );
         }
-        // unverified: single-select free text Enter; multi-select Enter with one question.
+        // observed 2026-10-22: text Enter advances/submits single-select; multi-select Submit Enter opens review.
         key(&mut steps, "enter", next_claude(pending, index, answers));
     }
-    if pending.questions.len() > 1 {
+    if claude_has_review(pending) {
         key(&mut steps, "1", ExpectedScreen::Gone);
     }
     Ok(steps)
@@ -407,7 +408,7 @@ fn asynchronous(
     let mut state = dialog(QuestionStep::AsyncPicker(0), QuestionCursor::Option(number));
     state.text_active = answer.text.is_some();
     // observed 2026-10-22: Other digit, typed text, then Enter delivers Green and resolves.
-    // unverified: numbered ordinary options use the same digit/Enter path.
+    // observed in phase 1 (2026-10-13): a digit selected an ordinary option and Enter submitted it.
     key(
         &mut steps,
         number.to_string(),

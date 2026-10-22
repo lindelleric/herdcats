@@ -97,6 +97,14 @@
       "bytes": 367,
       "sha256": "2de9d9d51c552d839eb49b02289d334d6123d64c728fb72226088e7f1fef62b9",
       "derived": "Derived from codex-sync-notes-screen.txt by replacing the notes text with Add notes, matching the empty placeholder observed 2026-10-22; not a live screen capture."
+    },
+    "claude-question-one-multi-screen.txt": {
+      "bytes": 814,
+      "sha256": "9f64d4c198cbb1d4603f2a2f06c52814fcc5edf1f4ae6037a452a0c63894f4aa"
+    },
+    "claude-question-one-multi-review-screen.txt": {
+      "bytes": 159,
+      "sha256": "5d69ab50f02506a67c9ec92b629743304d49833915b6e7acfe90d044e58cc7e8"
     }
   }
 }

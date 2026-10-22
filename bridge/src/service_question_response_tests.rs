@@ -558,3 +558,61 @@ fn question_response_literal_add_notes_stops_at_the_next_text_check() {
     );
     cleanup(&service, root);
 }
+
+#[test]
+fn question_response_one_claude_multiselect_reaches_review_then_submits() {
+    let (mut service, root, herdr, _) = question_fixture("claude");
+    interactions(&mut service);
+    let session = service
+        .watch
+        .as_ref()
+        .unwrap()
+        .identity
+        .as_ref()
+        .unwrap()
+        .native_session_id
+        .clone();
+    let path = root.join(format!("spool/claude-{session}.jsonl"));
+    let mut record: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    record["payload"]["tool_input"]["questions"]
+        .as_array_mut()
+        .unwrap()
+        .remove(0);
+    write_records(&path, &[record]);
+    let screen = question_screen_fixture("claude-question-one-multi");
+    herdr.lock().unwrap().screen = screen.clone();
+    let pending = interactions(&mut service).remove(0);
+    let cheese = screen
+        .replace("1. [ ] Cheese", "1. [✔] Cheese")
+        .replace("☐ Toppings", "☒ Toppings");
+    let both = cheese.replace("3. [ ] Basil", "3. [✔] Basil");
+    let submit = both
+        .replace("❯ 1.", "  1.")
+        .replace("     Submit", "❯    Submit");
+    script_question(
+        &herdr,
+        vec![
+            cheese,
+            both,
+            submit,
+            question_screen_fixture("claude-question-one-multi-review"),
+            String::new(),
+        ],
+    );
+    let emitted = respond(
+        &mut service,
+        question_params(&pending, json!([{"index":0,"options":[1,3]}])),
+    );
+    assert_question_success(&emitted, &pending);
+    assert_eq!(
+        herdr.lock().unwrap().inputs,
+        vec![
+            keys_input(&["1"]),
+            keys_input(&["3"]),
+            keys_input(&["down", "down", "down", "down"]),
+            keys_input(&["enter"]),
+            keys_input(&["1"])
+        ]
+    );
+    cleanup(&service, root);
+}

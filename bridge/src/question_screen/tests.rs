@@ -539,6 +539,16 @@ fn every_fixture_survives_hard_wrapping_at_narrow_widths() {
         claude_questions(&records).remove(0),
         include_str!("../../../compatibility/phase2/fixtures/claude-question-one-screen.txt"),
     ));
+    let mut one_multi = pending(QuestionKind::ClaudeAsk);
+    one_multi.questions.remove(0);
+    for screen in [
+        include_str!("../../../compatibility/phase2/fixtures/claude-question-one-multi-screen.txt"),
+        include_str!(
+            "../../../compatibility/phase2/fixtures/claude-question-one-multi-review-screen.txt"
+        ),
+    ] {
+        cases.push((one_multi.clone(), screen));
+    }
     for (request, screen) in cases {
         let original = parse(request.kind, screen, &request).unwrap();
         for width in [40, 30, 24] {
@@ -1002,4 +1012,47 @@ fn codex_plan_add_notes_placeholder_is_empty_but_similar_typed_notes_are_preserv
         let parsed = parse(request.kind, &screen.replace("Add notes", notes), &request).unwrap();
         assert!(!parsed.free_text.unwrap().text.is_empty());
     }
+}
+
+#[test]
+fn one_question_claude_multiselect_capture_uses_tabs_and_review() {
+    let mut request = pending(QuestionKind::ClaudeAsk);
+    request.questions.remove(0);
+    let screen =
+        include_str!("../../../compatibility/phase2/fixtures/claude-question-one-multi-screen.txt");
+    let review = include_str!(
+        "../../../compatibility/phase2/fixtures/claude-question-one-multi-review-screen.txt"
+    );
+    let question = parse(request.kind, screen, &request).unwrap();
+    assert_eq!(question.step, QuestionStep::ClaudeQuestion(0));
+    assert!(question.is_fresh(&request));
+    assert_eq!(
+        question
+            .options
+            .iter()
+            .map(|o| o.checked)
+            .collect::<Vec<_>>(),
+        vec![Some(false); 4]
+    );
+    let reviewed = parse(request.kind, review, &request).unwrap();
+    assert_eq!(reviewed.step, QuestionStep::ClaudeReview);
+    assert_eq!(reviewed.review_answers, vec!["Cheese,Basil"]);
+    assert!(!reviewed.is_fresh(&request));
+    assert!(
+        parse(
+            request.kind,
+            &screen.replace("←  ☐ Toppings  ✔ Submit  →", " ☐ Toppings"),
+            &request
+        )
+        .is_none()
+    );
+    request.questions[0].multi_select = false;
+    assert!(parse(request.kind, screen, &request).is_none());
+    assert!(parse(request.kind, review, &request).is_none());
+    let bare = screen
+        .replace("←  ☐ Toppings  ✔ Submit  →", " ☐ Toppings")
+        .replace("[ ] ", "")
+        .replace("Type something", "Type something.")
+        .replace("     Submit\n", "");
+    assert!(parse(request.kind, &bare, &request).is_some());
 }

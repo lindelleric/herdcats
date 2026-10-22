@@ -164,6 +164,7 @@ fn one_claude(multi: bool) -> (PendingQuestion, QuestionScreen) {
     let mut raw = std::fs::read_to_string(root.join("claude-question-one-screen.txt")).unwrap();
     if multi {
         raw = raw
+            .replace(" ☐ Color", "←  ☐ Color  ✔ Submit  →")
             .replace("1. Red", "1. [ ] Red")
             .replace("2. Blue", "2. [ ] Blue")
             .replace("3. Type something.", "3. [ ] Type something\n     Submit");
@@ -172,7 +173,7 @@ fn one_claude(multi: bool) -> (PendingQuestion, QuestionScreen) {
     (pending, screen)
 }
 #[test]
-fn claude_one_question_single_text_and_multi_have_no_review() {
+fn claude_one_question_single_submits_directly_but_multi_requires_review() {
     let (pending, screen) = one_claude(false);
     assert_eq!(
         plan(
@@ -211,6 +212,8 @@ fn claude_one_question_single_text_and_multi_have_no_review() {
     checked.checked = vec![2];
     let mut submit = checked.clone();
     submit.cursor = Some(QuestionCursor::Submit);
+    let mut review = dialog(QuestionStep::ClaudeReview, QuestionCursor::Option(1));
+    review.review_answers = vec!["Blue".into()];
     assert_eq!(
         plan(
             pending.kind,
@@ -226,7 +229,8 @@ fn claude_one_question_single_text_and_multi_have_no_review() {
                 expected: ExpectedScreen::Dialog(submit),
                 only_if: None
             },
-            key("enter", ExpectedScreen::Gone)
+            key("enter", ExpectedScreen::Dialog(review)),
+            key("1", ExpectedScreen::Gone)
         ]
     );
 }
@@ -636,5 +640,77 @@ fn codex_notes_can_choose_an_option_above_the_starting_highlight() {
             "up",
             ExpectedScreen::Dialog(sync_dialog(0, QuestionCursor::Option(1), 2))
         )
+    );
+}
+
+#[test]
+fn one_question_claude_multiselect_plan_checks_review_before_final_submit() {
+    let (mut pending, _) = fixture(QuestionKind::ClaudeAsk, "claude-question-single");
+    pending.questions.remove(0);
+    let raw =
+        include_str!("../../../compatibility/phase2/fixtures/claude-question-one-multi-screen.txt");
+    let screen = question_screen::parse(pending.kind, raw, &pending).unwrap();
+    let mut selected = dialog(QuestionStep::ClaudeQuestion(0), QuestionCursor::Option(1));
+    selected.checked = vec![1];
+    let mut want = vec![key("1", ExpectedScreen::Dialog(selected.clone()))];
+    selected.checked = vec![1, 3];
+    want.push(key("3", ExpectedScreen::Dialog(selected.clone())));
+    selected.cursor = Some(QuestionCursor::Submit);
+    want.push(Step {
+        input: Input::Keys(vec!["down".into(); 4]),
+        expected: ExpectedScreen::Dialog(selected),
+        only_if: None,
+    });
+    let mut review = dialog(QuestionStep::ClaudeReview, QuestionCursor::Option(1));
+    review.review_answers = vec!["Cheese, Basil".into()];
+    want.push(key("enter", ExpectedScreen::Dialog(review)));
+    want.push(key("1", ExpectedScreen::Gone));
+    assert_eq!(
+        plan(
+            pending.kind,
+            &pending,
+            &screen,
+            &json!({"answers":[{"index":0,"options":[1,3]}]})
+        )
+        .unwrap(),
+        want
+    );
+}
+
+#[test]
+fn one_question_claude_multiselect_text_auto_checks_and_is_reviewed() {
+    let (mut pending, _) = fixture(QuestionKind::ClaudeAsk, "claude-question-single");
+    pending.questions.remove(0);
+    let raw =
+        include_str!("../../../compatibility/phase2/fixtures/claude-question-one-multi-screen.txt");
+    let screen = question_screen::parse(pending.kind, raw, &pending).unwrap();
+    let mut other = dialog(QuestionStep::ClaudeQuestion(0), QuestionCursor::Option(4));
+    other.text_active = true;
+    let mut typed = other.clone();
+    typed.text = "Pepper".into();
+    typed.checked = vec![4];
+    let mut submit = typed.clone();
+    submit.cursor = Some(QuestionCursor::Submit);
+    let mut review = dialog(QuestionStep::ClaudeReview, QuestionCursor::Option(1));
+    review.review_answers = vec!["Pepper".into()];
+    assert_eq!(
+        plan(
+            pending.kind,
+            &pending,
+            &screen,
+            &json!({"answers":[{"index":0,"options":[],"text":"Pepper"}]})
+        )
+        .unwrap(),
+        vec![
+            Step {
+                input: Input::Keys(vec!["down".into(); 3]),
+                expected: ExpectedScreen::Dialog(other),
+                only_if: None
+            },
+            text("Pepper", typed),
+            key("down", ExpectedScreen::Dialog(submit)),
+            key("enter", ExpectedScreen::Dialog(review)),
+            key("1", ExpectedScreen::Gone)
+        ]
     );
 }
