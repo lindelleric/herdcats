@@ -409,6 +409,18 @@ struct TimelineMarkdownTests {
         #expect(!kept.runs.isEmpty)
     }
 
+    @Test func invisibleFormatCharactersCannotHideADeceptiveLabel() {
+        for invisible in ["\u{200C}", "\u{200B}", "\u{200D}", "\u{2060}", "\u{FEFF}", "\u{200E}", "\u{202E}", "\u{00AD}"] {
+            #expect(links("[\(invisible)https://bank.com](https://evil.example)").isEmpty, "prefix U+\(invisible.unicodeScalars.first!.value)")
+            #expect(links("[https:\(invisible)//bank.com](https://evil.example)").isEmpty, "infix U+\(invisible.unicodeScalars.first!.value)")
+            #expect(links("[  \(invisible) HTTPS://bank.com](https://evil.example)").isEmpty)
+        }
+        // A matching host stays linked even when the label contains invisible characters.
+        #expect(links("[\u{200C}https://bank.com](https://bank.com/x)").count == 1)
+        // Ordinary labels with invisible characters are unaffected.
+        #expect(links("[read\u{200B}me](https://example.com)").count == 1)
+    }
+
     @Test func onlyUnsafeLinksAreStrippedFromMixedText() {
         let result = TimelineMarkdown.sanitized(
             "ok [a](https://example.com) bad [b](tel:123) also [c](https://example.org)")

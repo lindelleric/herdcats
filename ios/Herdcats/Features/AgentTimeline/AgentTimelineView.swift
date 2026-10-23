@@ -1771,7 +1771,7 @@ enum TimelineMarkdown {
     private static func isSafe(_ url: URL, label: String) -> Bool {
         guard let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http",
               let host = url.host?.lowercased(), !host.isEmpty else { return false }
-        let visible = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let visible = visibleText(of: label)
         let lowered = visible.lowercased()
         guard lowered.hasPrefix("http://") || lowered.hasPrefix("https://") || hasSchemeAndHost(visible) else {
             return true
@@ -1779,6 +1779,20 @@ enum TimelineMarkdown {
         // The label presents itself as a URL: it must point at the same host.
         guard let labelHost = URL(string: visible)?.host?.lowercased(), !labelHost.isEmpty else { return false }
         return labelHost == host
+    }
+
+    /// The label as a reader perceives it: invisible Unicode format characters
+    /// (zero-width joiners/non-joiners, bidi marks, BOM, ...) and control characters
+    /// are dropped so they cannot hide a URL-looking label from the check.
+    private static func visibleText(of label: String) -> String {
+        var scalars = String.UnicodeScalarView()
+        for scalar in label.unicodeScalars {
+            switch scalar.properties.generalCategory {
+            case .format, .control: continue
+            default: scalars.append(scalar)
+            }
+        }
+        return String(scalars).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func hasSchemeAndHost(_ text: String) -> Bool {
