@@ -415,6 +415,18 @@ struct TimelineEntryInterruptionTests {
         state.reset()
         #expect(state.efforts.isEmpty)
     }
+    @Test func streamedOlderVersionNeverChecksTheAliasRow() throws {
+        let state = state()
+        try state.update(payload([
+            "model": ["id": "claude-haiku-5-5", "label": "Haiku 5.5"], "effort": "low",
+            "models": [["id": "haiku", "label": "Haiku 5.5", "current": true, "efforts": [["id": "low", "label": "Low"]]]],
+            "efforts": [["id": "low", "label": "Low"]]
+        ]), options: true)
+        #expect(state.selectedModelID == "haiku")
+        try state.update(payload(["model": ["id": "claude-haiku-4-5", "label": "Haiku 4.5"], "effort": "low"]))
+        #expect(state.selectedModelID == nil)
+        #expect(state.modelName == "Haiku 4.5")
+    }
     @Test func partialResultsPreserveAppliedPairAndShowSpecificErrors() throws {
         let state = state()
         for (code, message) in [

@@ -101,7 +101,7 @@ fn codex_advanced_screen() -> String {
 fn codex_composer_toast(slug: &str, effort: &str) -> String {
     let label = model_control::codex_slug_label(slug);
     format!(
-        "› Ask Codex to do anything\n• Model changed to {slug} {effort} for this session only\n{label} {effort} · Context 100% left"
+        "• Model changed to {slug} {effort} for this session only\n› Ask Codex to do anything\n{label} {effort} · Context 100% left"
     )
 }
 
@@ -1335,6 +1335,21 @@ fn model_set_codex_reselecting_the_current_model_sends_nothing() {
     let result = &result_frame(&reply)["result"];
     assert_eq!(result["confirmed"], true, "{reply:?}");
     assert_eq!(result["applied"]["effort"], "minimal");
+    assert!(herdr.lock().unwrap().inputs.is_empty());
+    cleanup(&service, root);
+}
+
+#[test]
+fn model_set_codex_reselecting_the_current_effort_sends_nothing() {
+    let (mut service, root, herdr, _) = model_fixture_codex();
+    let reply = model_request(
+        &mut service,
+        "model.set",
+        json!({"effort":"low","expect":expect_pair("gpt-6.1-sol", Some("low"))}),
+    );
+    let result = &result_frame(&reply)["result"];
+    assert_eq!(result["confirmed"], true, "{reply:?}");
+    assert_eq!(result["applied"]["effort"], "low");
     assert!(herdr.lock().unwrap().inputs.is_empty());
     cleanup(&service, root);
 }

@@ -1581,10 +1581,14 @@ impl Service {
                 .map(|model| model.label.clone())
                 .unwrap_or_else(|| model_control::codex_slug_label(slug))
         };
-        // Reselecting the current model without an effort is a no-op: walking
-        // the picker would apply its default row, and an effort it can't show
-        // (minimal) would be silently replaced.
-        if target_effort.is_none() && Some(target_slug) == current_slug {
+        // Reselecting the current model, with no effort or the current one, is
+        // a no-op: walking the picker would apply its default row (replacing an
+        // effort it can't show, like minimal), and an identical toast can't
+        // confirm anything.
+        let current_effort = current.as_ref().and_then(|(_, effort)| effort.as_deref());
+        if Some(target_slug) == current_slug
+            && target_effort.is_none_or(|effort| Some(effort) == current_effort)
+        {
             return Ok(json!({
                 "identity":identity, "generation":self.generation,
                 "applied":{

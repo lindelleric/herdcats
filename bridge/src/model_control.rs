@@ -831,14 +831,25 @@ pub fn composer_state(agent: &str, screen: &str) -> Composer {
     };
     // The composer is the last line carrying the agent's input marker; slash
     // popup rows above it share the same marker.
-    let Some(line) = screen
-        .lines()
-        .rev()
-        .find(|line| line.trim_start().starts_with(marker))
-        .map(|line| line.trim_start())
+    let lines: Vec<&str> = screen.lines().collect();
+    let Some(index) = lines
+        .iter()
+        .rposition(|line| line.trim_start().starts_with(marker))
     else {
         return Composer::Unknown;
     };
+    // A multiline draft continues on the lines under the marker (its first
+    // line may even be blank); any text before the composer's end is a draft.
+    let continued = lines[index + 1..]
+        .iter()
+        .map(|line| line.trim())
+        .take_while(|line| !line.is_empty() && !is_composer_edge(line))
+        .next()
+        .is_some();
+    if continued {
+        return Composer::Draft;
+    }
+    let line = lines[index].trim_start();
     let rest = line.trim_start_matches(marker).trim_start();
     if rest.is_empty() {
         return Composer::Empty;
@@ -851,6 +862,15 @@ pub fn composer_state(agent: &str, screen: &str) -> Composer {
         "codex" if CODEX_PLACEHOLDERS.contains(&rest) => Composer::Placeholder(rest.to_owned()),
         _ => Composer::Draft,
     }
+}
+
+/// A line that closes the composer: Claude's box border or a blank/footer
+/// line follows the input in both agents.
+fn is_composer_edge(line: &str) -> bool {
+    line.starts_with(['─', '▔', '━', '╰', '└'])
+        || line.contains("% left")
+        || line.starts_with("? for shortcuts")
+        || line.starts_with("⏵⏵")
 }
 
 /// Whether the composer line of an ANSI screen renders `placeholder` faint
@@ -1423,6 +1443,24 @@ mod tests {
             Composer::Placeholder("Ask a follow-up question".into())
         );
         assert_eq!(composer_state("codex", "› hello draft"), Composer::Draft);
+        // Multiline drafts whose first line is blank.
+        assert_eq!(
+            composer_state("claude", "─────\n❯ \n  second line of a draft\n─────\n  ⏵⏵ auto mode on"),
+            Composer::Draft
+        );
+        assert_eq!(
+            composer_state("codex", "›\n  second line\n\n  GPT-6.1-Sol low · Context 100% left"),
+            Composer::Draft
+        );
+        // Real empty composers: the box border or a blank line follows.
+        assert_eq!(
+            composer_state("claude", "─────\n❯ \n─────\n  ⏵⏵ auto mode on"),
+            Composer::Empty
+        );
+        assert_eq!(
+            composer_state("codex", "› Ask Codex to do anything\n   \n  GPT-6.1-Sol low · Context 100% left\n  ? for shortcuts"),
+            Composer::Placeholder("Ask Codex to do anything".into())
+        );
         assert_eq!(composer_state("codex", "no marker"), Composer::Unknown);
         assert_eq!(composer_state("agy", "›"), Composer::Unknown);
     }

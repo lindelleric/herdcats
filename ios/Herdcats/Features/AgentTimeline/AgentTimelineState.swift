@@ -265,10 +265,12 @@ import Observation
     var accessibilityLabel: String {
         "Model \(pair.model == nil ? "unknown" : modelName)" + (effortText.map { ", effort " + $0 } ?? "")
     }
+    /// The exact row, else the row the bridge marked current. The bridge marks
+    /// an alias current only when it resolves to exactly the running id, so an
+    /// older `claude-haiku-4-5` never checks the `haiku` (5.5) row.
     var selectedModel: AgentModelOption? {
         models.first(where: { $0.id == pair.model?.id })
-            ?? models.first(where: { pair.model?.id.hasPrefix("claude-" + $0.id + "-") == true })
-            ?? (pair.model == nil ? models.first(where: { $0.current == true }) : nil)
+            ?? models.first(where: { $0.current == true })
     }
     var efforts: [AgentEffortOption] { selectedModel?.efforts ?? statusEfforts }
     var effortLabel: String {
@@ -308,11 +310,16 @@ import Observation
             if pair.model?.id == incoming.id, let known = pair.model { return known }
             return models.first(where: { $0.id == incoming.id }) ?? incoming
         }
+        let previous = pair.model?.id
         pair = AgentModelPair(model: model, effort: payload.effort)
-        // A streamed id can be a Claude concrete id while the selectable row
-        // is its tier alias. Keep the server's current marker only in that case.
         if models.contains(where: { $0.id == model?.id }) {
             for index in models.indices { models[index].current = models[index].id == model?.id }
+        } else if !options, model?.id != previous {
+            // A streamed model outside the list (a desk-side switch to another
+            // version): only the bridge knows which row, if any, it matches,
+            // so drop the stale mark and refetch the catalog.
+            for index in models.indices { models[index].current = false }
+            Task { await refresh() }
         }
         revision += 1
     }
