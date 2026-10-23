@@ -1236,6 +1236,25 @@ fn watched_identity(service: &mut Service) -> Identity {
 }
 
 #[test]
+fn model_status_lists_an_older_dated_claude_id_as_its_own_current_row() {
+    let (mut service, root, _, path) = model_fixture_claude();
+    let text = fs::read_to_string(&path)
+        .unwrap()
+        .replace("claude-opus-5-5", "claude-haiku-4-5-20251001");
+    fs::write(&path, text).unwrap();
+    let reply = model_request(&mut service, "model.status", json!({}));
+    let models = result_frame(&reply)["result"]["models"].as_array().unwrap().clone();
+    let haiku = models.iter().find(|m| m["id"] == "haiku").unwrap();
+    assert_eq!(haiku["label"], "Haiku 5.5");
+    assert!(haiku.get("current").is_none(), "{models:?}");
+    let current: Vec<_> = models.iter().filter(|m| m["current"] == true).collect();
+    assert_eq!(current.len(), 1);
+    assert_eq!(current[0]["id"], "claude-haiku-4-5-20251001");
+    assert_eq!(current[0]["label"], "Haiku 4.5");
+    cleanup(&service, root);
+}
+
+#[test]
 fn model_set_claude_treats_the_active_alias_as_unchanged() {
     // The session runs claude-opus-5-5; the checked "opus" row plus a new
     // effort sends only /effort, never /model.

@@ -403,6 +403,18 @@ struct TimelineEntryInterruptionTests {
         #expect(!state.isVisible)
         #expect(state.models.isEmpty)
     }
+    @Test func statusEffortsApplyWhenNoModelIsKnown() throws {
+        let state = state()
+        try state.update(payload([
+            "model": NSNull(), "effort": NSNull(),
+            "models": [["id": "opus", "label": "Opus 5.5", "efforts": [["id": "high", "label": "High"]]]],
+            "efforts": [["id": "low", "label": "Low"], ["id": "high", "label": "High"]]
+        ]), options: true)
+        #expect(state.selectedModelID == nil)
+        #expect(state.efforts.map(\.id) == ["low", "high"])
+        state.reset()
+        #expect(state.efforts.isEmpty)
+    }
     @Test func partialResultsPreserveAppliedPairAndShowSpecificErrors() throws {
         let state = state()
         for (code, message) in [

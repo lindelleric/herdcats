@@ -238,6 +238,9 @@ pub struct ClaudeSettings {
     pub model: Option<String>,
     pub effort_level: Option<String>,
     pub model_settings: Vec<(String, String)>,
+    /// `modelAliases`: alias → configured full id. Used only to find a
+    /// per-model effort; it is not trusted for labels (it can be stale).
+    pub model_aliases: Vec<(String, String)>,
 }
 
 pub fn parse_claude_settings(text: &str) -> ClaudeSettings {
@@ -248,6 +251,7 @@ pub fn parse_claude_settings(text: &str) -> ClaudeSettings {
                 model: None,
                 effort_level: None,
                 model_settings: Vec::new(),
+                model_aliases: Vec::new(),
             };
         }
     };
@@ -274,10 +278,25 @@ pub fn parse_claude_settings(text: &str) -> ClaudeSettings {
                 .collect()
         })
         .unwrap_or_default();
+    let model_aliases = value
+        .pointer("/modelAliases")
+        .and_then(Value::as_object)
+        .map(|aliases| {
+            aliases
+                .iter()
+                .filter_map(|(alias, id)| {
+                    id.as_str()
+                        .filter(|s| !s.is_empty())
+                        .map(|id| (alias.clone(), id.to_owned()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     ClaudeSettings {
         model: string("/model"),
         effort_level: string("/effortLevel"),
         model_settings,
+        model_aliases,
     }
 }
 
@@ -285,11 +304,22 @@ impl ClaudeSettings {
     /// `model` may be a tier alias (`sonnet`): `modelSettings` is keyed by full
     /// ids, so an alias also matches the id it currently resolves to.
     pub fn effort_for(&self, model: &str) -> Option<&str> {
-        let resolved = claude_alias_id(model);
-        self.model_settings
+        // Candidates in order: the id as given, the alias's configured id
+        // (`modelAliases`), then the id this bridge resolves it to.
+        let configured = self
+            .model_aliases
             .iter()
-            .find(|(id, _)| id == model || Some(id.as_str()) == resolved.as_deref())
-            .map(|(_, effort)| effort.as_str())
+            .find(|(alias, _)| alias == model)
+            .map(|(_, id)| id.clone());
+        [Some(model.to_owned()), configured, claude_alias_id(model)]
+            .into_iter()
+            .flatten()
+            .find_map(|candidate| {
+                self.model_settings
+                    .iter()
+                    .find(|(id, _)| *id == candidate)
+                    .map(|(_, effort)| effort.as_str())
+            })
             .or(self.effort_level.as_deref())
     }
 }
@@ -1461,6 +1491,11 @@ mod tests {
         assert_eq!(settings.effort_for("sonnet"), Some("xhigh"));
         assert_eq!(settings.effort_for("claude-sonnet-5-5"), Some("xhigh"));
         assert_eq!(settings.effort_for("opus"), None);
+        let configured = parse_claude_settings(
+            r#"{"model":"opus","modelAliases":{"opus":"claude-opus-4-6"},
+                "modelSettings":{"claude-opus-4-6":{"effortLevel":"high"}}}"#,
+        );
+        assert_eq!(configured.effort_for("opus"), Some("high"));
     }
 
 }

@@ -1042,12 +1042,13 @@ impl Service {
                         json!({"id":alias,"label":model_control::claude_display_label(alias)})
                     })
                     .collect();
+                // An alias row is current only when the session runs exactly
+                // what the alias resolves to; an older or dated id of the same
+                // tier (claude-haiku-4-5-20251001) gets its own checked row, so
+                // picking the alias is a real switch rather than a no-op.
                 let matches_alias = |alias: &str| {
                     current_id.is_some_and(|id| {
-                        id == alias
-                            || id
-                                .strip_prefix("claude-")
-                                .is_some_and(|body| body.starts_with(&format!("{alias}-")))
+                        id == alias || model_control::claude_alias_id(alias).as_deref() == Some(id)
                     })
                 };
                 let mut marked = false;

@@ -242,6 +242,9 @@ import Observation
     private(set) var supported = false
     fileprivate(set) var pair = AgentModelPair()
     fileprivate(set) var models: [AgentModelOption] = []
+    /// `model.status`'s top-level efforts, used when no model row is selected
+    /// (a fresh Claude session can report no model but still offer efforts).
+    private var statusEfforts: [AgentEffortOption] = []
     private(set) var isChanging = false
     var errorMessage: String?
     private var client: AgentBridgeClient?
@@ -267,7 +270,7 @@ import Observation
             ?? models.first(where: { pair.model?.id.hasPrefix("claude-" + $0.id + "-") == true })
             ?? (pair.model == nil ? models.first(where: { $0.current == true }) : nil)
     }
-    var efforts: [AgentEffortOption] { selectedModel?.efforts ?? [] }
+    var efforts: [AgentEffortOption] { selectedModel?.efforts ?? statusEfforts }
     var effortLabel: String {
         guard let effort = pair.effort else { return "Default" }
         return efforts.first(where: { $0.id == effort })?.label ?? "Unknown"
@@ -285,6 +288,7 @@ import Observation
         generation = nil
         pair = AgentModelPair()
         models = []
+        statusEfforts = []
         errorMessage = nil
         isChanging = false
     }
@@ -297,6 +301,7 @@ import Observation
         if options {
             guard let models = payload.models else { throw AgentBridgeError.invalidFrame }
             self.models = models
+            statusEfforts = payload.efforts ?? []
         }
         let model = payload.model.map { incoming in
             if options { return incoming }
@@ -323,6 +328,7 @@ import Observation
                 guard payload.identity == identity, payload.generation == generation,
                     let models = payload.models else { throw AgentBridgeError.identityMismatch }
                 self.models = models
+                statusEfforts = payload.efforts ?? []
                 return
             }
             try update(payload, options: true)
