@@ -79,7 +79,8 @@ pub fn effort_label(effort: &str) -> &str {
 pub fn known_effort(agent: &str, effort: &str) -> bool {
     match agent {
         "claude" => effort == "auto" || CLAUDE_EFFORTS.contains(&effort),
-        "codex" => CODEX_EFFORTS.contains(&effort) || effort == "minimal",
+        // `minimal` has no picker row, so it is neither listed nor sendable.
+        "codex" => CODEX_EFFORTS.contains(&effort),
         _ => false,
     }
 }
@@ -156,6 +157,17 @@ pub fn claude_scan(records: &[Value]) -> Option<(String, Option<String>)> {
             continue;
         }
         match record["type"].as_str() {
+            // A desk-side `/model` or `/effort` is recorded only as its local
+            // command output until the next reply; it changes the pair now.
+            Some("user") => match claude_local_command_change(&record["message"]["content"]) {
+                // Claude keeps the session's effort across a model switch.
+                Some(LocalChange::Model(id)) => model = Some(id),
+                Some(LocalChange::Effort(level)) => {
+                    assistant_effort = Some(level);
+                    request_effort = None;
+                }
+                None => {}
+            },
             Some("assistant") => {
                 if let Some(id) = record["message"]["model"]
                     .as_str()
@@ -182,6 +194,41 @@ pub fn claude_scan(records: &[Value]) -> Option<(String, Option<String>)> {
         }
     }
     model.map(|id| (id, assistant_effort.or(request_effort)))
+}
+
+enum LocalChange {
+    Model(String),
+    Effort(String),
+}
+
+/// Parses a `<local-command-stdout>` user record from a confirmed `/model` or
+/// `/effort`: "Set model to Haiku 5.5 …" → `haiku`, "Set effort level to low
+/// (…" → `low`. "Kept …" (a declined switch) and other output change nothing.
+fn claude_local_command_change(content: &Value) -> Option<LocalChange> {
+    let text = match content {
+        Value::String(text) => text.clone(),
+        Value::Array(blocks) => blocks
+            .iter()
+            .filter_map(|block| block["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => return None,
+    };
+    let body = text
+        .trim()
+        .strip_prefix("<local-command-stdout>")?
+        .split("</local-command-stdout>")
+        .next()?
+        .trim();
+    if let Some(rest) = body.strip_prefix("Set model to ") {
+        let tier = rest.split_whitespace().next()?.to_ascii_lowercase();
+        return CLAUDE_MODELS
+            .iter()
+            .find(|(alias, _)| *alias == tier)
+            .map(|(alias, _)| LocalChange::Model((*alias).to_owned()));
+    }
+    let level = body.strip_prefix("Set effort level to ")?.split_whitespace().next()?;
+    known_effort("claude", level).then(|| LocalChange::Effort(level.to_owned()))
 }
 
 /// The subset of `~/.claude/settings.json` model control needs. `model` is the
@@ -1291,6 +1338,30 @@ mod tests {
         assert_eq!(
             claude_scan(&records),
             Some(("claude-opus-5-5".into(), Some("high".into())))
+        );
+    }
+
+    #[test]
+    fn claude_scan_applies_desk_side_local_commands_until_the_next_reply() {
+        let stdout = |text: &str| {
+            serde_json::json!({"type":"user","message":{"role":"user",
+                "content":format!("<local-command-stdout>{text}</local-command-stdout>")}})
+        };
+        let mut records = vec![
+            serde_json::json!({"type":"assistant","message":{"model":"claude-opus-5-5"},"effort":"medium"}),
+            stdout("Set model to Haiku 5.5 and saved as your default for new sessions"),
+        ];
+        assert_eq!(claude_scan(&records), Some(("haiku".into(), Some("medium".into()))));
+        records.push(stdout(
+            "Set effort level to low (saved as your default for new sessions): Quick",
+        ));
+        assert_eq!(claude_scan(&records), Some(("haiku".into(), Some("low".into()))));
+        records.push(stdout("Kept effort level as low"));
+        assert_eq!(claude_scan(&records), Some(("haiku".into(), Some("low".into()))));
+        records.push(serde_json::json!({"type":"assistant","message":{"model":"claude-haiku-5-5"},"effort":"low"}));
+        assert_eq!(
+            claude_scan(&records),
+            Some(("claude-haiku-5-5".into(), Some("low".into())))
         );
     }
 

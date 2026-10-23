@@ -1608,7 +1608,7 @@ impl Service {
             });
         if let Some(effort) = target_effort.map(str::to_owned).or(carried) {
             let row_label =
-                model_control::codex_effort_row_label(&effort).ok_or("invalid_effort")?;
+                model_control::codex_effort_row_label(&effort).ok_or_else(mismatch)?;
             if row_label.starts_with("More reasoning") {
                 let index = rows
                     .iter()
