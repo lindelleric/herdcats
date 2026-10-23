@@ -2505,7 +2505,8 @@ private struct SelectablePaneOutput: UIViewRepresentable {
     func makeUIView(context: Context) -> PaneOutputTextView {
         let view: PaneOutputTextView
         #if DEBUG && targetEnvironment(simulator)
-        if ProcessInfo.processInfo.arguments.contains("-hc.long-terminal-selection") {
+        if ProcessInfo.processInfo.arguments.contains("-hc.long-terminal-selection")
+            || ProcessInfo.processInfo.arguments.contains("-hc.terminal-geometry") {
             view = PaneSelectionProbeTextView()
         } else {
             view = PaneOutputTextView()
@@ -2586,7 +2587,9 @@ private class PaneOutputTextView: UITextView, UIGestureRecognizerDelegate {
             while let view = ancestor {
                 if let scroll = view as? UIScrollView {
                     if scroll.adjustedContentInset.bottom > (window?.safeAreaInsets.bottom ?? 0) + 1 {
+                        anchorScrollView?.panGestureRecognizer.removeTarget(self, action: #selector(selectionScroll(_:)))
                         anchorScrollView = scroll
+                        scroll.panGestureRecognizer.addTarget(self, action: #selector(selectionScroll(_:)))
                         anchorOffset = scroll.contentOffset
                     }
                     break
@@ -2611,14 +2614,20 @@ private class PaneOutputTextView: UITextView, UIGestureRecognizerDelegate {
         addGestureRecognizer(observer)
     }
 
+    @objc private func selectionScroll(_ gesture: UIPanGestureRecognizer) {
+        // Remember a pan even after it ends, before keyboardDidHide arrives.
+        if gesture.state == .began || gesture.state == .changed { anchorOffset = nil }
+    }
+
     func stopObservingSelection() {
+        anchorScrollView?.panGestureRecognizer.removeTarget(self, action: #selector(selectionScroll(_:)))
         if let keyboardObserver { NotificationCenter.default.removeObserver(keyboardObserver) }
         keyboardObserver = nil
     }
 
     private func restoreSelectionScrollPosition() {
         defer { anchorOffset = nil }
-        guard let scroll = anchorScrollView, let offset = anchorOffset,
+        guard let scroll = anchorScrollView, let offset = anchorOffset, !scroll.isDecelerating,
               scroll.panGestureRecognizer.state != .began,
               scroll.panGestureRecognizer.state != .changed else { return }
         // SwiftUI has now reserved the dismissed keyboard's space, so restoring
@@ -2658,9 +2667,14 @@ private final class PaneSelectionProbeTextView: PaneOutputTextView {
         get {
             let origin = convert(CGPoint.zero, to: nil)
             let selected = selectedTextRange.flatMap { text(in: $0) } ?? ""
+            let bottom = convert(caretRect(for: endOfDocument), to: nil)
+            var ancestor = superview
+            while ancestor != nil && !(ancestor is UIScrollView) { ancestor = ancestor?.superview }
             let values: [String: Any] = [
                 "x": origin.x, "y": origin.y, "width": bounds.width, "height": bounds.height,
-                "selected": selected
+                "selected": selected, "text": text ?? "",
+                "bottomMinY": bottom.minY, "bottomMaxY": bottom.maxY,
+                "scrollOffsetY": (ancestor as? UIScrollView)?.contentOffset.y ?? 0
             ]
             return (try? JSONSerialization.data(withJSONObject: values))
                 .flatMap { String(data: $0, encoding: .utf8) }

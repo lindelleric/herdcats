@@ -3,6 +3,59 @@ import UIKit
 import XCTest
 
 extension HerdcatsUITests {
+    private func terminalGeometry(_ output: XCUIElement) -> [String: Any] {
+        let data = (output.value as? String ?? "{}").data(using: .utf8)!
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+    }
+
+    func testTerminalBottomGeometryDetectsScrollingAwayFromNewestLine() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-hc.screenshots", "-hc.screen", "pane", "-hc.long-terminal-selection",
+                               "-paneShowComposeByDefault", "NO"]
+        app.launch()
+        let terminal = app.buttons["timeline-open-terminal"]
+        if terminal.waitForExistence(timeout: 3) { terminal.tap() }
+        let output = app.textViews["pane-output-text"]
+        XCTAssertTrue(output.waitForExistence(timeout: 5))
+        let scroll = app.scrollViews["pane-output-scroll-view"]
+        Thread.sleep(forTimeInterval: 1)
+        // This offline fixture does not use the connected pane's initial-pin
+        // path. Reach the end before checking the geometry's negative case.
+        for _ in 0..<20 {
+            if (terminalGeometry(output)["bottomMaxY"] as? Double ?? .infinity) <= scroll.frame.maxY + 1 { break }
+            scroll.swipeUp(velocity: .fast)
+        }
+        XCTAssertGreaterThan(terminalGeometry(output)["bottomMinY"] as? Double ?? 0, scroll.frame.minY)
+        XCTAssertLessThanOrEqual(terminalGeometry(output)["bottomMaxY"] as? Double ?? .infinity,
+                                 scroll.frame.maxY + 1)
+        scroll.swipeDown(velocity: .fast)
+        XCTAssertGreaterThan(terminalGeometry(output)["bottomMaxY"] as? Double ?? 0, scroll.frame.maxY,
+                             "The actual last line must be offscreen after scrolling into history")
+    }
+
+    func testQuickTerminalSwipeWithKeyboardOpenDoesNotRestoreOldOffset() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-hc.screenshots", "-hc.screen", "pane", "-hc.long-terminal-selection",
+                               "-paneShowComposeByDefault", "NO"]
+        app.launch()
+        let terminal = app.buttons["timeline-open-terminal"]
+        if terminal.waitForExistence(timeout: 3) { terminal.tap() }
+        let output = app.textViews["pane-output-text"]
+        XCTAssertTrue(output.waitForExistence(timeout: 5))
+        liveKeyboardButton(app).tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        Thread.sleep(forTimeInterval: 1)
+        let before = terminalGeometry(output)["scrollOffsetY"] as? Double ?? 0
+        let scroll = app.scrollViews["pane-output-scroll-view"]
+        let start = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 180)),
+                    withVelocity: .fast, thenHoldForDuration: 0)
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5))
+        Thread.sleep(forTimeInterval: 1)
+        XCTAssertLessThan(terminalGeometry(output)["scrollOffsetY"] as? Double ?? .infinity, before - 50,
+                          "Keyboard dismissal must not undo the swipe")
+    }
+
     func testTerminalSelectionMatchesPressedWordAfterScrolling() {
         checkTerminalSelectionPosition(keyboardOpen: false)
     }
@@ -218,7 +271,7 @@ extension HerdcatsUITests {
     /// The pane view opens pinned to the newest output. Mock-gated: needs the
     /// fixture's long, known-length output to reason about visibility.
     func testPaneOpensPinnedToBottom() throws {
-        let app = try launchConnectedApp()
+        let app = try launchConnectedApp(terminalGeometry: true)
         XCTAssertTrue(openFirstPane(app), "Could not open a pane detail view")
 
         guard isMockHerdrFixtureVisible(app) else {
@@ -233,9 +286,9 @@ extension HerdcatsUITests {
                       "Mock bottom marker missing")
         Thread.sleep(forTimeInterval: 1)
         let viewport = app.scrollViews["pane-output-scroll-view"].frame
-        // The native output is one element; its lower edge is the newest line.
-        XCTAssertGreaterThan(output.frame.maxY, viewport.minY)
-        XCTAssertLessThanOrEqual(output.frame.maxY, viewport.maxY + 1,
+        let geometry = terminalGeometry(output)
+        XCTAssertGreaterThan(geometry["bottomMinY"] as? Double ?? 0, viewport.minY)
+        XCTAssertLessThanOrEqual(geometry["bottomMaxY"] as? Double ?? .infinity, viewport.maxY + 1,
                                  "Pane did not open scrolled to the bottom")
     }
 
