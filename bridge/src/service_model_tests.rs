@@ -1,5 +1,7 @@
 // Included in service::tests to exercise model control against fake Herdr.
 
+/// A Claude screen whose composer line (the last ❯ row) is the idle
+/// placeholder, as the TUI shows once a submitted command has scrolled up.
 fn claude_idle_screen() -> String {
     "  Claude Code                         v2.1.309\n\
      Opus 5.5 with medium effort · Claude Pro\n\
@@ -12,46 +14,79 @@ fn claude_model_screen(command: &str) -> String {
     format!(
         "  Claude Code                         v2.1.309\n\
          ❯ {command}\n\
-           ⎿  Set model to Sonnet 5.5 and saved as your default for new sessions\n"
+           ⎿  Set model to Sonnet 5.5 and saved as your default for new sessions\n\
+         ❯ Try \"fix lint errors\"\n"
     )
 }
 
 fn claude_effort_screen() -> String {
     "  Claude Code                         v2.1.309\n\
      ❯ /effort high\n\
-       ⎿  Set effort level to high (saved as your default for new sessions)\n"
+       ⎿  Set effort level to high (saved as your default for new sessions)\n\
+     ❯ Try \"fix lint errors\"\n"
         .to_owned()
 }
 
 fn claude_invalid_effort_screen() -> String {
     "  Claude Code                         v2.1.309\n\
      ❯ /effort high\n\
-       ⎿  Invalid argument: high. Valid options are: low, medium, high, xhigh, max, auto\n"
+       ⎿  Invalid argument: high. Valid options are: low, medium, high, xhigh, max, auto\n\
+     ❯ Try \"fix lint errors\"\n"
         .to_owned()
 }
 
-fn codex_model_list_screen() -> String {
-    "  To get started, describe a task or try one of these commands:\n\
-     /model - choose what model and reasoning effort to use\n\
-     Select Model and Effort\n\
-     › 1. GPT-6.1-Sol (current)  Latest workhorse model for coding and everyday work.\n\
-       2. GPT-6-Astra            Frontier intelligence for the most demanding work.\n\
-       3. GPT-6-Sol              Previous generation workhorse model.\n\
-       4. GPT-6-Luna             Fast and affordable model for easier tasks.\n\
-     enter select · esc back"
-        .to_owned()
+/// Model list with the cursor on the given one-based row.
+fn codex_model_list_screen(cursor: usize) -> String {
+    let rows = [
+        (
+            "1. GPT-6.1-Sol (current)",
+            "Latest workhorse model for coding and everyday work.",
+        ),
+        (
+            "2. GPT-6-Astra",
+            "Frontier intelligence for the most demanding work.",
+        ),
+        ("3. GPT-6-Sol", "Previous generation workhorse model."),
+        (
+            "4. GPT-6-Luna",
+            "Fast and affordable model for easier tasks.",
+        ),
+    ];
+    let mut screen = String::from(
+        "  To get started, describe a task or try one of these commands:\n\
+         /model - choose what model and reasoning effort to use\n\
+         Select Model and Effort\n",
+    );
+    for (index, (label, description)) in rows.iter().enumerate() {
+        let marker = if index + 1 == cursor { "› " } else { "  " };
+        screen.push_str(&format!("{marker}{label}  {description}\n"));
+    }
+    screen.push_str("enter select · esc back");
+    screen
 }
 
-/// Cursor rests on the model's default level, as the real picker does.
-fn codex_effort_list_screen() -> String {
-    "Select Reasoning Level for GPT-6-Luna\n\
-       1. Low       Fast responses with lighter reasoning\n\
-     › 2. Medium (default)  Balances speed and reasoning depth for everyday tasks\n\
-       3. High    Greater reasoning depth for complex problems\n\
-       4. Extra high  Extra high reasoning depth for complex problems\n\
-       5. More reasoning…  Max consumes usage limits faster\n\
-     enter default · s session · esc back"
-        .to_owned()
+/// Effort screen for GPT-6-Luna with the cursor on the given one-based row.
+fn codex_effort_list_screen(cursor: usize) -> String {
+    let rows = [
+        ("1. Low", "Fast responses with lighter reasoning"),
+        (
+            "2. Medium (default)",
+            "Balances speed and reasoning depth for everyday tasks",
+        ),
+        ("3. High", "Greater reasoning depth for complex problems"),
+        (
+            "4. Extra high",
+            "Extra high reasoning depth for complex problems",
+        ),
+        ("5. More reasoning…", "Max consumes usage limits faster"),
+    ];
+    let mut screen = String::from("Select Reasoning Level for GPT-6-Luna\n");
+    for (index, (label, description)) in rows.iter().enumerate() {
+        let marker = if index + 1 == cursor { "› " } else { "  " };
+        screen.push_str(&format!("{marker}{label}  {description}\n"));
+    }
+    screen.push_str("enter default · s session · esc back");
+    screen
 }
 
 fn codex_advanced_screen() -> String {
@@ -218,17 +253,23 @@ fn model_status_reads_claude_transcript_and_options() {
     assert_eq!(result["model"]["id"], "claude-opus-5-5");
     assert_eq!(result["model"]["label"], "Opus 5.5");
     assert_eq!(result["effort"], "medium");
+    let efforts = json!([
+        {"id":"low","label":"Low"},
+        {"id":"medium","label":"Medium"},
+        {"id":"high","label":"High"},
+        {"id":"xhigh","label":"Extra high"},
+        {"id":"max","label":"Max"}
+    ]);
     assert_eq!(
         result["models"],
         json!([
-            {"id":"fable","label":"Fable"},
-            {"id":"opus","label":"Opus","current":true},
-            {"id":"sonnet","label":"Sonnet"},
-            {"id":"haiku","label":"Haiku"}
+            {"id":"fable","label":"Fable","efforts":efforts},
+            {"id":"opus","label":"Opus","current":true,"efforts":efforts},
+            {"id":"sonnet","label":"Sonnet","efforts":efforts},
+            {"id":"haiku","label":"Haiku","efforts":efforts}
         ])
     );
-    assert_eq!(result["efforts"][0], json!({"id":"low","label":"Low"}));
-    assert_eq!(result["efforts"].as_array().unwrap().len(), 5);
+    assert_eq!(result["efforts"], efforts);
     assert_eq!(result["identity"]["native_session_id"], *SESSION);
     // A read never sends input.
     assert!(herdr.lock().unwrap().inputs.is_empty());
@@ -253,14 +294,10 @@ fn model_status_reads_claude_transcript_and_options() {
     assert_eq!(result["model"]["id"], "sonnet");
     assert_eq!(result["model"]["label"], "Sonnet");
     assert_eq!(result["effort"], "high");
+    let models = result["models"].as_array().unwrap().clone();
     assert_eq!(
-        result["models"],
-        json!([
-            {"id":"fable","label":"Fable"},
-            {"id":"opus","label":"Opus"},
-            {"id":"sonnet","label":"Sonnet","current":true},
-            {"id":"haiku","label":"Haiku"}
-        ])
+        models.iter().find(|entry| entry["id"] == "sonnet").unwrap()["current"],
+        true
     );
     cleanup(&service, root);
 }
@@ -277,9 +314,14 @@ fn model_status_reads_codex_turn_context_and_catalog() {
     assert_eq!(
         result["models"],
         json!([
-            {"id":"gpt-6.1-sol","label":"GPT-6.1-Sol","current":true},
-            {"id":"gpt-6-astra","label":"GPT-6-Astra"},
-            {"id":"gpt-6-luna","label":"GPT-6-Luna"}
+            {"id":"gpt-6.1-sol","label":"GPT-6.1-Sol","current":true,"efforts":[
+                {"id":"low","label":"Low"},{"id":"medium","label":"Medium"},
+                {"id":"high","label":"High"},{"id":"xhigh","label":"Extra high"}]},
+            {"id":"gpt-6-astra","label":"GPT-6-Astra","efforts":[
+                {"id":"low","label":"Low"},{"id":"medium","label":"Medium"},{"id":"high","label":"High"}]},
+            {"id":"gpt-6-luna","label":"GPT-6-Luna","efforts":[
+                {"id":"low","label":"Low"},{"id":"medium","label":"Medium"},
+                {"id":"high","label":"High"},{"id":"xhigh","label":"Extra high"},{"id":"max","label":"Max"}]}
         ])
     );
     assert_eq!(
@@ -412,14 +454,69 @@ fn model_set_claude_confirms_each_step_and_reports_partial() {
 }
 
 #[test]
+fn model_set_claude_stops_before_effort_when_occupant_turns_busy() {
+    let (mut service, root, herdr, _) = model_fixture_claude();
+    script_model(&herdr, vec![claude_model_screen("/model sonnet")]);
+    // The pane turns working right after the /model submission.
+    herdr.lock().unwrap().status_after_inputs = Some((1, "working".into()));
+    let reply = model_request(
+        &mut service,
+        "model.set",
+        json!({"model":"sonnet","effort":"high","expect":expect_pair("claude-opus-5-5", Some("medium"))}),
+    );
+    let result = result_frame(&reply)["result"].clone();
+    assert_eq!(result["confirmed"], false);
+    assert_eq!(result["error"], "stale");
+    assert_eq!(result["applied"]["model"]["label"], "Sonnet 5.5");
+    assert_eq!(result["applied"]["effort"], "medium");
+    // Only the confirmed model command was sent.
+    assert_eq!(
+        herdr.lock().unwrap().inputs,
+        vec![prompt_input("/model sonnet")]
+    );
+    cleanup(&service, root);
+}
+
+#[test]
+fn model_set_refuses_draft_composers_without_sending() {
+    // Claude: a half-written desk draft appends to any submitted prompt.
+    let (mut service, root, herdr, _) = model_fixture_claude();
+    herdr.lock().unwrap().screen = "  Claude Code\n❯ half-written draft\n".into();
+    let reply = model_request(
+        &mut service,
+        "model.set",
+        json!({"model":"sonnet","expect":expect_pair("claude-opus-5-5", Some("medium"))}),
+    );
+    assert_eq!(result_frame(&reply)["error"]["code"], "composer_not_empty");
+    assert!(herdr.lock().unwrap().inputs.is_empty());
+    cleanup(&service, root);
+
+    // Codex: same guard before opening the picker.
+    let (mut service, root, herdr, _) = model_fixture_codex();
+    herdr.lock().unwrap().screen = "› hello draft\nGPT-6.1-Sol low".into();
+    let reply = model_request(
+        &mut service,
+        "model.set",
+        json!({"model":"gpt-6-luna","expect":expect_pair("gpt-6.1-sol", Some("low"))}),
+    );
+    assert_eq!(result_frame(&reply)["error"]["code"], "composer_not_empty");
+    assert!(herdr.lock().unwrap().inputs.is_empty());
+    cleanup(&service, root);
+}
+
+#[test]
 fn model_set_codex_walks_picker_with_arrows_and_session_key() {
     let (mut service, root, herdr, _) = model_fixture_codex();
     script_model(
         &herdr,
         vec![
-            codex_model_list_screen(),
-            codex_effort_list_screen(),
-            codex_effort_list_screen(),
+            codex_model_list_screen(1),
+            codex_model_list_screen(2),
+            codex_model_list_screen(3),
+            codex_model_list_screen(4),
+            codex_effort_list_screen(1),
+            codex_effort_list_screen(2),
+            codex_effort_list_screen(3),
             codex_composer_toast("gpt-6-luna", "high"),
         ],
     );
@@ -437,7 +534,11 @@ fn model_set_codex_walks_picker_with_arrows_and_session_key() {
         herdr.lock().unwrap().inputs,
         vec![
             prompt_input("/model"),
-            model_keys_input(&["4"]),
+            model_keys_input(&["down"]),
+            model_keys_input(&["down"]),
+            model_keys_input(&["down"]),
+            model_keys_input(&["enter"]),
+            model_keys_input(&["down"]),
             model_keys_input(&["down"]),
             model_keys_input(&["s"]),
         ]
@@ -451,11 +552,15 @@ fn model_set_codex_advanced_reasoning_opens_nested_entry() {
     script_model(
         &herdr,
         vec![
-            codex_model_list_screen(),
-            codex_effort_list_screen(),
-            codex_effort_list_screen(),
-            codex_effort_list_screen(),
-            codex_effort_list_screen(),
+            codex_model_list_screen(1),
+            codex_model_list_screen(2),
+            codex_model_list_screen(3),
+            codex_model_list_screen(4),
+            codex_effort_list_screen(1),
+            codex_effort_list_screen(2),
+            codex_effort_list_screen(3),
+            codex_effort_list_screen(4),
+            codex_effort_list_screen(5),
             codex_advanced_screen(),
             codex_composer_toast("gpt-6-luna", "max"),
         ],
@@ -472,13 +577,62 @@ fn model_set_codex_advanced_reasoning_opens_nested_entry() {
         herdr.lock().unwrap().inputs,
         vec![
             prompt_input("/model"),
-            model_keys_input(&["4"]),
+            model_keys_input(&["down"]),
+            model_keys_input(&["down"]),
+            model_keys_input(&["down"]),
+            model_keys_input(&["enter"]),
+            model_keys_input(&["down"]),
             model_keys_input(&["down"]),
             model_keys_input(&["down"]),
             model_keys_input(&["down"]),
             model_keys_input(&["enter"]),
             model_keys_input(&["s"]),
         ]
+    );
+    cleanup(&service, root);
+}
+
+#[test]
+fn model_set_codex_aborts_when_cursor_misses_the_target_row() {
+    let (mut service, root, herdr, _) = model_fixture_codex();
+    // The fixture ignores the effort arrows: the cursor stays on Low while
+    // High was targeted. `s` must never be sent.
+    script_model(
+        &herdr,
+        vec![
+            codex_model_list_screen(1),
+            codex_model_list_screen(2),
+            codex_model_list_screen(3),
+            codex_model_list_screen(4),
+            codex_effort_list_screen(1),
+            codex_effort_list_screen(1),
+        ],
+    );
+    let reply = model_request(
+        &mut service,
+        "model.set",
+        json!({"model":"gpt-6-luna","effort":"high","expect":expect_pair("gpt-6.1-sol", Some("low"))}),
+    );
+    assert_eq!(result_frame(&reply)["error"]["code"], "picker_mismatch");
+    let inputs = herdr.lock().unwrap().inputs.clone();
+    assert_eq!(
+        inputs,
+        vec![
+            prompt_input("/model"),
+            model_keys_input(&["down"]),
+            model_keys_input(&["down"]),
+            model_keys_input(&["down"]),
+            model_keys_input(&["enter"]),
+            model_keys_input(&["down"]),
+            model_keys_input(&["down"]),
+            model_keys_input(&["esc"]),
+            model_keys_input(&["esc"]),
+        ]
+    );
+    assert!(
+        !inputs
+            .iter()
+            .any(|input| input["params"]["keys"] == json!(["s"]))
     );
     cleanup(&service, root);
 }
@@ -529,6 +683,30 @@ fn model_set_refuses_busy_stale_and_mismatched_pickers() {
 }
 
 #[test]
+fn model_set_codex_midflow_busy_pane_dismisses_and_stales() {
+    let (mut service, root, herdr, _) = model_fixture_codex();
+    // The pane turns working right after the /model submission, before any
+    // keystroke batch.
+    herdr.lock().unwrap().status_after_inputs = Some((1, "working".into()));
+    script_model(&herdr, vec![codex_model_list_screen(1)]);
+    let reply = model_request(
+        &mut service,
+        "model.set",
+        json!({"model":"gpt-6-luna","effort":"high","expect":expect_pair("gpt-6.1-sol", Some("low"))}),
+    );
+    assert_eq!(result_frame(&reply)["error"]["code"], "stale");
+    assert_eq!(
+        herdr.lock().unwrap().inputs,
+        vec![
+            prompt_input("/model"),
+            model_keys_input(&["esc"]),
+            model_keys_input(&["esc"])
+        ]
+    );
+    cleanup(&service, root);
+}
+
+#[test]
 fn model_set_validates_efforts_and_requires_watch() {
     let (mut service, root, _, _) = model_fixture_claude();
     let reply = model_request(
@@ -542,5 +720,166 @@ fn model_set_validates_efforts_and_requires_watch() {
     service.watch = None;
     let reply = model_request(&mut service, "model.status", json!({}));
     assert_eq!(result_frame(&reply)["error"]["code"], "not_watching");
+    cleanup(&service, root);
+}
+
+#[test]
+fn model_set_claude_rechecks_before_effort_and_keeps_partial_model() {
+    for occupant_changed in [false, true] {
+        let (mut service, root, herdr, _) = model_fixture_claude();
+        script_model(&herdr, vec![claude_model_screen("/model sonnet")]);
+        if occupant_changed {
+            herdr.lock().unwrap().terminal_after_input = Some("replacement".into());
+        } else {
+            herdr.lock().unwrap().status_after_inputs = Some((1, "working".into()));
+        }
+        let reply = model_request(
+            &mut service,
+            "model.set",
+            json!({
+                "model":"sonnet", "effort":"high",
+                "expect":expect_pair("claude-opus-5-5", Some("medium"))
+            }),
+        );
+        let result = &result_frame(&reply)["result"];
+        assert_eq!(result["confirmed"], false);
+        assert_eq!(result["error"], "stale");
+        assert_eq!(result["applied"]["model"]["id"], "sonnet");
+        assert_eq!(result["applied"]["effort"], "medium");
+        assert_eq!(
+            herdr.lock().unwrap().inputs,
+            vec![prompt_input("/model sonnet")]
+        );
+        cleanup(&service, root);
+    }
+}
+
+#[test]
+fn model_set_codex_rechecks_between_arrow_sends() {
+    let (mut service, root, herdr, _) = model_fixture_codex();
+    script_model(
+        &herdr,
+        vec![codex_model_list_screen(1), codex_model_list_screen(2)],
+    );
+    herdr.lock().unwrap().status_after_inputs = Some((2, "working".into()));
+    let reply = model_request(
+        &mut service,
+        "model.set",
+        json!({
+            "model":"gpt-6-luna", "effort":"high",
+            "expect":expect_pair("gpt-6.1-sol", Some("low"))
+        }),
+    );
+    assert_eq!(result_frame(&reply)["error"]["code"], "stale");
+    assert_eq!(
+        herdr.lock().unwrap().inputs,
+        vec![
+            prompt_input("/model"),
+            model_keys_input(&["down"]),
+            model_keys_input(&["esc"]),
+            model_keys_input(&["esc"])
+        ]
+    );
+    cleanup(&service, root);
+}
+
+#[test]
+fn model_cursor_verification_rejects_wrong_model_and_rows() {
+    let (service, root, herdr, _) = model_fixture_codex();
+    let expected = model_control::parse_codex_screen(&codex_effort_list_screen(3));
+    for screen in [
+        codex_effort_list_screen(3).replace("GPT-6-Luna", "GPT-6-Astra"),
+        codex_effort_list_screen(3).replace("3. High", "3. Low"),
+    ] {
+        herdr.lock().unwrap().screen = screen;
+        assert!(!service.verify_cursor("w1:p1", &expected, Some(2)));
+    }
+    cleanup(&service, root);
+}
+
+#[test]
+fn model_status_keeps_empty_catalog_efforts() {
+    let (mut service, root, _, _) = model_fixture_codex();
+    fs::write(
+        root.join("codex-home/models_cache.json"),
+        json!({"models":[{
+            "slug":"gpt-6.1-sol", "visibility":"list", "supported_reasoning_levels":[]
+        }]})
+        .to_string(),
+    )
+    .unwrap();
+    let reply = model_request(&mut service, "model.status", json!({}));
+    let result = &result_frame(&reply)["result"];
+    assert_eq!(result["models"][0]["efforts"], json!([]));
+    assert_eq!(result["efforts"], json!([]));
+    cleanup(&service, root);
+}
+
+#[test]
+fn model_set_codex_selects_tenth_model_with_arrows() {
+    let (mut service, root, herdr, _) = model_fixture_codex();
+    let render = |cursor| {
+        let mut screen = String::from("Select Model and Effort\n");
+        for row in 1..=10 {
+            let label = if row == 10 {
+                "GPT-6-Luna".to_owned()
+            } else {
+                format!("Model {row}")
+            };
+            screen.push_str(&format!(
+                "{} {row}. {label}\n",
+                if row == cursor { "›" } else { " " }
+            ));
+        }
+        screen
+    };
+    let mut screens: Vec<String> = (1..=10).map(render).collect();
+    screens.extend([
+        codex_effort_list_screen(3),
+        codex_composer_toast("gpt-6-luna", "high"),
+    ]);
+    script_model(&herdr, screens);
+    let reply = model_request(
+        &mut service,
+        "model.set",
+        json!({
+            "model":"gpt-6-luna", "effort":"high",
+            "expect":expect_pair("gpt-6.1-sol", Some("low"))
+        }),
+    );
+    assert_eq!(result_frame(&reply)["result"]["confirmed"], true);
+    let mut expected = vec![prompt_input("/model")];
+    expected.extend((0..9).map(|_| model_keys_input(&["down"])));
+    expected.extend([model_keys_input(&["enter"]), model_keys_input(&["s"])]);
+    assert_eq!(herdr.lock().unwrap().inputs, expected);
+    cleanup(&service, root);
+}
+
+#[test]
+fn model_set_claude_preserves_model_when_draft_appears_before_effort() {
+    let (mut service, root, herdr, _) = model_fixture_claude();
+    script_model(
+        &herdr,
+        vec![
+            claude_model_screen("/model sonnet")
+                .replace("Try \"fix lint errors\"", "new desktop draft"),
+        ],
+    );
+    let reply = model_request(
+        &mut service,
+        "model.set",
+        json!({
+            "model":"sonnet", "effort":"high",
+            "expect":expect_pair("claude-opus-5-5", Some("medium"))
+        }),
+    );
+    let result = &result_frame(&reply)["result"];
+    assert_eq!(result["confirmed"], false);
+    assert_eq!(result["error"], "composer_not_empty");
+    assert_eq!(result["applied"]["model"]["id"], "sonnet");
+    assert_eq!(
+        herdr.lock().unwrap().inputs,
+        vec![prompt_input("/model sonnet")]
+    );
     cleanup(&service, root);
 }

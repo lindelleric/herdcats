@@ -163,7 +163,7 @@
         "agent": "claude or codex",
         "model": "{id, label} or null; the model in effect from the transcript (Claude assistant message.model + effort, Codex last turn_context), falling back to Claude settings.json or Codex config.toml when no turns exist yet",
         "effort": "reasoning effort id (low, medium, high, xhigh, max, ultra, minimal) or null",
-        "models": "selectable models: Claude tier aliases (fable, opus, sonnet, haiku) plus the live current id when unmapped; Codex catalog slugs from models_cache.json filtered to visibility=list and ordered by priority; exactly one entry carries current=true when a model is known",
+        "models": "selectable {id, label, efforts: [{id, label}], current?: bool} models, each with its own effort options (empty when none): Claude tier aliases (fable, opus, sonnet, haiku) plus the live current id when unmapped; Codex catalog slugs from models_cache.json filtered to visibility=list and ordered by priority; exactly one entry carries current=true when a model is known",
         "efforts": "effort options for the current model: Claude low/medium/high/xhigh/max (auto hidden); Codex per-model supported_reasoning_levels, or the standard set when the model is unknown; empty when none"
       },
       "requires": "initialize with params.model_control true and a watch with a resolved native identity",
@@ -193,7 +193,7 @@
       "result_types": {
         "applied": "{model: {id, label}|null, effort: id|null}; the pair in effect after the attempt: the confirmed new values for steps that succeeded, the prior values otherwise",
         "confirmed": "boolean; true when every requested step was confirmed on screen",
-        "error": "null on success; unknown_model, invalid_effort or confirm_timeout when a sent command failed its screen confirmation (partial results still return applied)"
+        "error": "null on success; unknown_model, invalid_effort, stale, composer_not_empty or confirm_timeout when a sent command failed its screen confirmation (partial results still return applied)"
       },
       "requires": "initialize with params.model_control true and a watch with a resolved native identity",
       "validation": [
@@ -201,7 +201,8 @@
         "A fresh Herdr snapshot and adapter re-resolution must still show the same pane, terminal, agent and native session; otherwise stale.",
         "The transcript scan must equal the expect pair exactly; otherwise stale (the desk changed it).",
         "Claude sends /model first, waits for the Set model to confirmation (its text supplies the applied label), then /effort and its confirmation; an invalid model stops the flow, an invalid effort still reports the applied model.",
-        "Codex submits /model through Herdr's agent.prompt, then drives the digit-and-arrow picker, parsing every intermediate screen; max/ultra open the nested Advanced Reasoning entry first. The effort is applied with the s session-only key, never the digit/enter default-persist paths, so config.toml is not written."
+        "Before every agent.prompt, the visible composer must be provably empty or the request returns composer_not_empty without sending input. Occupant and idle/done status are rechecked before subsequent sends; a mid-flow change returns stale (with Claude partial applied values) and dismisses an open Codex picker.",
+        "Codex submits /model through Herdr's agent.prompt, then drives the picker with arrows and verifies the screen, model label, row labels and cursor before enter or s; enter on the model list only advances to the effort step, including lists with ten or more models; max/ultra open the nested Advanced Reasoning entry first. The effort is applied with the s session-only key, never the digit/enter default-persist paths, so config.toml is not written."
       ],
       "errors": {
         "unsupported_capability": "Client did not opt in to model control.",
@@ -210,7 +211,8 @@
         "invalid_request": "Missing expect object, or an empty/oversized model id.",
         "invalid_effort": "Effort id outside the agent's known set; no input sent.",
         "agent_busy": "Pane status is working or blocked; no input sent.",
-        "stale": "Occupant changed or the expect pair disagrees with the transcript; no input sent.",
+        "stale": "Occupant/status changed or the expect pair disagrees with the transcript; no further apply input is sent. An open Codex picker is dismissed.",
+        "composer_not_empty": "The composer contains a draft or could not be proven empty; no prompt is sent (Claude may return a previously applied model as a partial result).",
         "picker_mismatch": "A Codex picker screen did not show the expected title/rows; the picker is dismissed with Escape.",
         "confirm_timeout": "The command or picker never confirmed within about 4 seconds; the Codex picker is dismissed with Escape.",
         "herdr_unavailable": "Herdr socket I/O failed mid-flow."

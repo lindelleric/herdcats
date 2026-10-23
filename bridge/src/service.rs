@@ -1004,14 +1004,31 @@ impl Service {
                 let efforts = model_control::CLAUDE_EFFORTS
                     .iter()
                     .map(|effort| json!({"id":effort,"label":model_control::effort_label(effort)}))
-                    .collect();
+                    .collect::<Vec<_>>();
+                // Every Claude tier offers the same static effort set.
+                for entry in &mut models {
+                    entry["efforts"] = json!(efforts);
+                }
                 (models, efforts)
             }
             "codex" => {
                 let catalog = self.codex_catalog();
+                let fallback = model_control::CODEX_EFFORTS
+                    .iter()
+                    .map(|effort| json!({"id":effort,"label":model_control::effort_label(effort)}))
+                    .collect::<Vec<_>>();
                 let mut models: Vec<Value> = catalog
                     .iter()
-                    .map(|model| json!({"id":model.slug,"label":model.label}))
+                    .map(|model| {
+                        let efforts: Vec<Value> = model
+                            .efforts
+                            .iter()
+                            .map(|effort| {
+                                json!({"id":effort,"label":model_control::effort_label(effort)})
+                            })
+                            .collect();
+                        json!({"id":model.slug,"label":model.label,"efforts":efforts})
+                    })
                     .collect();
                 let mut marked = false;
                 for entry in &mut models {
@@ -1022,30 +1039,14 @@ impl Service {
                 }
                 if !marked && let Some(id) = current_id {
                     models.push(
-                        json!({"id":id,"label":model_control::codex_slug_label(id),"current":true}),
+                        json!({"id":id,"label":model_control::codex_slug_label(id),"current":true,"efforts":fallback}),
                     );
                 }
-                let efforts: Vec<Value> = catalog
+                let efforts: Vec<Value> = models
                     .iter()
-                    .find(|model| Some(model.slug.as_str()) == current_id)
-                    .map(|model| &model.efforts)
-                    .filter(|efforts| !efforts.is_empty())
-                    .map(|efforts| {
-                        efforts
-                            .iter()
-                            .map(|effort| {
-                                json!({"id":effort,"label":model_control::effort_label(effort)})
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_else(|| {
-                        model_control::CODEX_EFFORTS
-                            .iter()
-                            .map(|effort| {
-                                json!({"id":effort,"label":model_control::effort_label(effort)})
-                            })
-                            .collect()
-                    });
+                    .find(|entry| entry["current"] == true)
+                    .and_then(|entry| entry["efforts"].as_array().cloned())
+                    .unwrap_or_else(|| fallback.clone());
                 (models, efforts)
             }
             _ => return Err("unsupported_agent"),
@@ -1155,6 +1156,28 @@ impl Service {
             thread::sleep(Duration::from_millis(150));
         }
     }
+    /// Proves the agent's composer is empty before submitting a prompt through
+    /// `agent.prompt`, which would otherwise append to a desk-side draft.
+    /// Fails closed: an unreadable or unparsable screen refuses the send.
+    fn composer_clear(&self, pane_id: &str, agent: &str) -> Result<()> {
+        let screen = self
+            .client
+            .read_visible(pane_id)
+            .map_err(|_| "composer_not_empty")?;
+        match model_control::composer_state(agent, &screen) {
+            model_control::Composer::Empty => Ok(()),
+            _ => Err("composer_not_empty"),
+        }
+    }
+    /// Occupant and idle/done re-verification before every keystroke batch.
+    /// Mid-flow failures map to `stale`, matching `interaction.respond`.
+    fn recheck_idle(&self, identity: &Identity) -> Result<()> {
+        let (pane, _) = self.model_pane_file(identity)?;
+        if !matches!(pane.agent_status.as_str(), "idle" | "done") {
+            return Err("stale");
+        }
+        Ok(())
+    }
     fn set_claude_model(
         &self,
         identity: &Identity,
@@ -1172,6 +1195,7 @@ impl Service {
             .filter(|target| Some(*target) != current.as_ref().map(|(id, _)| id.as_str()))
         {
             let command = format!("/model {target}");
+            self.composer_clear(pane_id, "claude")?;
             let baseline = self.client.read_visible(pane_id).unwrap_or_default();
             self.client
                 .agent_prompt(pane_id, &command)
@@ -1190,16 +1214,29 @@ impl Service {
             })
         {
             let command = format!("/effort {target}");
-            let baseline = self.client.read_visible(pane_id).unwrap_or_default();
-            self.client
-                .agent_prompt(pane_id, &command)
-                .map_err(|_| "herdr_unavailable")?;
-            let (level, failure) =
-                self.wait_claude_confirmation(pane_id, &baseline, &command, Some(target));
-            match (level, failure) {
-                (Some(level), _) => applied_effort = Some(level),
-                (None, Some(code)) => error = Some(code),
-                (None, None) => error = Some("confirm_timeout"),
+            // Re-verify occupant and status, then the composer, before the
+            // second command; failures keep the applied model step.
+            if let Err(code) = self
+                .recheck_idle(identity)
+                .and_then(|()| self.composer_clear(pane_id, "claude"))
+            {
+                error = Some(if code == "composer_not_empty" {
+                    code
+                } else {
+                    "stale"
+                });
+            } else {
+                let baseline = self.client.read_visible(pane_id).unwrap_or_default();
+                self.client
+                    .agent_prompt(pane_id, &command)
+                    .map_err(|_| "herdr_unavailable")?;
+                let (level, failure) =
+                    self.wait_claude_confirmation(pane_id, &baseline, &command, Some(target));
+                match (level, failure) {
+                    (Some(level), _) => applied_effort = Some(level),
+                    (None, Some(code)) => error = Some(code),
+                    (None, None) => error = Some("confirm_timeout"),
+                }
             }
         }
         Ok(json!({
@@ -1251,6 +1288,42 @@ impl Service {
             thread::sleep(Duration::from_millis(150));
         }
     }
+    /// Re-reads the picker and confirms the expected screen with its cursor on
+    /// `target` (or on any row when `target` is None).
+    fn verify_cursor(&self, pane_id: &str, expected: &PickerScreen, target: Option<usize>) -> bool {
+        let Ok(screen) = self.client.read_visible(pane_id) else {
+            return false;
+        };
+        let parsed = model_control::parse_codex_screen(&screen);
+        match (expected, &parsed) {
+            (PickerScreen::ModelList(_), PickerScreen::ModelList(_))
+            | (PickerScreen::Advanced(_), PickerScreen::Advanced(_)) => {}
+            (
+                PickerScreen::EffortList {
+                    model_label: expected,
+                    ..
+                },
+                PickerScreen::EffortList {
+                    model_label: actual,
+                    ..
+                },
+            ) if expected == actual => {}
+            _ => return false,
+        }
+        if !expected
+            .rows()
+            .iter()
+            .zip(parsed.rows())
+            .all(|(a, b)| a.number == b.number && a.label == b.label)
+            || expected.rows().len() != parsed.rows().len()
+        {
+            return false;
+        }
+        match target {
+            Some(target) => parsed.cursor() == Some(target),
+            None => parsed.cursor().is_some(),
+        }
+    }
     fn set_codex_model(
         &self,
         identity: &Identity,
@@ -1271,12 +1344,32 @@ impl Service {
             self.dismiss_codex_picker(pane_id);
             "picker_mismatch"
         };
+        // Mid-flow occupant/status failures dismiss the open picker first.
+        let stale = || -> &'static str {
+            self.dismiss_codex_picker(pane_id);
+            "stale"
+        };
         let send = |keys: &[&str]| -> Result<()> {
+            self.recheck_idle(identity).map_err(|_| stale())?;
             self.client
                 .send_keys(pane_id, keys)
                 .map_err(|_| "herdr_unavailable")
         };
+        // Re-verify occupant, arrows to `target`, verify the landed cursor,
+        // and re-verify again — every keystroke batch is bracketed.
+        let walk = |screen: &PickerScreen, target: usize| -> Result<()> {
+            self.recheck_idle(identity).map_err(|_| stale())?;
+            for arrow in screen.arrow_plan(target).ok_or_else(mismatch)? {
+                send(&[arrow])?;
+            }
+            if !self.verify_cursor(pane_id, screen, Some(target)) {
+                return Err(mismatch());
+            }
+            self.recheck_idle(identity).map_err(|_| stale())?;
+            Ok(())
+        };
 
+        self.composer_clear(pane_id, "codex")?;
         self.client
             .agent_prompt(pane_id, "/model")
             .map_err(|_| "herdr_unavailable")?;
@@ -1289,17 +1382,19 @@ impl Service {
         let PickerScreen::ModelList(rows) = &model_list else {
             return Err(mismatch());
         };
+        // Enter on the model row only advances to the effort step; it never
+        // persists anything (verified against the isolated picker).
         let wanted = [target_label.clone(), format!("{target_label} (current)")];
-        let digit = rows
+        let target_row = rows
             .iter()
-            .find(|row| {
+            .position(|row| {
                 wanted
                     .iter()
                     .any(|label| row.label.eq_ignore_ascii_case(label))
             })
-            .map(|row| row.number.to_string())
             .ok_or_else(mismatch)?;
-        send(&[digit.as_str()])?;
+        walk(&model_list, target_row)?;
+        send(&["enter"])?;
 
         let effort_screen = self
             .wait_codex_kind(pane_id, |screen| {
@@ -1311,22 +1406,20 @@ impl Service {
             return Err(mismatch());
         };
 
-        // Re-picking the current effort still applies cleanly; only a missing
-        // effort falls through to the model's default cursor position.
+        // Re-picking the current effort still applies cleanly; a missing
+        // effort keeps the model's default cursor position.
         if let Some(effort) = target_effort
             .map(str::to_owned)
             .or_else(|| current.as_ref().and_then(|(_, effort)| effort.clone()))
         {
             let row_label =
                 model_control::codex_effort_row_label(&effort).ok_or("invalid_effort")?;
-            let arrows = if row_label.starts_with("More reasoning") {
+            if row_label.starts_with("More reasoning") {
                 let index = rows
                     .iter()
                     .position(|row| row.label.starts_with("More reasoning"))
                     .ok_or_else(mismatch)?;
-                for arrow in effort_screen.arrow_plan(index).ok_or_else(mismatch)? {
-                    send(&[arrow])?;
-                }
+                walk(&effort_screen, index)?;
                 send(&["enter"])?;
                 let advanced = self
                     .wait_codex_kind(
@@ -1342,17 +1435,20 @@ impl Service {
                     .iter()
                     .position(|row| row.label.eq_ignore_ascii_case(label))
                     .ok_or_else(mismatch)?;
-                advanced.arrow_plan(index).ok_or_else(mismatch)?
+                walk(&advanced, index)?;
             } else {
                 let index = rows
                     .iter()
                     .position(|row| row.label.eq_ignore_ascii_case(row_label))
                     .ok_or_else(mismatch)?;
-                effort_screen.arrow_plan(index).ok_or_else(mismatch)?
-            };
-            for arrow in arrows {
-                send(&[arrow])?;
+                walk(&effort_screen, index)?;
             }
+        } else {
+            // No desired effort: any selected default row applies.
+            if !self.verify_cursor(pane_id, &effort_screen, None) {
+                return Err(mismatch());
+            }
+            self.recheck_idle(identity).map_err(|_| stale())?;
         }
         // `s` applies for this session only; digits or enter would persist a
         // new global default in config.toml.

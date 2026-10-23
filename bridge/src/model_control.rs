@@ -333,7 +333,7 @@ fn parse_rows(lines: &[&str]) -> Vec<PickerRow> {
         let Some((number, label)) = rest.split_once(". ") else {
             continue;
         };
-        if number.len() != 1 || !number.chars().all(|c| c.is_ascii_digit()) {
+        if number.is_empty() || !number.chars().all(|c| c.is_ascii_digit()) {
             continue;
         }
         // Picker rows are "N. Label  Description"; the label ends at the first
@@ -392,8 +392,14 @@ impl PickerScreen {
             PickerScreen::Composer => &[],
         }
     }
-    fn selected_index(&self) -> Option<usize> {
-        self.rows().iter().position(|row| row.selected)
+    /// The parsed cursor (›) index, rejecting renders that mark several rows.
+    pub fn cursor(&self) -> Option<usize> {
+        let mut rows = self.rows().iter().enumerate();
+        let first = rows.find(|(_, row)| row.selected).map(|(index, _)| index);
+        if rows.any(|(_, row)| row.selected) {
+            return None;
+        }
+        first
     }
     /// Arrow presses (as Herdr key tokens) moving the cursor from its parsed
     /// position to `target`, without relying on list wrap.
@@ -402,7 +408,7 @@ impl PickerScreen {
         if target >= rows.len() {
             return None;
         }
-        let cursor = self.selected_index()?;
+        let cursor = self.cursor()?;
         let plan = if target > cursor {
             vec!["down"; target - cursor]
         } else {
@@ -490,6 +496,61 @@ pub fn claude_confirmation(screen: &str) -> Option<ClaudeConfirmation> {
         }
     }
     None
+}
+
+/// The agent's composer input line parsed from a visible screen. `Draft`
+/// covers any text that is not provably the idle placeholder, and `Unknown`
+/// any screen without a recognizable input line, so callers fail closed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Composer {
+    Empty,
+    Draft,
+    Unknown,
+}
+
+// Extracted from installed @openai/codex native binary strings: 0.163.0
+// (codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex) and 0.50.0
+// (codex/vendor/x86_64-apple-darwin/codex/codex). Template-looking tokens
+// are literal placeholder text; never match arbitrary substitutions as empty.
+const CODEX_PLACEHOLDERS: &[&str] = &[
+    "Ask Codex to do anything",
+    "Ask a follow-up question",
+    "Explain this codebase",
+    "Summarize recent commits",
+    "Implement {feature}",
+    "Find and fix a bug in @filename",
+    "Write tests for @filename",
+    "Improve documentation in @filename",
+];
+
+pub fn composer_state(agent: &str, screen: &str) -> Composer {
+    let marker = match agent {
+        "claude" => '❯',
+        "codex" => '›',
+        _ => return Composer::Unknown,
+    };
+    // The composer is the last line carrying the agent's input marker; slash
+    // popup rows above it share the same marker.
+    let Some(line) = screen
+        .lines()
+        .rev()
+        .find(|line| line.trim_start().starts_with(marker))
+        .map(|line| line.trim_start())
+    else {
+        return Composer::Unknown;
+    };
+    let rest = line.trim_start_matches(marker).trim_start();
+    if rest.is_empty() {
+        return Composer::Empty;
+    }
+    match agent {
+        // Claude's dimmed idle suggestion always reads `Try "…"`.
+        "claude" if rest.starts_with("Try \"") && rest.ends_with('"') && rest.len() >= 6 => {
+            Composer::Empty
+        }
+        "codex" if CODEX_PLACEHOLDERS.contains(&rest) => Composer::Empty,
+        _ => Composer::Draft,
+    }
 }
 
 /// Well-formed model ids/aliases and efforts accepted by `model.set`.
@@ -752,6 +813,83 @@ mod tests {
             ))
         );
         assert_eq!(claude_confirmation("plain line"), None);
+    }
+
+    #[test]
+    fn picker_parses_two_digit_rows_and_rejects_ambiguous_cursors() {
+        let screen =
+            parse_codex_screen("Select Model and Effort\n  9. Ninth\n› 10. Tenth\n  11. Eleventh");
+        assert_eq!(screen.rows().len(), 3);
+        assert_eq!(screen.rows()[1].number, 10);
+        assert_eq!(screen.arrow_plan(2), Some(vec!["down"]));
+        let ambiguous = parse_codex_screen("Select Model and Effort\n› 9. Ninth\n› 10. Tenth");
+        assert_eq!(ambiguous.cursor(), None);
+        assert_eq!(ambiguous.arrow_plan(0), None);
+    }
+
+    #[test]
+    fn composer_state_treats_placeholders_as_empty_and_fails_closed() {
+        assert_eq!(
+            composer_state("claude", "…\n❯ Try \"fix lint errors\"\n"),
+            Composer::Empty
+        );
+        assert_eq!(composer_state("claude", "…\n❯\n"), Composer::Empty);
+        assert_eq!(
+            composer_state("claude", "…\n❯ /model sonnet\n"),
+            Composer::Draft
+        );
+        assert_eq!(
+            composer_state("claude", "…\n❯ half-written draft\n"),
+            Composer::Draft
+        );
+        // A slash popup above the composer: the last marker line is the input.
+        assert_eq!(
+            composer_state(
+                "claude",
+                "❯ /model  Set the AI model\n…\n❯ Try \"fix lint errors\"\n"
+            ),
+            Composer::Empty
+        );
+        assert_eq!(
+            composer_state("claude", "no marker at all"),
+            Composer::Unknown
+        );
+        assert_eq!(
+            composer_state(
+                "codex",
+                "› Ask Codex to do anything\nlow · Context 100% left"
+            ),
+            Composer::Empty
+        );
+        assert_eq!(
+            composer_state("codex", "› Ask a follow-up question"),
+            Composer::Empty
+        );
+        assert_eq!(composer_state("codex", "› hello draft"), Composer::Draft);
+        assert_eq!(composer_state("codex", "no marker"), Composer::Unknown);
+        assert_eq!(composer_state("agy", "›"), Composer::Unknown);
+    }
+
+    #[test]
+    fn codex_rotating_placeholders_are_empty_but_substituted_drafts_are_not() {
+        for placeholder in CODEX_PLACEHOLDERS {
+            assert_eq!(
+                composer_state("codex", &format!("› {placeholder}\nContext 100% left")),
+                Composer::Empty,
+                "{placeholder}"
+            );
+        }
+        for draft in [
+            "Implement a model picker",
+            "Find and fix a bug in src/main.rs",
+            "Write tests for @filename please",
+            "Explain this codebase and fix it",
+        ] {
+            assert_eq!(
+                composer_state("codex", &format!("› {draft}")),
+                Composer::Draft
+            );
+        }
     }
 
     #[test]
