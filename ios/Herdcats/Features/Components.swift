@@ -646,14 +646,14 @@ enum QuietListMetrics {
     static var titleInset: CGFloat { statusColumn + columnSpacing }
 }
 
-/// Hairline under a list row, inset to the title column.
+/// Visible separator under a list row, inset to the title column.
 struct QuietListDivider: View {
     var leadingInset: CGFloat = QuietListMetrics.titleInset
 
     var body: some View {
         Rectangle()
-            .fill(Theme.hairline)
-            .frame(height: 0.5)
+            .fill(Theme.separator)
+            .frame(height: 1)
             .padding(.leading, leadingInset)
     }
 }

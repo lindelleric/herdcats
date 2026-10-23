@@ -278,6 +278,7 @@ enum Theme {
             ("field", Palette.night950, 0xEEF6F1, 1, 1),
             ("card", 0x31464E, 0xF8FBF9, 1, 1),
             ("border", Palette.night800, 0xC5DCCF, 1, 1),
+            ("separator", 0x28343A, 0xCBDAD2, 1, 1),
             ("raised", 0x446670, 0xC5DCCF, 1, 1),
             ("text", Palette.paper50, Palette.night950, 1, 1),
             ("muted", Palette.paper50, Palette.night950, 0.72, 0.72),
@@ -315,6 +316,14 @@ enum Theme {
         guard palette != .moonlit else { return UIColor(hex: fallback, alpha: alpha) }
         if palette == .solarizedLight || palette == .solarizedDark {
             return solarizedColor(token, dark: palette == .solarizedDark, alpha: alpha)
+        }
+        // List separators keep a consistent, gentle contrast across palettes.
+        if token == "separator" {
+            let separators: [AppPalette: UInt32] = [
+                .latte: 0xD4D7DF, .frappe: 0x35384A,
+                .macchiato: 0x2B2D3F, .mocha: 0x262736
+            ]
+            return UIColor(hex: separators[palette]!)
         }
         let colors = palette.colors
         let key: String
@@ -354,6 +363,7 @@ enum Theme {
         switch token {
         case "background", "field": hex = dark ? 0x002B36 : 0xEEE8D5
         case "card", "sky": hex = dark ? 0x073642 : 0xFDF6E3
+        case "separator": hex = dark ? 0x113842 : 0xD9D8C7
         case "border", "raised": hex = dark ? 0x586E75 : 0xEEE8D5
         case "text": hex = dark ? 0x93A1A1 : 0x073642
         case "muted": hex = dark ? 0x93A1A1 : 0x586E75
@@ -382,6 +392,7 @@ enum Theme {
     static var cardBackground: Color { color("card") }
     static var fieldBackground: Color { color("field") }
     static var hairline: Color { color("border") }
+    static var separator: Color { color("separator") }
     static var subtleFill: Color { color("raised") }
     static var rowBackground: Color { cardBackground }
     static var selectedFill: Color { subtleFill }
