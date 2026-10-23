@@ -1,6 +1,6 @@
 {
   "protocol": 1,
-  "bridge_version": "0.3.0",
+  "bridge_version": "0.4.0",
   "transport": "non-PTY stdio NDJSON; one watched pane per process",
   "launch": {
     "command": "herdcats-bridge serve --stdio",
