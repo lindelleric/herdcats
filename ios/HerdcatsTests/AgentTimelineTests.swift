@@ -421,6 +421,18 @@ struct TimelineMarkdownTests {
         #expect(links("[read\u{200B}me](https://example.com)").count == 1)
     }
 
+    @Test func defaultIgnorableNonFormatScalarsCannotHideADeceptiveLabel() {
+        // Variation selectors and the combining grapheme joiner are default-ignorable
+        // without being format/control characters; they must be stripped too.
+        for invisible in ["\u{FE0F}", "\u{FE00}", "\u{034F}"] {
+            #expect(links("[\(invisible)https://bank.com](https://evil.example)").isEmpty, "prefix U+\(invisible.unicodeScalars.first!.value)")
+            #expect(links("[https:\(invisible)//bank.com](https://evil.example)").isEmpty, "infix U+\(invisible.unicodeScalars.first!.value)")
+        }
+        // A matching host stays linked, and ordinary labels keep working.
+        #expect(links("[\u{FE0F}https://bank.com](https://bank.com/x)").count == 1)
+        #expect(links("[read\u{034F}me](https://example.com)").count == 1)
+    }
+
     @Test func onlyUnsafeLinksAreStrippedFromMixedText() {
         let result = TimelineMarkdown.sanitized(
             "ok [a](https://example.com) bad [b](tel:123) also [c](https://example.org)")

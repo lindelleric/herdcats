@@ -258,10 +258,11 @@ struct ConnectionSettingsView: View {
                     try KeychainStore.delete(account: entry.secretAccount + ".passphrase")
                     // Keep saved metadata in sync even if the connection attempt fails.
                     try RecentConnectionStore.disableRemembering(entry)
-                } else if !(authMode == .privateKey && keyIsEncrypted && rememberPassphrase) {
-                    // A stale passphrase must not outlive the choice to stop remembering it.
-                    try KeychainStore.delete(account: entry.secretAccount + ".passphrase")
                 }
+                // When remember stays on but the passphrase is no longer wanted, its
+                // deletion is deferred to after a successful connection: deleting here
+                // would strand a still-saved encrypted-key profile without the passphrase
+                // it needs if the connection attempt fails.
             } catch {
                 appModel.lastError = error.localizedDescription
                 return

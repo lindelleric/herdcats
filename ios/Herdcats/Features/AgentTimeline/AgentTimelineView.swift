@@ -1782,11 +1782,14 @@ enum TimelineMarkdown {
     }
 
     /// The label as a reader perceives it: invisible Unicode format characters
-    /// (zero-width joiners/non-joiners, bidi marks, BOM, ...) and control characters
-    /// are dropped so they cannot hide a URL-looking label from the check.
+    /// (zero-width joiners/non-joiners, bidi marks, BOM, ...), other default-
+    /// ignorable scalars (variation selectors, combining grapheme joiner, ...),
+    /// and control characters are dropped so they cannot hide a URL-looking
+    /// label from the check.
     private static func visibleText(of label: String) -> String {
         var scalars = String.UnicodeScalarView()
         for scalar in label.unicodeScalars {
+            if scalar.properties.isDefaultIgnorableCodePoint { continue }
             switch scalar.properties.generalCategory {
             case .format, .control: continue
             default: scalars.append(scalar)
