@@ -1,0 +1,771 @@
+//! Pure model/effort readers and guarded picker plans for model control.
+//!
+//! Reading follows the sources verified in `docs/model-effort-picker.md`: the
+//! Claude transcript's assistant records (with settings.json fallbacks) and the
+//! Codex rollout's `turn_context` records (with config.toml fallbacks). Screen
+//! parsing works on Herdr's plain-text visible pane output, mirroring
+//! `approval_screen`/`question_screen`. Nothing here performs I/O.
+
+use crate::Result;
+use serde_json::Value;
+
+/// Tier aliases Claude Code accepts for `/model`, with their static labels.
+/// Updated only when the bridge ships; unknown transcript models still display
+/// via `claude_model_label`, so staleness is cosmetic.
+pub const CLAUDE_MODELS: &[(&str, &str)] = &[
+    ("fable", "Fable"),
+    ("opus", "Opus"),
+    ("sonnet", "Sonnet"),
+    ("haiku", "Haiku"),
+];
+
+/// Effort levels offered in the UI. `auto` is valid for the CLI but hidden.
+pub const CLAUDE_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+
+/// Effort ids the Codex picker can show; `minimal`/`persistent` exist in the
+/// CLI enum but are not offered by the picker.
+pub const CODEX_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max", "ultra"];
+
+/// Label shown for an effort id in both agents' lists.
+pub fn effort_label(effort: &str) -> &str {
+    match effort {
+        "low" => "Low",
+        "medium" => "Medium",
+        "high" => "High",
+        "xhigh" => "Extra high",
+        "max" => "Max",
+        "ultra" => "Ultra",
+        "minimal" => "Minimal",
+        other => other,
+    }
+}
+
+/// True when the effort id is one this bridge may send to an agent.
+pub fn known_effort(agent: &str, effort: &str) -> bool {
+    match agent {
+        "claude" => effort == "auto" || CLAUDE_EFFORTS.contains(&effort),
+        "codex" => CODEX_EFFORTS.contains(&effort) || effort == "minimal",
+        _ => false,
+    }
+}
+
+/// "claude-opus-5-5" → "Opus 5.5", "opus" → "Opus", unknown ids pass through.
+/// Dated suffixes ("20251001") and variant markers ("[1m]") are dropped.
+pub fn claude_model_label(id: &str) -> String {
+    if let Some((_, label)) = CLAUDE_MODELS.iter().find(|(alias, _)| *alias == id) {
+        return (*label).into();
+    }
+    let body = match id.strip_prefix("claude-") {
+        Some(body) => body,
+        // Ids outside the claude- family (gateway aliases, ARNs) pass through
+        // untouched rather than being half-prettified.
+        None => return id.into(),
+    };
+    let mut parts = body.split('-');
+    let Some(name) = parts.next() else {
+        return id.into();
+    };
+    let mut label = String::with_capacity(id.len());
+    let mut chars = name.chars();
+    if let Some(first) = chars.next() {
+        label.extend(first.to_uppercase());
+        label.push_str(chars.as_str());
+    }
+    let mut version = false;
+    for part in parts {
+        // Version segments are one or two digits ("5", "41"); stop at dates,
+        // variant markers, or any other non-version tail. "opus-5-5" keeps a
+        // space before the version and dots between its segments.
+        if !part.chars().all(|c| c.is_ascii_digit()) || part.len() > 2 {
+            break;
+        }
+        label.push(if version { '.' } else { ' ' });
+        label.push_str(part);
+        version = true;
+    }
+    if label.is_empty() { id.into() } else { label }
+}
+
+/// "gpt-6-luna" → "GPT-6-Luna" for slugs missing from the catalog.
+pub fn codex_slug_label(slug: &str) -> String {
+    slug.split('-')
+        .map(|part| match part {
+            "gpt" => "GPT".to_owned(),
+            digits if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) => {
+                digits.to_owned()
+            }
+            other => {
+                let mut chars = other.chars();
+                match chars.next() {
+                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                    None => String::new(),
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// Last assistant `message.model` plus the effort in effect, from a tail of
+/// Claude transcript records. Effort chain: the assistant record's `effort`
+/// field, else the last `api-request`'s `params.output_config.effort`.
+pub fn claude_scan(records: &[Value]) -> Option<(String, Option<String>)> {
+    let mut model = None;
+    let mut effort = None;
+    for record in records {
+        match record["type"].as_str() {
+            Some("assistant") => {
+                if let Some(id) = record["message"]["model"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                {
+                    model = Some(id.to_owned());
+                    if let Some(level) = record["effort"].as_str().filter(|s| !s.is_empty()) {
+                        effort = Some(level.to_owned());
+                    }
+                }
+            }
+            Some("api-request") => {
+                if let Some(level) = record["params"]["output_config"]["effort"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                {
+                    effort.get_or_insert_with(|| level.to_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+    model.map(|id| (id, effort))
+}
+
+/// The subset of `~/.claude/settings.json` model control needs. `model` is the
+/// persisted default alias; `effort_level` a session-wide override;
+/// `model_settings` maps full model ids to per-model `effortLevel` overrides.
+pub struct ClaudeSettings {
+    pub model: Option<String>,
+    pub effort_level: Option<String>,
+    pub model_settings: Vec<(String, String)>,
+}
+
+pub fn parse_claude_settings(text: &str) -> ClaudeSettings {
+    let value: Value = match serde_json::from_str(text) {
+        Ok(value) => value,
+        Err(_) => {
+            return ClaudeSettings {
+                model: None,
+                effort_level: None,
+                model_settings: Vec::new(),
+            };
+        }
+    };
+    let string = |path: &str| -> Option<String> {
+        value
+            .pointer(path)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    };
+    let model_settings = value
+        .pointer("/modelSettings")
+        .and_then(Value::as_object)
+        .map(|models| {
+            models
+                .iter()
+                .filter_map(|(id, entry)| {
+                    entry
+                        .pointer("/effortLevel")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty())
+                        .map(|effort| (id.clone(), effort.to_owned()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    ClaudeSettings {
+        model: string("/model"),
+        effort_level: string("/effortLevel"),
+        model_settings,
+    }
+}
+
+impl ClaudeSettings {
+    pub fn effort_for(&self, model: &str) -> Option<&str> {
+        self.model_settings
+            .iter()
+            .find(|(id, _)| id == model)
+            .map(|(_, effort)| effort.as_str())
+            .or(self.effort_level.as_deref())
+    }
+}
+
+/// Last `turn_context` `model`/`effort` pair from a tail of Codex rollout
+/// records. Records from other sessions or malformed lines are ignored by the
+/// caller's tail reader; here every `turn_context` with a model counts.
+pub fn codex_scan(records: &[Value]) -> Option<(String, Option<String>)> {
+    records
+        .iter()
+        .rev()
+        .filter(|record| record["type"] == "turn_context")
+        .find_map(|record| {
+            record["payload"]["model"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(|model| {
+                    (
+                        model.to_owned(),
+                        record["payload"]["effort"]
+                            .as_str()
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_owned),
+                    )
+                })
+        })
+}
+
+/// Top-level `model` and `model_reasoning_effort` from Codex's config.toml.
+pub fn parse_codex_config(text: &str) -> (Option<String>, Option<String>) {
+    let document = match text.parse::<toml_edit::DocumentMut>() {
+        Ok(document) => document,
+        Err(_) => return (None, None),
+    };
+    let string = |key: &str| {
+        document
+            .get(key)
+            .and_then(toml_edit::Item::as_value)
+            .and_then(toml_edit::Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    };
+    (string("model"), string("model_reasoning_effort"))
+}
+
+/// One Codex catalog entry; only `visibility == "list"` rows are offered.
+pub struct CodexCatalogModel {
+    pub slug: String,
+    pub label: String,
+    pub efforts: Vec<String>,
+}
+
+/// Parses `~/.codex/models_cache.json`, filtered and ordered like the CLI's
+/// picker: `visibility == "list"`, ascending `priority` (stable on ties).
+pub fn parse_codex_catalog(text: &str) -> Vec<CodexCatalogModel> {
+    let value: Value = match serde_json::from_str(text) {
+        Ok(value) => value,
+        Err(_) => return Vec::new(),
+    };
+    let mut models: Vec<(i64, usize, CodexCatalogModel)> = value["models"]
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .enumerate()
+                .filter_map(|(index, row)| {
+                    if row["visibility"].as_str() != Some("list") {
+                        return None;
+                    }
+                    let slug = row["slug"].as_str()?.to_owned();
+                    if slug.is_empty() {
+                        return None;
+                    }
+                    let label = row["display_name"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| slug.clone());
+                    let efforts = row["supported_reasoning_levels"]
+                        .as_array()
+                        .map(|levels| {
+                            levels
+                                .iter()
+                                .filter_map(|level| {
+                                    level["effort"]
+                                        .as_str()
+                                        .filter(|s| !s.is_empty() && known_effort("codex", s))
+                                        .map(str::to_owned)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let priority = row["priority"].as_i64().unwrap_or(i64::MAX);
+                    Some((
+                        priority,
+                        index,
+                        CodexCatalogModel {
+                            slug,
+                            label,
+                            efforts,
+                        },
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    models.sort_by_key(|(priority, index, _)| (*priority, *index));
+    models.into_iter().map(|(_, _, model)| model).collect()
+}
+
+/// One numbered row of a picker screen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PickerRow {
+    pub number: u32,
+    pub label: String,
+    pub selected: bool,
+}
+
+/// A parsed Codex picker screen. `Composer` means no picker overlay is open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PickerScreen {
+    ModelList(Vec<PickerRow>),
+    EffortList {
+        model_label: String,
+        rows: Vec<PickerRow>,
+    },
+    Advanced(Vec<PickerRow>),
+    Composer,
+}
+
+fn parse_rows(lines: &[&str]) -> Vec<PickerRow> {
+    let mut rows = Vec::new();
+    for line in lines {
+        let trimmed = line.trim_start();
+        let selected = trimmed.starts_with('›');
+        let rest = trimmed.trim_start_matches(['›', ' ']);
+        let Some((number, label)) = rest.split_once(". ") else {
+            continue;
+        };
+        if number.len() != 1 || !number.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        // Picker rows are "N. Label  Description"; the label ends at the first
+        // run of two or more spaces (descriptions are aligned in columns).
+        let label = label.split("  ").next().unwrap_or(label).trim_end();
+        if label.is_empty() {
+            continue;
+        }
+        rows.push(PickerRow {
+            number: number.parse().unwrap_or(0),
+            label: label.to_owned(),
+            selected,
+        });
+    }
+    rows
+}
+
+/// Parses the visible pane text into a picker state. Plain text only; Herdr's
+/// `pane.read` strips terminal control sequences.
+pub fn parse_codex_screen(screen: &str) -> PickerScreen {
+    let lines: Vec<&str> = screen.lines().collect();
+    for (index, line) in lines.iter().enumerate() {
+        if line.contains("Select Model and Effort") {
+            return PickerScreen::ModelList(parse_rows(&lines[index + 1..]));
+        }
+        if let Some(label) = line.strip_prefix("Select Reasoning Level for ") {
+            return PickerScreen::EffortList {
+                model_label: label.trim().to_owned(),
+                rows: parse_rows(&lines[index + 1..]),
+            };
+        }
+        if line.contains("Advanced Reasoning") {
+            return PickerScreen::Advanced(parse_rows(&lines[index + 1..]));
+        }
+    }
+    PickerScreen::Composer
+}
+
+impl PickerScreen {
+    pub fn is_composer(&self) -> bool {
+        matches!(self, PickerScreen::Composer)
+    }
+    /// The model list shows "(current)" on the active model's row.
+    pub fn current_model_row(&self) -> Option<&PickerRow> {
+        match self {
+            PickerScreen::ModelList(rows) => {
+                rows.iter().find(|row| row.label.ends_with("(current)"))
+            }
+            _ => None,
+        }
+    }
+    pub fn rows(&self) -> &[PickerRow] {
+        match self {
+            PickerScreen::ModelList(rows) | PickerScreen::Advanced(rows) => rows,
+            PickerScreen::EffortList { rows, .. } => rows,
+            PickerScreen::Composer => &[],
+        }
+    }
+    fn selected_index(&self) -> Option<usize> {
+        self.rows().iter().position(|row| row.selected)
+    }
+    /// Arrow presses (as Herdr key tokens) moving the cursor from its parsed
+    /// position to `target`, without relying on list wrap.
+    pub fn arrow_plan(&self, target: usize) -> Option<Vec<&'static str>> {
+        let rows = self.rows();
+        if target >= rows.len() {
+            return None;
+        }
+        let cursor = self.selected_index()?;
+        let plan = if target > cursor {
+            vec!["down"; target - cursor]
+        } else {
+            vec!["up"; cursor - target]
+        };
+        Some(plan)
+    }
+    pub fn row_for_label(&self, label: &str) -> Option<usize> {
+        let normalize = |text: &str| text.trim().to_ascii_lowercase();
+        let wanted = normalize(label);
+        self.rows()
+            .iter()
+            .position(|row| normalize(&row.label) == wanted)
+    }
+}
+
+/// Row label the Codex effort picker shows for an effort id, including the
+/// nested "More reasoning…" entry that hides max and ultra.
+pub fn codex_effort_row_label(effort: &str) -> Option<&'static str> {
+    match effort {
+        "low" => Some("Low"),
+        "medium" => Some("Medium"),
+        "high" => Some("High"),
+        "xhigh" => Some("Extra high"),
+        "max" | "ultra" => Some("More reasoning"),
+        _ => None,
+    }
+}
+
+/// A confirmed `• Model changed to <slug> <effort> [for this session only]`
+/// toast; returns the applied pair.
+pub fn codex_change_toast(screen: &str) -> Option<(String, String)> {
+    for line in screen.lines() {
+        let Some(rest) = line
+            .trim()
+            .trim_start_matches('•')
+            .trim()
+            .strip_prefix("Model changed to ")
+        else {
+            continue;
+        };
+        let mut parts = rest.split_whitespace();
+        let slug = parts.next()?.to_owned();
+        let effort = parts.next()?.to_owned();
+        if slug.is_empty() || effort.is_empty() {
+            return None;
+        }
+        return Some((slug, effort));
+    }
+    None
+}
+
+/// Claude's confirmation lines after `/model` and `/effort`. Returns the
+/// confirmed display label for model lines, and the level for effort lines.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClaudeConfirmation {
+    Model(String),
+    Effort(String),
+    Invalid(String),
+}
+
+pub fn claude_confirmation(screen: &str) -> Option<ClaudeConfirmation> {
+    for line in screen.lines() {
+        let line = line.trim().trim_start_matches('⎿').trim();
+        if let Some(rest) = line.strip_prefix("Set model to ") {
+            let label = rest.split(" and saved").next().unwrap_or(rest).trim();
+            if !label.is_empty() {
+                return Some(ClaudeConfirmation::Model(label.to_owned()));
+            }
+        }
+        if let Some(rest) = line.strip_prefix("Set effort level to ") {
+            let level = rest.split(' ').next().unwrap_or(rest).trim();
+            if !level.is_empty() {
+                return Some(ClaudeConfirmation::Effort(level.to_owned()));
+            }
+        }
+        if let Some(rest) = line.strip_prefix("Invalid argument: ") {
+            let invalid = rest.split(". Valid options").next().unwrap_or(rest);
+            if !invalid.is_empty() {
+                return Some(ClaudeConfirmation::Invalid(invalid.to_owned()));
+            }
+        }
+        if line.starts_with("Unknown model") {
+            return Some(ClaudeConfirmation::Invalid(line.to_owned()));
+        }
+    }
+    None
+}
+
+/// Well-formed model ids/aliases and efforts accepted by `model.set`.
+pub fn valid_set_target(agent: &str, model: Option<&str>, effort: Option<&str>) -> Result<()> {
+    let check = |value: Option<&str>, max: usize| match value {
+        None => Ok(()),
+        Some(value) if !value.is_empty() && value.len() <= max => Ok(()),
+        Some(_) => Err("invalid_request"),
+    };
+    check(model, 128)?;
+    match effort {
+        None => Ok(()),
+        Some(value) if known_effort(agent, value) => Ok(()),
+        Some(_) => Err("invalid_effort"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn claude_labels_come_from_the_static_table_or_id_shape() {
+        assert_eq!(claude_model_label("opus"), "Opus");
+        assert_eq!(claude_model_label("claude-opus-5-5"), "Opus 5.5");
+        assert_eq!(claude_model_label("claude-fable-5-1"), "Fable 5.1");
+        assert_eq!(claude_model_label("claude-haiku-4-5-20251001"), "Haiku 4.5");
+        assert_eq!(claude_model_label("claude-sonnet-4-6"), "Sonnet 4.6");
+        assert_eq!(
+            claude_model_label("gateway/custom-model"),
+            "gateway/custom-model"
+        );
+    }
+
+    #[test]
+    fn claude_scan_prefers_assistant_effort_then_api_request() {
+        let records = vec![
+            json!({"type":"assistant","message":{"model":"claude-opus-5-5"},"effort":"medium"}),
+            json!({"type":"api-request","params":{"model":"claude-opus-5-5","output_config":{"effort":"low"}}}),
+            json!({"type":"assistant","message":{"model":"claude-sonnet-5-5"},"effort":"high"}),
+        ];
+        assert_eq!(
+            claude_scan(&records),
+            Some(("claude-sonnet-5-5".into(), Some("high".into())))
+        );
+        let legacy = vec![
+            json!({"type":"api-request","params":{"output_config":{"effort":"low"}}}),
+            json!({"type":"assistant","message":{"model":"claude-opus-4-6"}}),
+        ];
+        assert_eq!(
+            claude_scan(&legacy),
+            Some(("claude-opus-4-6".into(), Some("low".into())))
+        );
+        assert_eq!(
+            claude_scan(&[json!({"type":"user","message":{"content":"hi"}})]),
+            None
+        );
+    }
+
+    #[test]
+    fn claude_settings_parse_and_effort_resolution() {
+        let settings = parse_claude_settings(
+            r#"{"model":"opus","effortLevel":null,
+                "modelAliases":{"opus":"claude-opus-4-6"},
+                "modelSettings":{"claude-sonnet-5-5":{"effortLevel":"high"},
+                                 "claude-opus-5-5":{"effortLevel":"medium"}}}"#,
+        );
+        assert_eq!(settings.model.as_deref(), Some("opus"));
+        assert_eq!(settings.effort_for("claude-sonnet-5-5"), Some("high"));
+        assert_eq!(settings.effort_for("claude-opus-5-5"), Some("medium"));
+        assert_eq!(settings.effort_for("claude-haiku-4-5"), None);
+        let override_settings = parse_claude_settings(r#"{"effortLevel":"max"}"#);
+        assert_eq!(override_settings.effort_for("anything"), Some("max"));
+        assert_eq!(parse_claude_settings("not json").model, None);
+    }
+
+    #[test]
+    fn codex_scan_takes_the_last_turn_context() {
+        let records = vec![
+            json!({"type":"turn_context","payload":{"model":"gpt-6.1-sol","effort":"low"}}),
+            json!({"type":"response_item","payload":{"type":"message"}}),
+            json!({"type":"turn_context","payload":{"model":"gpt-6-luna","effort":"xhigh"}}),
+            json!({"type":"turn_context","payload":{"model":"gpt-6-astra"}}),
+        ];
+        assert_eq!(codex_scan(&records), Some(("gpt-6-astra".into(), None)));
+        assert_eq!(
+            codex_scan(&records[..2]),
+            Some(("gpt-6.1-sol".into(), Some("low".into())))
+        );
+        assert_eq!(
+            codex_scan(&[json!({"type":"session_meta","payload":{}})]),
+            None
+        );
+    }
+
+    #[test]
+    fn codex_config_defaults_parse() {
+        let text =
+            "model = \"gpt-6.1-sol\"\nmodel_reasoning_effort = \"low\"\n[tui]\ntheme = \"dark\"\n";
+        assert_eq!(
+            parse_codex_config(text),
+            (Some("gpt-6.1-sol".into()), Some("low".into()))
+        );
+        assert_eq!(parse_codex_config("[tui]\n"), (None, None));
+        assert_eq!(parse_codex_config("broken ="), (None, None));
+    }
+
+    #[test]
+    fn catalog_filters_visibility_and_sorts_by_priority() {
+        let text = r#"{"models":[
+            {"slug":"gpt-6-sol","display_name":"GPT-6-Sol","priority":4,"visibility":"list",
+             "supported_reasoning_levels":[{"effort":"low"},{"effort":"high"},{"effort":"weird"}]},
+            {"slug":"hidden","display_name":"Hidden","priority":0,"visibility":"hide",
+             "supported_reasoning_levels":[]},
+            {"slug":"gpt-6.1-sol","display_name":"GPT-6.1-Sol","priority":1,"visibility":"list",
+             "supported_reasoning_levels":[]}
+        ]}"#;
+        let models = parse_codex_catalog(text);
+        let slugs: Vec<&str> = models.iter().map(|m| m.slug.as_str()).collect();
+        assert_eq!(slugs, vec!["gpt-6.1-sol", "gpt-6-sol"]);
+        assert_eq!(models[1].label, "GPT-6-Sol");
+        assert_eq!(models[1].efforts, vec!["low", "high"]);
+        assert!(parse_codex_catalog("{").is_empty());
+        assert!(parse_codex_catalog(r#"{"models":[]}"#).is_empty());
+    }
+
+    #[test]
+    fn codex_screens_parse_rows_cursor_and_titles() {
+        let model_screen = "  To get started, describe a task or try one of these commands:\n\
+            /model - choose what model and reasoning effort to use\n\
+            Select Model and Effort\n\
+            › 1. GPT-6.1-Sol (current)  Latest workhorse model\n\
+              2. GPT-6-Astra            Frontier intelligence\n\
+              7. GPT-5.6-Luna           Older fast model\n\
+            enter select · esc back";
+        assert_eq!(
+            parse_codex_screen(model_screen),
+            PickerScreen::ModelList(vec![
+                PickerRow {
+                    number: 1,
+                    label: "GPT-6.1-Sol (current)".into(),
+                    selected: true
+                },
+                PickerRow {
+                    number: 2,
+                    label: "GPT-6-Astra".into(),
+                    selected: false
+                },
+                PickerRow {
+                    number: 7,
+                    label: "GPT-5.6-Luna".into(),
+                    selected: false
+                },
+            ])
+        );
+        let screen = parse_codex_screen(model_screen);
+        assert_eq!(screen.current_model_row().map(|row| row.number), Some(1));
+        assert_eq!(screen.row_for_label("gpt-6-astra"), Some(1));
+        assert_eq!(screen.arrow_plan(2), Some(vec!["down", "down"]));
+        assert_eq!(screen.arrow_plan(0), Some(vec![]));
+
+        let effort_screen = "Select Reasoning Level for GPT-6-Luna\n\
+            1. Low       Fast responses with lighter reasoning\n\
+            2. Medium (default)  Balances speed and reasoning depth\n\
+            › 3. High    Greater reasoning depth for complex problems\n\
+            4. Extra high  Extra high reasoning depth\n\
+            5. More reasoning…  Max consumes usage limits faster";
+        assert_eq!(
+            parse_codex_screen(effort_screen),
+            PickerScreen::EffortList {
+                model_label: "GPT-6-Luna".into(),
+                rows: vec![
+                    PickerRow {
+                        number: 1,
+                        label: "Low".into(),
+                        selected: false
+                    },
+                    PickerRow {
+                        number: 2,
+                        label: "Medium (default)".into(),
+                        selected: false
+                    },
+                    PickerRow {
+                        number: 3,
+                        label: "High".into(),
+                        selected: true
+                    },
+                    PickerRow {
+                        number: 4,
+                        label: "Extra high".into(),
+                        selected: false
+                    },
+                    PickerRow {
+                        number: 5,
+                        label: "More reasoning…".into(),
+                        selected: false
+                    },
+                ]
+            }
+        );
+        let screen = parse_codex_screen(effort_screen);
+        assert_eq!(screen.row_for_label("More reasoning…"), Some(4));
+        assert_eq!(screen.arrow_plan(4), Some(vec!["down", "down"]));
+
+        let advanced = "Advanced Reasoning\n\
+            ⚠ Consumes usage limits faster\n\
+            › 1. Max  For difficult problems when quality matters more than speed\n\
+              2. Ultra  Maximum reasoning with automatic task delegation";
+        assert_eq!(
+            parse_codex_screen(advanced),
+            PickerScreen::Advanced(vec![
+                PickerRow {
+                    number: 1,
+                    label: "Max".into(),
+                    selected: true
+                },
+                PickerRow {
+                    number: 2,
+                    label: "Ultra".into(),
+                    selected: false
+                },
+            ])
+        );
+        assert!(parse_codex_screen("› Ask Codex to do anything").is_composer());
+    }
+
+    #[test]
+    fn change_toast_and_claude_confirmations_parse() {
+        assert_eq!(
+            codex_change_toast("• Model changed to gpt-6-luna high for this session only"),
+            Some(("gpt-6-luna".into(), "high".into()))
+        );
+        assert_eq!(
+            codex_change_toast("• Model changed to gpt-6-luna high"),
+            Some(("gpt-6-luna".into(), "high".into()))
+        );
+        assert_eq!(codex_change_toast("nothing happened"), None);
+
+        assert_eq!(
+            claude_confirmation(
+                "  ⎿  Set model to Sonnet 5.5 and saved as your default for new sessions"
+            ),
+            Some(ClaudeConfirmation::Model("Sonnet 5.5".into()))
+        );
+        assert_eq!(
+            claude_confirmation(
+                "⎿ Set effort level to high (saved as your default for new sessions)"
+            ),
+            Some(ClaudeConfirmation::Effort("high".into()))
+        );
+        assert_eq!(
+            claude_confirmation("⎿ Invalid argument: bogus. Valid options are: low, medium, high"),
+            Some(ClaudeConfirmation::Invalid("bogus".into()))
+        );
+        assert_eq!(
+            claude_confirmation("⎿ Unknown model 'zzz' isn't available"),
+            Some(ClaudeConfirmation::Invalid(
+                "Unknown model 'zzz' isn't available".into()
+            ))
+        );
+        assert_eq!(claude_confirmation("plain line"), None);
+    }
+
+    #[test]
+    fn set_target_validation() {
+        assert!(valid_set_target("claude", Some("opus"), Some("max")).is_ok());
+        assert!(valid_set_target("claude", None, Some("auto")).is_ok());
+        assert_eq!(
+            valid_set_target("claude", None, Some("turbo")).unwrap_err(),
+            "invalid_effort"
+        );
+        assert_eq!(
+            valid_set_target("codex", Some(""), None).unwrap_err(),
+            "invalid_request"
+        );
+        assert!(valid_set_target("codex", Some("gpt-6-luna"), Some("ultra")).is_ok());
+    }
+}

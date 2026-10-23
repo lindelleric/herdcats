@@ -75,6 +75,17 @@ impl Client {
         Ok(())
     }
 
+    /// Submits one prompt to an idle agent through Herdr's agent-aware prompt
+    /// path — the same submission route the iOS app uses for composed
+    /// messages. Slash commands typed this way land in the composer intact.
+    pub fn agent_prompt(&self, pane_id: &str, text: &str) -> Result<()> {
+        self.request(
+            "agent.prompt", "agent.prompt", json!({"target":pane_id,"text":text}),
+            "herdr_prompt_too_large",
+        )?;
+        Ok(())
+    }
+
     fn request(&self, id: &str, method: &str, params: Value, too_large: &'static str) -> Result<Value> {
         self.request_with_timeout(id, method, params, too_large, Duration::from_secs(2))
     }

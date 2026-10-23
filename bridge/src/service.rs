@@ -8,6 +8,7 @@ use crate::{
     follower::{Follower, MAX_RECORD},
     herdr::{Client, Pane},
     hooks::Agent,
+    model_control::{self, ClaudeConfirmation, PickerScreen},
     resolver::Resolver,
     question_match::{self, PendingQuestion, QuestionKind},
     question_keys::{self, ExpectedScreen, Input, Step},
@@ -41,6 +42,16 @@ impl InteractionError {
     }
 }
 type InteractionResult<T> = std::result::Result<T, InteractionError>;
+
+/// One successful poll: the verified identity, whether the timeline reset, the
+/// agent status, and descriptor clones for interaction/model tail reads.
+struct PollOutcome {
+    identity: Identity,
+    reset: bool,
+    status: String,
+    approval_file: Option<std::fs::File>,
+    model_file: Option<std::fs::File>,
+}
 
 #[derive(Clone, PartialEq, Serialize)]
 struct Identity {
@@ -201,6 +212,10 @@ struct Watch {
     approval_cache: Option<ApprovalMatchCache>,
     question_cache: Option<QuestionMatchCache>,
     source_pane: Option<Pane>,
+    // Transcript stamp behind the last model/effort scan (or emission reset),
+    // so unchanged files skip tail reads on every poll.
+    model_stamp: Option<(u64, (i64, i64))>,
+    last_model: Option<(String, Option<String>)>,
 }
 pub struct Service {
     pub client: Client,
@@ -224,6 +239,10 @@ pub struct Service {
     // daemon runs under the configured home.
     codex_home: Option<PathBuf>,
     spool_dir: Option<PathBuf>,
+    include_model_control: bool,
+    // settings.json beside the configured (non-canonicalized) Claude root's
+    // parent; `~/.claude/projects` -> `~/.claude/settings.json`.
+    claude_settings_path: Option<PathBuf>,
 }
 pub fn page(entries: &[Entry], before: usize) -> Value {
     let mut start = before.saturating_sub(100);
@@ -244,6 +263,10 @@ impl Service {
         let codex_resolver = codex_root.and_then(|r| CodexResolver::new(&r).ok());
         let mut service = Self::with_resolvers(socket, resolver, codex_resolver);
         service.codex_home = codex_home;
+        service.claude_settings_path = root
+            .parent()
+            .map(|parent| parent.join("settings.json"))
+            .filter(|path| path.is_absolute());
         service
     }
 
@@ -290,6 +313,8 @@ impl Service {
             codex_daemon_cache: None,
             codex_home: None,
             spool_dir: spool::resolve_spool_dir(),
+            include_model_control: false,
+            claude_settings_path: None,
         }
     }
     pub fn invalidate_codex_daemon_cache(&mut self) {
@@ -329,6 +354,11 @@ impl Service {
         self.invalidate_codex_daemon_cache();
         self
     }
+    #[doc(hidden)]
+    pub fn with_claude_settings(mut self, path: PathBuf) -> Self {
+        self.claude_settings_path = Some(path);
+        self
+    }
     pub fn with_codex_root(mut self, root: PathBuf) -> Self {
         self.codex_resolver = CodexResolver::new(&root).ok();
         self.adapters = vec![
@@ -366,7 +396,7 @@ impl Service {
         &self,
         watch: &mut Watch,
         refresh: &mut impl FnMut(&mut Follower, std::fs::File, &str) -> Result<bool>,
-    ) -> Result<(Identity, bool, String, Option<std::fs::File>)> {
+    ) -> Result<PollOutcome> {
         let snapshot = self.client.snapshot()?;
         let pane = snapshot
             .panes
@@ -409,11 +439,18 @@ impl Service {
         } else {
             None
         };
+        let model_file = if self.include_model_control { file.try_clone().ok() } else { None };
         refresh(&mut watch.follower, file, &session)?;
         let reset = watch.identity.as_ref() != Some(&identity)
             || watch.unavailable.is_some()
             || watch.follower.generation != watch.generation;
-        Ok((identity, reset, pane.agent_status.clone(), approval_file))
+        Ok(PollOutcome {
+            identity,
+            reset,
+            status: pane.agent_status.clone(),
+            approval_file,
+            model_file,
+        })
     }
     pub fn poll(&mut self, out: &mut impl Write) -> io::Result<()> {
         self.poll_with_refresh(out, |follower, file, session| {
@@ -504,7 +541,13 @@ impl Service {
                     self.event(out, "timeline.unavailable", data)?;
                 }
             }
-            Ok((identity, reset, status, approval_file)) => {
+            Ok(PollOutcome {
+                identity,
+                reset,
+                status,
+                approval_file,
+                model_file,
+            }) => {
                 let was_delayed = watch.delayed;
                 watch.source_changing_count = 0;
                 watch.delayed = false;
@@ -518,6 +561,7 @@ impl Service {
                 if reset {
                     watch.approval_cache = None;
                     watch.question_cache = None;
+                    watch.last_model = None;
                     self.generation += 1;
                     let mut body = page(&data.entries, data.entries.len());
                     body["identity"] = json!(identity);
@@ -596,6 +640,9 @@ impl Service {
                 watch.unavailable_agent = None;
                 watch.last_daemon_status = None;
                 watch.generation = watch.follower.generation;
+                if self.include_model_control {
+                    self.update_model(out, &mut watch, model_file)?;
+                }
             }
         }
         if (self.include_approvals || self.include_questions) && !preserve_pending {
@@ -795,6 +842,540 @@ impl Service {
             watch.pending = Some(new);
         }
         Ok(())
+    }
+    fn update_model(
+        &mut self,
+        out: &mut impl Write,
+        watch: &mut Watch,
+        file: Option<std::fs::File>,
+    ) -> io::Result<()> {
+        let Some(file) = file else {
+            return Ok(());
+        };
+        let Some(identity) = watch.identity.clone() else {
+            return Ok(());
+        };
+        let stamp = match file.metadata() {
+            Ok(metadata) if metadata.is_file() => {
+                use std::os::unix::fs::MetadataExt;
+                (metadata.len(), (metadata.mtime(), metadata.mtime_nsec()))
+            }
+            _ => return Ok(()),
+        };
+        if watch.model_stamp == Some(stamp) {
+            return Ok(());
+        }
+        // Record the stamp even when the tail read fails: a transient read
+        // error must not turn every poll into a full tail scan.
+        watch.model_stamp = Some(stamp);
+        let Ok(records) = crate::follower::read_tail(file) else {
+            return Ok(());
+        };
+        let observed = match identity.agent.as_str() {
+            "claude" => model_control::claude_scan(&records),
+            "codex" => model_control::codex_scan(&records),
+            _ => None,
+        };
+        let Some(observed) = observed else {
+            return Ok(());
+        };
+        if watch.last_model.as_ref() != Some(&observed) {
+            watch.last_model = Some(observed.clone());
+            self.event(
+                out,
+                "model.updated",
+                json!({"identity":identity,"generation":self.generation,
+                    "model":observed.0,"effort":observed.1}),
+            )?;
+        }
+        Ok(())
+    }
+    /// Fallback pair for a session with no turns yet: Claude's persisted
+    /// default (settings.json), Codex's config.toml defaults.
+    fn model_scan_fallback(&self, agent: &str) -> Option<(String, Option<String>)> {
+        match agent {
+            "claude" => {
+                let text = std::fs::read_to_string(self.claude_settings_path.as_ref()?).ok()?;
+                let settings = model_control::parse_claude_settings(&text);
+                let model = settings.model.clone()?;
+                let effort = settings.effort_for(&model).map(str::to_owned);
+                Some((model, effort))
+            }
+            "codex" => {
+                let home = self
+                    .codex_home
+                    .clone()
+                    .or_else(crate::codex_config::resolve_codex_dir)?;
+                let text = std::fs::read_to_string(home.join("config.toml")).ok()?;
+                let (model, effort) = model_control::parse_codex_config(&text);
+                model.map(|model| (model, effort))
+            }
+            _ => None,
+        }
+    }
+    fn model_scan_current(
+        &self,
+        agent: &str,
+        file: std::fs::File,
+    ) -> Option<(String, Option<String>)> {
+        let records = crate::follower::read_tail(file).ok()?;
+        match agent {
+            "claude" => model_control::claude_scan(&records),
+            "codex" => model_control::codex_scan(&records),
+            _ => None,
+        }
+        .or_else(|| self.model_scan_fallback(agent))
+    }
+    fn codex_catalog(&self) -> Vec<model_control::CodexCatalogModel> {
+        let Some(home) = self
+            .codex_home
+            .clone()
+            .or_else(crate::codex_config::resolve_codex_dir)
+        else {
+            return Vec::new();
+        };
+        std::fs::read_to_string(home.join("models_cache.json"))
+            .ok()
+            .map(|text| model_control::parse_codex_catalog(&text))
+            .unwrap_or_default()
+    }
+    /// Fresh occupant check shared by both model methods: returns the live
+    /// pane and the adapter-verified transcript for the watched identity.
+    fn model_pane_file(&self, identity: &Identity) -> Result<(Pane, std::fs::File)> {
+        let snapshot = self.client.snapshot().map_err(|_| "stale")?;
+        let pane = snapshot
+            .panes
+            .iter()
+            .find(|p| p.pane_id == identity.pane_id)
+            .ok_or("stale")?
+            .clone();
+        if pane.terminal_id != identity.terminal_id
+            || pane.agent.as_deref() != Some(identity.agent.as_str())
+        {
+            return Err("stale");
+        }
+        let adapter = self
+            .adapter_for(&identity.agent)
+            .ok_or("unsupported_agent")?;
+        let (session, file) = adapter.resolve_and_open(&pane).map_err(|_| "stale")?;
+        if session != identity.native_session_id {
+            return Err("stale");
+        }
+        Ok((pane, file))
+    }
+    fn model_status(&self) -> Result<Value> {
+        if !self.include_model_control {
+            return Err("unsupported_capability");
+        }
+        let watch = self.watch.as_ref().ok_or("not_watching")?;
+        let identity = watch
+            .identity
+            .clone()
+            .filter(|_| watch.unavailable.is_none())
+            .ok_or("timeline_unavailable")?;
+        let (_, file) = self.model_pane_file(&identity)?;
+        let agent = identity.agent.as_str();
+        let current = self.model_scan_current(agent, file);
+        let current_id = current.as_ref().map(|(id, _)| id.as_str());
+        let (models, efforts) = match agent {
+            "claude" => {
+                let mut models: Vec<Value> = model_control::CLAUDE_MODELS
+                    .iter()
+                    .map(|(alias, label)| json!({"id":alias,"label":label}))
+                    .collect();
+                let matches_alias = |alias: &str| {
+                    current_id.is_some_and(|id| {
+                        id == alias
+                            || id
+                                .strip_prefix("claude-")
+                                .is_some_and(|body| body.starts_with(&format!("{alias}-")))
+                    })
+                };
+                let mut marked = false;
+                for entry in &mut models {
+                    if entry["id"].as_str().is_some_and(matches_alias) {
+                        entry["current"] = json!(true);
+                        marked = true;
+                    }
+                }
+                if !marked && let Some(id) = current_id {
+                    models.push(json!({"id":id,"label":model_control::claude_model_label(id),"current":true}));
+                }
+                let efforts = model_control::CLAUDE_EFFORTS
+                    .iter()
+                    .map(|effort| json!({"id":effort,"label":model_control::effort_label(effort)}))
+                    .collect();
+                (models, efforts)
+            }
+            "codex" => {
+                let catalog = self.codex_catalog();
+                let mut models: Vec<Value> = catalog
+                    .iter()
+                    .map(|model| json!({"id":model.slug,"label":model.label}))
+                    .collect();
+                let mut marked = false;
+                for entry in &mut models {
+                    if entry["id"].as_str() == current_id {
+                        entry["current"] = json!(true);
+                        marked = true;
+                    }
+                }
+                if !marked && let Some(id) = current_id {
+                    models.push(
+                        json!({"id":id,"label":model_control::codex_slug_label(id),"current":true}),
+                    );
+                }
+                let efforts: Vec<Value> = catalog
+                    .iter()
+                    .find(|model| Some(model.slug.as_str()) == current_id)
+                    .map(|model| &model.efforts)
+                    .filter(|efforts| !efforts.is_empty())
+                    .map(|efforts| {
+                        efforts
+                            .iter()
+                            .map(|effort| {
+                                json!({"id":effort,"label":model_control::effort_label(effort)})
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_else(|| {
+                        model_control::CODEX_EFFORTS
+                            .iter()
+                            .map(|effort| {
+                                json!({"id":effort,"label":model_control::effort_label(effort)})
+                            })
+                            .collect()
+                    });
+                (models, efforts)
+            }
+            _ => return Err("unsupported_agent"),
+        };
+        let current_label = current.as_ref().map(|(id, _)| match agent {
+            "claude" => model_control::claude_model_label(id),
+            _ => self
+                .codex_catalog()
+                .iter()
+                .find(|model| model.slug == *id)
+                .map(|model| model.label.clone())
+                .unwrap_or_else(|| model_control::codex_slug_label(id)),
+        });
+        Ok(json!({
+            "identity":identity, "generation":self.generation, "agent":agent,
+            "model": current.as_ref().and_then(|(id, _)| {
+                current_label.clone().map(|label| json!({"id":id, "label":label}))
+            }),
+            "effort": current.as_ref().and_then(|(_, effort)| effort.clone()),
+            "models":models, "efforts":efforts,
+        }))
+    }
+    fn model_set(&mut self, params: &Value) -> Result<Value> {
+        if !self.include_model_control {
+            return Err("unsupported_capability");
+        }
+        let watch = self.watch.as_ref().ok_or("not_watching")?;
+        let identity = watch
+            .identity
+            .clone()
+            .filter(|_| watch.unavailable.is_none())
+            .ok_or("timeline_unavailable")?;
+        let agent = identity.agent.as_str();
+        let target_model = params["model"].as_str();
+        let target_effort = params["effort"].as_str();
+        model_control::valid_set_target(agent, target_model, target_effort)?;
+        if !params["expect"].is_object() {
+            return Err("invalid_request");
+        }
+        let expect_model = params["expect"]["model"].as_str();
+        let expect_effort = params["expect"]["effort"].as_str();
+        let (pane, file) = self.model_pane_file(&identity)?;
+        if !matches!(pane.agent_status.as_str(), "idle" | "done") {
+            return Err("agent_busy");
+        }
+        let current = self.model_scan_current(agent, file);
+        if current.as_ref().map(|(id, _)| id.as_str()) != expect_model
+            || current.as_ref().and_then(|(_, effort)| effort.as_deref()) != expect_effort
+        {
+            return Err("stale");
+        }
+        let result = match agent {
+            "claude" => self.set_claude_model(&identity, &current, target_model, target_effort)?,
+            "codex" => self.set_codex_model(&identity, &current, target_model, target_effort)?,
+            _ => return Err("unsupported_agent"),
+        };
+        // Force the next poll to re-scan and emit `model.updated` for the new
+        // pair (the confirmation may never reach the transcript).
+        if let Some(watch) = self.watch.as_mut() {
+            watch.model_stamp = None;
+        }
+        Ok(result)
+    }
+    /// Waits for a Claude slash-command outcome. The screen must differ from
+    /// the pre-send baseline and contain the submitted command's echo, so a
+    /// confirmation line left over from an earlier turn cannot match.
+    fn wait_claude_confirmation(
+        &self,
+        pane_id: &str,
+        baseline: &str,
+        command: &str,
+        want_effort: Option<&str>,
+    ) -> (Option<String>, Option<&'static str>) {
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            let screen = self.client.read_visible(pane_id).unwrap_or_default();
+            if screen != baseline && screen.contains(command) {
+                match model_control::claude_confirmation(&screen) {
+                    Some(ClaudeConfirmation::Model(label)) if want_effort.is_none() => {
+                        return (Some(label), None);
+                    }
+                    Some(ClaudeConfirmation::Effort(level))
+                        if want_effort.is_some_and(|wanted| level == wanted) =>
+                    {
+                        return (Some(level), None);
+                    }
+                    Some(ClaudeConfirmation::Invalid(payload)) => {
+                        let expected_invalid = match want_effort {
+                            None => payload.contains(command.trim_start_matches("/model ")),
+                            Some(wanted) => payload == wanted,
+                        };
+                        if expected_invalid {
+                            let code = if want_effort.is_none() {
+                                "unknown_model"
+                            } else {
+                                "invalid_effort"
+                            };
+                            return (None, Some(code));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if Instant::now() >= deadline {
+                return (None, Some("confirm_timeout"));
+            }
+            thread::sleep(Duration::from_millis(150));
+        }
+    }
+    fn set_claude_model(
+        &self,
+        identity: &Identity,
+        current: &Option<(String, Option<String>)>,
+        target_model: Option<&str>,
+        target_effort: Option<&str>,
+    ) -> Result<Value> {
+        let pane_id = identity.pane_id.as_str();
+        let mut applied_model = current
+            .clone()
+            .map(|(id, _)| (id.clone(), model_control::claude_model_label(&id)));
+        let mut applied_effort = current.as_ref().and_then(|(_, effort)| effort.clone());
+        let mut error: Option<&str> = None;
+        if let Some(target) = target_model
+            .filter(|target| Some(*target) != current.as_ref().map(|(id, _)| id.as_str()))
+        {
+            let command = format!("/model {target}");
+            let baseline = self.client.read_visible(pane_id).unwrap_or_default();
+            self.client
+                .agent_prompt(pane_id, &command)
+                .map_err(|_| "herdr_unavailable")?;
+            let (label, failure) =
+                self.wait_claude_confirmation(pane_id, &baseline, &command, None);
+            match (label, failure) {
+                (Some(label), _) => applied_model = Some((target.to_owned(), label)),
+                (None, Some(code)) => error = Some(code),
+                (None, None) => error = Some("confirm_timeout"),
+            }
+        }
+        if error.is_none()
+            && let Some(target) = target_effort.filter(|target| {
+                Some(*target) != current.as_ref().and_then(|(_, effort)| effort.as_deref())
+            })
+        {
+            let command = format!("/effort {target}");
+            let baseline = self.client.read_visible(pane_id).unwrap_or_default();
+            self.client
+                .agent_prompt(pane_id, &command)
+                .map_err(|_| "herdr_unavailable")?;
+            let (level, failure) =
+                self.wait_claude_confirmation(pane_id, &baseline, &command, Some(target));
+            match (level, failure) {
+                (Some(level), _) => applied_effort = Some(level),
+                (None, Some(code)) => error = Some(code),
+                (None, None) => error = Some("confirm_timeout"),
+            }
+        }
+        Ok(json!({
+            "identity":identity, "generation":self.generation,
+            "applied":{
+                "model": applied_model.map(|(id, label)| json!({"id":id,"label":label})),
+                "effort": applied_effort,
+            },
+            "confirmed": error.is_none(), "error": error,
+        }))
+    }
+    /// Best-effort picker dismissal for abort paths.
+    fn dismiss_codex_picker(&self, pane_id: &str) {
+        for _ in 0..2 {
+            let _ = self.client.send_keys(pane_id, &["esc"]);
+            thread::sleep(Duration::from_millis(150));
+        }
+    }
+    fn wait_codex_kind(
+        &self,
+        pane_id: &str,
+        matches: impl Fn(&PickerScreen) -> bool,
+    ) -> Option<PickerScreen> {
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            let screen = self.client.read_visible(pane_id).unwrap_or_default();
+            let parsed = model_control::parse_codex_screen(&screen);
+            if matches(&parsed) {
+                return Some(parsed);
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            thread::sleep(Duration::from_millis(150));
+        }
+    }
+    fn wait_codex_toast(&self, pane_id: &str, slug: &str) -> Option<(String, String)> {
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            let screen = self.client.read_visible(pane_id).unwrap_or_default();
+            if let Some((applied_slug, effort)) = model_control::codex_change_toast(&screen)
+                && applied_slug == slug
+            {
+                return Some((applied_slug, effort));
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            thread::sleep(Duration::from_millis(150));
+        }
+    }
+    fn set_codex_model(
+        &self,
+        identity: &Identity,
+        current: &Option<(String, Option<String>)>,
+        target_model: Option<&str>,
+        target_effort: Option<&str>,
+    ) -> Result<Value> {
+        let pane_id = identity.pane_id.as_str();
+        let current_slug = current.as_ref().map(|(id, _)| id.as_str());
+        let target_slug = target_model.or(current_slug).ok_or("invalid_request")?;
+        let catalog = self.codex_catalog();
+        let target_label = catalog
+            .iter()
+            .find(|model| model.slug == target_slug)
+            .map(|model| model.label.clone())
+            .unwrap_or_else(|| model_control::codex_slug_label(target_slug));
+        let mismatch = || -> &'static str {
+            self.dismiss_codex_picker(pane_id);
+            "picker_mismatch"
+        };
+        let send = |keys: &[&str]| -> Result<()> {
+            self.client
+                .send_keys(pane_id, keys)
+                .map_err(|_| "herdr_unavailable")
+        };
+
+        self.client
+            .agent_prompt(pane_id, "/model")
+            .map_err(|_| "herdr_unavailable")?;
+        let model_list = self
+            .wait_codex_kind(
+                pane_id,
+                |screen| matches!(screen, PickerScreen::ModelList(rows) if !rows.is_empty()),
+            )
+            .ok_or_else(mismatch)?;
+        let PickerScreen::ModelList(rows) = &model_list else {
+            return Err(mismatch());
+        };
+        let wanted = [target_label.clone(), format!("{target_label} (current)")];
+        let digit = rows
+            .iter()
+            .find(|row| {
+                wanted
+                    .iter()
+                    .any(|label| row.label.eq_ignore_ascii_case(label))
+            })
+            .map(|row| row.number.to_string())
+            .ok_or_else(mismatch)?;
+        send(&[digit.as_str()])?;
+
+        let effort_screen = self
+            .wait_codex_kind(pane_id, |screen| {
+                matches!(screen, PickerScreen::EffortList { model_label, rows }
+                    if !rows.is_empty() && model_label.eq_ignore_ascii_case(&target_label))
+            })
+            .ok_or_else(mismatch)?;
+        let PickerScreen::EffortList { rows, .. } = &effort_screen else {
+            return Err(mismatch());
+        };
+
+        // Re-picking the current effort still applies cleanly; only a missing
+        // effort falls through to the model's default cursor position.
+        if let Some(effort) = target_effort
+            .map(str::to_owned)
+            .or_else(|| current.as_ref().and_then(|(_, effort)| effort.clone()))
+        {
+            let row_label =
+                model_control::codex_effort_row_label(&effort).ok_or("invalid_effort")?;
+            let arrows = if row_label.starts_with("More reasoning") {
+                let index = rows
+                    .iter()
+                    .position(|row| row.label.starts_with("More reasoning"))
+                    .ok_or_else(mismatch)?;
+                for arrow in effort_screen.arrow_plan(index).ok_or_else(mismatch)? {
+                    send(&[arrow])?;
+                }
+                send(&["enter"])?;
+                let advanced = self
+                    .wait_codex_kind(
+                        pane_id,
+                        |screen| matches!(screen, PickerScreen::Advanced(rows) if !rows.is_empty()),
+                    )
+                    .ok_or_else(mismatch)?;
+                let PickerScreen::Advanced(rows) = &advanced else {
+                    return Err(mismatch());
+                };
+                let label = model_control::effort_label(&effort);
+                let index = rows
+                    .iter()
+                    .position(|row| row.label.eq_ignore_ascii_case(label))
+                    .ok_or_else(mismatch)?;
+                advanced.arrow_plan(index).ok_or_else(mismatch)?
+            } else {
+                let index = rows
+                    .iter()
+                    .position(|row| row.label.eq_ignore_ascii_case(row_label))
+                    .ok_or_else(mismatch)?;
+                effort_screen.arrow_plan(index).ok_or_else(mismatch)?
+            };
+            for arrow in arrows {
+                send(&[arrow])?;
+            }
+        }
+        // `s` applies for this session only; digits or enter would persist a
+        // new global default in config.toml.
+        send(&["s"])?;
+
+        let Some((applied_slug, applied_effort)) = self.wait_codex_toast(pane_id, target_slug)
+        else {
+            self.dismiss_codex_picker(pane_id);
+            return Err("confirm_timeout");
+        };
+        let applied_label = if applied_slug == target_slug {
+            target_label
+        } else {
+            model_control::codex_slug_label(&applied_slug)
+        };
+        Ok(json!({
+            "identity":identity, "generation":self.generation,
+            "applied":{
+                "model":{"id":applied_slug,"label":applied_label},
+                "effort":applied_effort,
+            },
+            "confirmed":true, "error":null,
+        }))
     }
     fn respond_interaction(&self, params: &Value) -> InteractionResult<Value> {
         let question_response = params.get("answers").is_some() || params.get("skip").is_some();
@@ -1002,6 +1583,7 @@ impl Service {
             self.include_content = params["record_content"] == true;
             self.include_approvals = params["approvals"] == true;
             self.include_questions = params["questions"] == true;
+            self.include_model_control = params["model_control"] == true;
             self.watch = None;
             if params["protocol"] != 1 {
                 return Self::error(out, id, "protocol_mismatch");
@@ -1014,7 +1596,7 @@ impl Service {
             let codex_available = self.adapter_for("codex").is_some_and(|a| a.is_available());
             return Self::write(
                 out,
-                &json!({"id":id,"result":{"protocol":1,"bridge_version":env!("CARGO_PKG_VERSION"),"epoch":self.epoch,"capabilities":{"claude_timeline":claude_available,"record_content":true,"codex_timeline":codex_available,"codex_daemon_config":true,"codex_daemon_stop":true,"git":false,"prompts":false,"approvals":true,"questions":true,"routed_hosts":false}}}),
+                &json!({"id":id,"result":{"protocol":1,"bridge_version":env!("CARGO_PKG_VERSION"),"epoch":self.epoch,"capabilities":{"claude_timeline":claude_available,"record_content":true,"codex_timeline":codex_available,"codex_daemon_config":true,"codex_daemon_stop":true,"git":false,"prompts":false,"approvals":true,"questions":true,"model_control":true,"routed_hosts":false}}}),
             );
         }
         if !self.initialized {
@@ -1028,6 +1610,23 @@ impl Service {
                 }
                 Err(error) => Self::write(out, &json!({"id":id,"error":error.data()})),
             },
+            "model.status" => {
+                self.poll_with_refresh(out, refresh)?;
+                match self.model_status() {
+                    Ok(result) => Self::write(out, &json!({"id":id,"result":result})),
+                    Err(code) => Self::error(out, id, code),
+                }
+            }
+            "model.set" => {
+                self.poll_with_refresh(out, refresh)?;
+                match self.model_set(params) {
+                    Ok(result) => {
+                        Self::write(out, &json!({"id":id,"result":result}))?;
+                        self.poll(out)
+                    }
+                    Err(code) => Self::write(out, &json!({"id":id,"error":{"code":code}})),
+                }
+            }
             "watch" => {
                 let Some(pane) = params["pane_id"]
                     .as_str()
@@ -1058,6 +1657,8 @@ impl Service {
                     approval_cache: None,
                     question_cache: None,
                     source_pane: None,
+                    model_stamp: None,
+                    last_model: None,
                 });
                 Self::write(out, &json!({"id":id,"result":{"watching":pane}}))?;
                 self.poll(out)
@@ -1320,6 +1921,15 @@ mod tests {
                         state.active_input_screens = state.screens_after_input.pop_front().unwrap_or_default();
                         json!({})
                     }
+                    "agent.prompt" => {
+                        assert!(state.allow_question_input);
+                        assert_eq!(request["params"]["target"], "w1:p1");
+                        assert!(request["params"]["text"].is_string());
+                        assert_eq!(request["params"].as_object().unwrap().len(), 2);
+                        state.inputs.push(json!({"method":"agent.prompt","params":request["params"]}));
+                        state.active_input_screens = state.screens_after_input.pop_front().unwrap_or_default();
+                        json!({})
+                    }
                     "session.snapshot" => {
                         if let Some((count, status)) = state.status_after_inputs.clone()
                             && state.inputs.len() >= count { state.status = Some(status); }
@@ -1359,6 +1969,7 @@ mod tests {
     include!("service_question_tests.rs");
     include!("service_question_response_tests.rs");
     include!("service_response_tests.rs");
+    include!("service_model_tests.rs");
     fn cleanup(service: &Service, root: PathBuf) {
         // Wake and terminate the fixture thread without a valid request.
         drop(std::os::unix::net::UnixStream::connect(&service.client.socket).unwrap());
