@@ -3,6 +3,27 @@ import UIKit
 import XCTest
 
 extension HerdcatsUITests {
+    func testTerminalOutputOffersNativeTextSelection() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-hc.screenshots", "-hc.screen", "pane",
+                               "-paneShowComposeByDefault", "NO"]
+        app.launch()
+
+        let terminalButton = app.buttons["timeline-open-terminal"]
+        if terminalButton.waitForExistence(timeout: 3) { terminalButton.tap() }
+        let output = app.textViews["pane-output-text"]
+        XCTAssertTrue(output.waitForExistence(timeout: 5))
+        // Long-press “Claude” in the first fixture line. This also exercises
+        // selection alongside the terminal's tap-to-focus and drag gestures.
+        output.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: 55, dy: 8)).press(forDuration: 1)
+        XCTAssertTrue(app.buttons["Copy"].waitForExistence(timeout: 3)
+                      || app.menuItems["Copy"].exists,
+                      "Long-pressing terminal text should offer Copy")
+        XCTAssertFalse(app.keyboards.firstMatch.exists,
+                       "Selecting read-only terminal output should not open a keyboard")
+    }
+
     func testDefaultComposeOpensKeyboardWithoutTappingField() {
         let app = XCUIApplication()
         app.launchArguments = [
@@ -87,8 +108,8 @@ extension HerdcatsUITests {
         XCTAssertTrue(send.waitForExistence(timeout: 5), "Compose Send missing after typing")
         send.tap()
 
-        let echoed = app.staticTexts.matching(
-            NSPredicate(format: "label CONTAINS %@", "SENT: hello from herdrcat")
+        let echoed = app.textViews.matching(
+            NSPredicate(format: "value CONTAINS %@", "SENT: hello from herdrcat")
         ).firstMatch
         XCTAssertTrue(echoed.waitForExistence(timeout: 15), "Sent text did not round-trip through the pane")
     }
@@ -105,10 +126,16 @@ extension HerdcatsUITests {
 
         // After the scroll-in animation settles, the newest line must be on
         // screen without any manual scrolling.
-        let bottom = app.staticTexts["mock terminal bottom line"]
-        XCTAssertTrue(bottom.waitForExistence(timeout: 10), "Mock bottom marker missing")
+        let output = app.textViews["pane-output-text"]
+        XCTAssertTrue(output.waitForExistence(timeout: 10), "Terminal output missing")
+        XCTAssertTrue((output.value as? String)?.contains("mock terminal bottom line") == true,
+                      "Mock bottom marker missing")
         Thread.sleep(forTimeInterval: 1)
-        XCTAssertTrue(bottom.isHittable, "Pane did not open scrolled to the bottom")
+        let viewport = app.scrollViews["pane-output-scroll-view"].frame
+        // The native output is one element; its lower edge is the newest line.
+        XCTAssertGreaterThan(output.frame.maxY, viewport.minY)
+        XCTAssertLessThanOrEqual(output.frame.maxY, viewport.maxY + 1,
+                                 "Pane did not open scrolled to the bottom")
     }
 
     /// Tapping output for Live input and dragging it interactively puts the

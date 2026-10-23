@@ -1078,8 +1078,8 @@ struct PaneSessionView: View {
     /// per-event acknowledgement that drives rapid-refresh pacing and metrics.
     private var liveAcknowledgedCount: UInt64 { liveQueue?.acknowledgedCount ?? 0 }
 
-    private var outputFont: Font {
-        (PaneTextSizePreference(rawValue: paneTextSizeRaw) ?? .default).outputFont
+    private var outputPointSize: CGFloat {
+        (PaneTextSizePreference(rawValue: paneTextSizeRaw) ?? .default).pointSize
     }
 
     private var paneScrollBehavior: PaneScrollBehaviorPreference {
@@ -1183,7 +1183,7 @@ struct PaneSessionView: View {
             output: output,
             outputLines: session.outputLines,
             outputRevision: session.outputRevision,
-            outputFont: outputFont,
+            outputPointSize: outputPointSize,
             paneScrollBehavior: paneScrollBehavior,
             // Combined keyboard-focus signal: the Compose bubble's field or
             // the hidden Live capture field — either keyboard shrinking the
@@ -2238,7 +2238,7 @@ private struct PaneOutputScrollView: View, Equatable {
     let output: String
     let outputLines: [ANSIText.Line]
     let outputRevision: UInt64
-    let outputFont: Font
+    let outputPointSize: CGFloat
     let paneScrollBehavior: PaneScrollBehaviorPreference
     /// True while either keyboard surface (Compose field or hidden Live
     /// capture) holds focus, driving the focus-change and keyboard-frame
@@ -2268,33 +2268,35 @@ private struct PaneOutputScrollView: View, Equatable {
             && lhs.reservesMarkAsReadSpace == rhs.reservesMarkAsReadSpace
             && lhs.topOverlayInset == rhs.topOverlayInset
             && lhs.bottomOverlayInset == rhs.bottomOverlayInset
-            && lhs.outputFont == rhs.outputFont
+            && lhs.outputPointSize == rhs.outputPointSize
             && lhs.paneScrollBehavior == rhs.paneScrollBehavior
             && lhs.keyboardFocused == rhs.keyboardFocused
             && lhs.shouldPinToBottom == rhs.shouldPinToBottom
             && lhs.paneId == rhs.paneId
     }
 
-    private struct RenderedLine: Identifiable {
-        let id: Int
-        let attributed: AttributedString
-        let tint: PaneOutputPresentation.DiffTint?
-    }
-
-    private var renderedLines: [RenderedLine] {
+    /// One text view lets the native selection handles cross terminal lines.
+    /// Separate Text views restrict each selection to a single rendered row.
+    private var selectableOutput: AttributedString {
+        var result = AttributedString()
         var oldHunkLines = 0
         var newHunkLines = 0
-        return outputLines.enumerated().map { index, line in
+        for (index, line) in outputLines.enumerated() {
+            if index > 0 { result.append(AttributedString("\n")) }
+            var attributed = line.attributed
             let tint = PaneOutputPresentation.diffTint(
                 for: line.plain,
                 oldHunkLines: &oldHunkLines,
                 newHunkLines: &newHunkLines
             )
-            let attributed = line.attributed.characters.isEmpty
-                ? AttributedString(" ")
-                : line.attributed
-            return RenderedLine(id: index, attributed: attributed, tint: tint)
+            if tint != nil {
+                var background = AttributeContainer()
+                background.backgroundColor = diffBackground(tint)
+                attributed.mergeAttributes(background, mergePolicy: .keepCurrent)
+            }
+            result.append(attributed)
         }
+        return result
     }
 
     var body: some View {
@@ -2303,20 +2305,12 @@ private struct PaneOutputScrollView: View, Equatable {
                 VStack(alignment: .leading, spacing: 0) {
                     if output.isEmpty && !isLoading && !isOffline {
                         Text("No output yet")
-                            .font(outputFont)
+                            .font(.system(size: outputPointSize, design: .monospaced))
                             .foregroundStyle(Color.secondary)
                             .padding(.bottom, 4)
                     }
-                    ForEach(renderedLines) { line in
-                        Text(line.attributed)
-                            .font(outputFont)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, line.tint == nil ? 0 : 6)
-                            .padding(.vertical, line.tint == nil ? 0 : 1)
-                            .background(diffBackground(line.tint))
-                            .fixedSize(horizontal: false, vertical: true)
-                            .textSelection(.enabled)
-                    }
+                    SelectablePaneOutput(text: selectableOutput, pointSize: outputPointSize)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .padding(14)
                 .padding(.top, topOverlayInset)
@@ -2426,6 +2420,58 @@ private struct PaneOutputScrollView: View, Equatable {
         case .deletion: Theme.diffDeletionBackground
         case nil: Color.clear
         }
+    }
+}
+
+/// A single, read-only native text surface provides draggable selection handles
+/// across lines without introducing a second scrolling region or a keyboard.
+private struct SelectablePaneOutput: UIViewRepresentable {
+    let text: AttributedString
+    let pointSize: CGFloat
+
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView()
+        view.isEditable = false
+        view.isSelectable = true
+        view.isScrollEnabled = false
+        view.backgroundColor = .clear
+        view.textContainerInset = .zero
+        view.textContainer.lineFragmentPadding = 0
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        view.accessibilityIdentifier = "pane-output-text"
+        return view
+    }
+
+    func updateUIView(_ view: UITextView, context: Context) {
+        let rendered = NSMutableAttributedString(string: "")
+        for run in text.runs {
+            let bold = run.inlinePresentationIntent?.contains(.stronglyEmphasized) == true
+            var attributes: [NSAttributedString.Key: Any] = [
+                .font: UIFont.monospacedSystemFont(ofSize: pointSize, weight: bold ? .bold : .regular),
+                .foregroundColor: UIColor(run.foregroundColor ?? Theme.text)
+            ]
+            if let background = run.backgroundColor {
+                attributes[.backgroundColor] = UIColor(background)
+            }
+            rendered.append(NSAttributedString(
+                string: String(text[run.range].characters), attributes: attributes
+            ))
+        }
+        // Assigning attributedText clears UIKit's selection, even for equal text.
+        guard !view.attributedText.isEqual(to: rendered) else { return }
+        let selection = view.selectedRange
+        let preservesSelection = rendered.string.hasPrefix(view.text ?? "")
+        view.attributedText = rendered
+        // Retain a range only when its text has not shifted or been replaced.
+        if preservesSelection, selection.location != NSNotFound,
+           NSMaxRange(selection) <= rendered.length {
+            view.selectedRange = selection
+        }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
+        guard let width = proposal.width, width > 0 else { return nil }
+        return uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
     }
 }
 
