@@ -193,12 +193,48 @@ enum RecentConnectionStore {
         _ entry: RecentConnection, in entries: [RecentConnection], defaults: UserDefaults = .standard
     ) throws -> [RecentConnection] {
         let updated = [entry] + entries.filter { $0.id != entry.id }
-        let data = try JSONEncoder().encode(updated)
+        try persist(updated, defaults: defaults)
+        return updated
+    }
+
+    /// Records that a saved connection must no longer remember credentials, in place.
+    /// Never inserts an unsaved connection and never reorders the list.
+    @discardableResult
+    static func disableRemembering(
+        _ entry: RecentConnection, defaults: UserDefaults = .standard,
+        using keychain: KeychainOperations = KeychainStore.operations
+    ) throws -> [RecentConnection] {
+        var entries = try load(defaults: defaults, using: keychain)
+        guard let index = entries.firstIndex(where: { $0.id == entry.id }) else { return entries }
+        var updated = entry
+        updated.remember = false
+        guard entries[index] != updated else { return entries }
+        entries[index] = updated
+        try persist(entries, defaults: defaults)
+        return entries
+    }
+
+    /// Forgets a saved connection: deletes its Keychain secret and passphrase first
+    /// (so a Keychain failure leaves the entry visible and retryable), then removes
+    /// it from the saved list.
+    @discardableResult
+    static func remove(
+        _ entry: RecentConnection, defaults: UserDefaults = .standard,
+        using keychain: KeychainOperations = KeychainStore.operations
+    ) throws -> [RecentConnection] {
+        try KeychainStore.delete(account: entry.secretAccount, using: keychain)
+        try KeychainStore.delete(account: entry.secretAccount + ".passphrase", using: keychain)
+        let updated = try load(defaults: defaults, using: keychain).filter { $0.id != entry.id }
+        try persist(updated, defaults: defaults)
+        return updated
+    }
+
+    private static func persist(_ entries: [RecentConnection], defaults: UserDefaults) throws {
+        let data = try JSONEncoder().encode(entries)
         defaults.set(data, forKey: storageKey)
         guard defaults.data(forKey: storageKey) == data else {
             throw StoreError.metadataWriteFailed
         }
-        return updated
     }
 
     private static func finishPendingMigration(defaults: UserDefaults, using keychain: KeychainOperations) throws {
@@ -298,6 +334,13 @@ actor SSHHostKeyStore {
         guard let data = result as? Data, let key = String(data: data, encoding: .utf8), !key.isEmpty else {
             throw StoreError(status: errSecDecode)
         }
+        // Opportunistically upgrade pins stored under a weaker accessibility class.
+        // Best effort: the pin is already read, and a failed upgrade must never turn
+        // a known host into an unknown one.
+        _ = SecItemUpdate(
+            self.query(host: host, port: port) as CFDictionary,
+            [kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly] as CFDictionary
+        )
         return key
     }
 
@@ -323,7 +366,8 @@ actor SSHHostKeyStore {
         }
         let match = query(host: host, port: port)
         let status = SecItemUpdate(match as CFDictionary,
-                                  [kSecValueData as String: Data(key.utf8)] as CFDictionary)
+                                  [kSecValueData as String: Data(key.utf8),
+                                   kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly] as CFDictionary)
         guard status == errSecSuccess else { throw StoreError(status: status) }
     }
 

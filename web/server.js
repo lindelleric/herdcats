@@ -84,8 +84,15 @@ function handleRequest(req, res) {
     const safePath = path.normalize(pathname).replace(/^(\.\.[\/\\])+/, '');
     let filePath = path.join(publicDir, safePath);
 
-    // Verify file is within publicDir
-    if (!filePath.startsWith(publicDir)) {
+    // Verify file is within publicDir using a strict path-boundary check
+    // (a bare string prefix would also accept sibling dirs like `<publicDir>-secret`).
+    const rel = path.relative(publicDir, filePath);
+    if (
+        rel === '..' ||
+        rel.startsWith('..' + path.sep) ||
+        path.isAbsolute(rel) ||
+        !filePath.startsWith(publicDir)
+    ) {
         res.writeHead(403, { 'Content-Type': 'text/plain' });
         res.end('403 Forbidden');
         return;

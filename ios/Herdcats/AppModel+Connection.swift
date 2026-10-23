@@ -63,7 +63,9 @@ extension AppModel {
     ) async -> ConnectAttemptState? {
         hostKeyChallenge = nil
         hostKeyVerificationBlocked = false
+        #if DEBUG
         print("[HC] connect start \(config.host):\(config.port)")
+        #endif
         resetMachines()
         activeConfig = config
         let wasOffline = isOffline
@@ -107,7 +109,9 @@ extension AppModel {
         wasOffline: Bool,
         isCheckingHerdr: Bool
     ) {
+        #if DEBUG
         print("[HC] connect failed: \(error)")
+        #endif
         logPrivateKeyDiagnostics(config)
         switch ownership.fail(for: attempt) {
         case .stale:
@@ -157,6 +161,7 @@ extension AppModel {
     }
 
     private func logPrivateKeyDiagnostics(_ config: ConnectionConfig) {
+        #if DEBUG
         if case let .privateKey(pem, _) = config.auth,
            let pubKey = try? OpenSSHEd25519.parseOpenSSHPublicKeyString(pem: pem),
            let fingerprint = try? OpenSSHEd25519.parseFingerprint(pem: pem) {
@@ -169,6 +174,7 @@ extension AppModel {
                     + "on '\(config.host)' for user '\(config.username)'."
             )
         }
+        #endif
     }
 
     static func connectFailureDisposition(

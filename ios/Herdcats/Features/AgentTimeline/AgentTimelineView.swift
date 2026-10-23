@@ -1735,6 +1735,44 @@ private struct TimelineActivityDrawer: View {
     }
 }
 
+/// Parses agent-authored inline markdown and drops any link that could be used
+/// to launch other apps (`shortcuts://`, `tel:`, `sms:`, custom deep links) or to
+/// disguise its destination behind a URL-looking label.
+enum TimelineMarkdown {
+    static func sanitized(_ text: String) -> AttributedString {
+        var attributed = (try? AttributedString(
+            markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(text)
+        var unsafeRanges: [Range<AttributedString.Index>] = []
+        for run in attributed.runs {
+            guard let url = run.link else { continue }
+            let label = String(attributed[run.range].characters)
+            if !isSafe(url, label: label) { unsafeRanges.append(run.range) }
+        }
+        for range in unsafeRanges { attributed[range].link = nil }
+        return attributed
+    }
+
+    private static func isSafe(_ url: URL, label: String) -> Bool {
+        guard let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http",
+              let host = url.host?.lowercased(), !host.isEmpty else { return false }
+        let visible = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowered = visible.lowercased()
+        guard lowered.hasPrefix("http://") || lowered.hasPrefix("https://") || hasSchemeAndHost(visible) else {
+            return true
+        }
+        // The label presents itself as a URL: it must point at the same host.
+        guard let labelHost = URL(string: visible)?.host?.lowercased(), !labelHost.isEmpty else { return false }
+        return labelHost == host
+    }
+
+    private static func hasSchemeAndHost(_ text: String) -> Bool {
+        guard let url = URL(string: text), let scheme = url.scheme, !scheme.isEmpty,
+              let host = url.host, !host.isEmpty else { return false }
+        return true
+    }
+}
+
 private struct AgentTimelineEntryView: View {
     let entry: AgentTimelineEntry
     let files: TimelineContentFiles
@@ -1823,11 +1861,8 @@ private struct AgentTimelineEntryView: View {
             if !Task.isCancelled { imageError = "This image could not be displayed. Try loading it again." }
         }
     }
-    private var markdown: AttributedString {
-        (try? AttributedString(
-            markdown: entry.text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
-            ?? AttributedString(entry.text)
-    }
+    private var markdown: AttributedString { Self.sanitizedMarkdown(entry.text) }
+    static func sanitizedMarkdown(_ text: String) -> AttributedString { TimelineMarkdown.sanitized(text) }
 }
 
 /// Explicit opt-in installation on the displayed SSH endpoint; manual setup stays available.

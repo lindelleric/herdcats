@@ -354,3 +354,51 @@ struct TimelineEntryInterruptionTests {
         #expect(!HostHelperProbe.isOlderThanPinned("0.3.0"))
     }
 }
+
+@Suite("Timeline markdown link sanitization")
+struct TimelineMarkdownTests {
+    private func links(_ text: String) -> [URL] {
+        TimelineMarkdown.sanitized(text).runs.compactMap(\.link)
+    }
+
+    @Test func httpAndHttpsLinksWithPlainLabelsArePreserved() {
+        #expect(links("[docs](https://example.com/docs)") == [URL(string: "https://example.com/docs")!])
+        #expect(links("[docs](http://example.com/docs)") == [URL(string: "http://example.com/docs")!])
+        #expect(links("[HTTPS](HTTPS://Example.com/x)").count == 1)
+    }
+
+    @Test func linksWhoseLabelHostMatchesArePreserved() {
+        #expect(links("[https://example.com](https://example.com/a)").count == 1)
+        #expect(links("[https://EXAMPLE.com/page](https://example.com/other)").count == 1)
+        #expect(links("<https://example.com/a>").count == 1)
+    }
+
+    @Test func nonWebSchemesAreStripped() {
+        for target in ["shortcuts://run-shortcut?name=x", "tel:+15555550100", "sms:+15555550100",
+                       "javascript:alert(1)", "myapp://deep/link", "file:///etc/passwd", "mailto:a@b.c"] {
+            let result = TimelineMarkdown.sanitized("[tap me](\(target))")
+            #expect(result.runs.compactMap(\.link).isEmpty, "\(target) kept its link")
+            #expect(String(result.characters) == "tap me")
+        }
+    }
+
+    @Test func schemeRelativeAndHostlessLinksAreStripped() {
+        #expect(links("[x](/relative/path)").isEmpty)
+        #expect(links("[x](https:///nohost)").isEmpty)
+    }
+
+    @Test func deceptiveLabelHostsAreStripped() {
+        let result = TimelineMarkdown.sanitized("[https://apple.com/login](https://evil.example/login)")
+        #expect(result.runs.compactMap(\.link).isEmpty)
+        #expect(String(result.characters) == "https://apple.com/login")
+        #expect(links("[http://bank.com](https://bank.com.evil.example)").isEmpty)
+        #expect(links("[https://good.com](https://good.com@evil.example/)").isEmpty)
+    }
+
+    @Test func onlyUnsafeLinksAreStrippedFromMixedText() {
+        let result = TimelineMarkdown.sanitized(
+            "ok [a](https://example.com) bad [b](tel:123) also [c](https://example.org)")
+        #expect(result.runs.compactMap(\.link) == [URL(string: "https://example.com")!, URL(string: "https://example.org")!])
+        #expect(String(result.characters) == "ok a bad b also c")
+    }
+}

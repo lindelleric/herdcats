@@ -258,6 +258,88 @@ struct RecentConnectionTests {
         #expect(Set([first.secretAccount, port.secretAccount, user.secretAccount]).count == 3)
     }
 
+    @Test func removeDeletesMetadataSecretAndPassphraseOfOnlyThatConnection() throws {
+        let defaults = try #require(UserDefaults(suiteName: "RecentConnectionTests.\(UUID())"))
+        defer { defaults.removeObject(forKey: RecentConnectionStore.storageKey) }
+        let keychain = FakeKeychainOperations()
+        let first = RecentConnection(
+            host: "mac.local", port: 22, username: "alice", authMode: "privateKey", remember: true)
+        let second = RecentConnection(
+            host: "server.local", port: 22, username: "bob", authMode: "password", remember: true)
+        _ = try RecentConnectionStore.record(first, in: [second], defaults: defaults)
+        for entry in [first, second] {
+            try KeychainStore.save("secret", account: entry.secretAccount, using: keychain)
+            try KeychainStore.save("phrase", account: entry.secretAccount + ".passphrase", using: keychain)
+        }
+
+        let remaining = try RecentConnectionStore.remove(first, defaults: defaults, using: keychain)
+
+        #expect(remaining == [second])
+        #expect(try RecentConnectionStore.load(defaults: defaults, using: keychain) == [second])
+        #expect(keychain.items[first.secretAccount] == nil)
+        #expect(keychain.items[first.secretAccount + ".passphrase"] == nil)
+        #expect(keychain.items[second.secretAccount] != nil)
+        #expect(keychain.items[second.secretAccount + ".passphrase"] != nil)
+    }
+
+    @Test func removeOfUnknownConnectionLeavesOthersAndToleratesMissingSecrets() throws {
+        let defaults = try #require(UserDefaults(suiteName: "RecentConnectionTests.\(UUID())"))
+        defer { defaults.removeObject(forKey: RecentConnectionStore.storageKey) }
+        let keychain = FakeKeychainOperations()
+        let saved = RecentConnection(
+            host: "mac.local", port: 22, username: "alice", authMode: "password", remember: false)
+        let stranger = RecentConnection(
+            host: "other.local", port: 22, username: "eve", authMode: "password", remember: true)
+        _ = try RecentConnectionStore.record(saved, in: [], defaults: defaults)
+
+        #expect(try RecentConnectionStore.remove(stranger, defaults: defaults, using: keychain) == [saved])
+    }
+
+    @Test func removeKeepsEntryWhenKeychainDeletionFails() throws {
+        let defaults = try #require(UserDefaults(suiteName: "RecentConnectionTests.\(UUID())"))
+        defer { defaults.removeObject(forKey: RecentConnectionStore.storageKey) }
+        let keychain = FakeKeychainOperations()
+        let saved = RecentConnection(
+            host: "mac.local", port: 22, username: "alice", authMode: "password", remember: true)
+        _ = try RecentConnectionStore.record(saved, in: [], defaults: defaults)
+        try KeychainStore.save("secret", account: saved.secretAccount, using: keychain)
+        keychain.nextDeleteStatus = errSecInteractionNotAllowed
+
+        #expect(throws: KeychainStore.StoreError.self) {
+            try RecentConnectionStore.remove(saved, defaults: defaults, using: keychain)
+        }
+        #expect(try RecentConnectionStore.load(defaults: defaults, using: keychain) == [saved])
+    }
+
+    @Test func disableRememberingUpdatesSavedEntryInPlaceWithoutReordering() throws {
+        let defaults = try #require(UserDefaults(suiteName: "RecentConnectionTests.\(UUID())"))
+        defer { defaults.removeObject(forKey: RecentConnectionStore.storageKey) }
+        let keychain = FakeKeychainOperations()
+        let first = RecentConnection(
+            host: "mac.local", port: 22, username: "alice", authMode: "password", remember: true)
+        let second = RecentConnection(
+            host: "server.local", port: 22, username: "bob", authMode: "password", remember: true)
+        _ = try RecentConnectionStore.record(second, in: [first], defaults: defaults)
+
+        let entries = try RecentConnectionStore.disableRemembering(first, defaults: defaults, using: keychain)
+
+        #expect(entries.map(\.id) == [second.id, first.id])
+        #expect(entries.first { $0.id == first.id }?.remember == false)
+        #expect(entries.first { $0.id == second.id }?.remember == true)
+        #expect(try RecentConnectionStore.load(defaults: defaults, using: keychain) == entries)
+    }
+
+    @Test func disableRememberingNeverInsertsAnUnsavedConnection() throws {
+        let defaults = try #require(UserDefaults(suiteName: "RecentConnectionTests.\(UUID())"))
+        defer { defaults.removeObject(forKey: RecentConnectionStore.storageKey) }
+        let keychain = FakeKeychainOperations()
+        let unsaved = RecentConnection(
+            host: "new.local", port: 22, username: "alice", authMode: "password", remember: false)
+
+        #expect(try RecentConnectionStore.disableRemembering(unsaved, defaults: defaults, using: keychain).isEmpty)
+        #expect(defaults.data(forKey: RecentConnectionStore.storageKey) == nil)
+    }
+
     @Test func emptyOrCorruptHistoryIsSafe() throws {
         let defaults = try #require(UserDefaults(suiteName: "RecentConnectionTests.\(UUID())"))
         defer { defaults.removeObject(forKey: RecentConnectionStore.storageKey) }

@@ -210,7 +210,9 @@ final class AppModel {
         guard let config = activeConfig else { return }
         guard !isDialing else { return }
         cancelReconnect()
+        #if DEBUG
         print("[HC] reconnecting to \(config.host):\(config.port)")
+        #endif
         connectionBanner = .connecting(message: "Reconnecting…")
         await connect(config: config)
     }

@@ -94,3 +94,24 @@ test('license notices are served as readable UTF-8 text', async () => {
     assert.equal(response.headers['Content-Type'], 'text/plain; charset=utf-8');
     assert.equal(response.body, 'License notices — copyright holders retain their rights.');
 });
+
+test('traversal attempts never escape the public directory or reach sibling prefixes', async () => {
+    const siblingDir = `${fixtureDir}-secret`;
+    fs.mkdirSync(siblingDir, { recursive: true });
+    fs.writeFileSync(path.join(siblingDir, 'secret.txt'), 'top secret');
+    try {
+        const siblingName = path.basename(siblingDir);
+        const attempts = [
+            `/../${siblingName}/secret.txt`,
+            `/..%2f${siblingName}%2fsecret.txt`,
+            `/%2e%2e/${siblingName}/secret.txt`,
+            `/about/../../${siblingName}/secret.txt`,
+        ];
+        for (const attempt of attempts) {
+            const response = await requestAsync(attempt);
+            assert.doesNotMatch(response.body, /top secret/, attempt);
+        }
+    } finally {
+        fs.rmSync(siblingDir, { recursive: true, force: true });
+    }
+});

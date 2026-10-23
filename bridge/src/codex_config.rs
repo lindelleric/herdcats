@@ -179,6 +179,64 @@ pub fn disable_daemon_in_dir_with_options(
     }
 }
 
+#[cfg(unix)]
+fn set_file_mode(file: &fs::File, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    file.set_permissions(fs::Permissions::from_mode(mode & 0o7777))
+}
+
+#[cfg(not(unix))]
+fn set_file_mode(_file: &fs::File, _mode: u32) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Atomically replaces `config_path` with `bytes`: writes a fresh `create_new`
+/// temp file in `codex_dir` (retrying on `AlreadyExists`), fsyncs, refuses to
+/// proceed if `config_path` has become a symlink, then renames over it.
+/// The temp file is removed on any failure.
+fn write_config_atomically(
+    codex_dir: &Path,
+    config_path: &Path,
+    bytes: &[u8],
+    mode: u32,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut counter = 0;
+    let (temp_path, mut file) = loop {
+        let temp_path = codex_dir.join(format!(
+            ".config.toml.tmp.herdcats-{}-{counter}",
+            std::process::id()
+        ));
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&temp_path) {
+            Ok(file) => break (temp_path, file),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => counter += 1,
+            Err(e) => return Err(e),
+        }
+    };
+
+    let res: std::io::Result<()> = (|| {
+        set_file_mode(&file, mode)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        if fs::symlink_metadata(config_path)?.file_type().is_symlink() {
+            return Err(std::io::Error::other("config path is a symlink"));
+        }
+        fs::rename(&temp_path, config_path)
+    })();
+    if res.is_err() {
+        drop(file);
+        let _ = fs::remove_file(&temp_path);
+    }
+    res
+}
+
 fn disable_daemon_in_dir_inner(codex_dir: &Path) -> CodexConfigResult {
     if !codex_dir.is_dir() {
         return CodexConfigResult::CodexNotInstalled;
@@ -281,83 +339,88 @@ fn disable_daemon_in_dir_inner(codex_dir: &Path) -> CodexConfigResult {
         }
     }
 
+    #[cfg(not(unix))]
+    let orig_mode = 0u32;
+
+    // Backup: `create_new` never follows or clobbers an existing path (including
+    // a dangling symlink planted at the backup name); retry on `AlreadyExists`.
     let timestamp = utc_timestamp_string();
-    let mut backup_name = format!("config.toml.bak.herdcats-{timestamp}");
-    let mut backup_path = codex_dir.join(&backup_name);
-    let mut counter = 1;
-    while backup_path.exists() {
-        backup_name = format!("config.toml.bak.herdcats-{timestamp}_{counter}");
-        backup_path = codex_dir.join(&backup_name);
-        counter += 1;
-    }
-
-    if fs::copy(&config_path, &backup_path).is_err() {
-        return CodexConfigResult::Error("write_failed");
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&backup_path, fs::Permissions::from_mode(orig_mode));
-    }
-
-    let temp_name = format!(".config.toml.tmp.herdcats-{}", std::process::id());
-    let temp_path = codex_dir.join(&temp_name);
-    let write_op: std::io::Result<()> = (|| {
-        use std::io::Write;
-        #[cfg(unix)]
-        let mut file = {
-            use std::os::unix::fs::OpenOptionsExt;
-            fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(orig_mode)
-                .open(&temp_path)?
+    let mut counter = 0;
+    let backup_name = loop {
+        let name = if counter == 0 {
+            format!("config.toml.bak.herdcats-{timestamp}")
+        } else {
+            format!("config.toml.bak.herdcats-{timestamp}_{counter}")
         };
-        #[cfg(not(unix))]
-        let mut file = fs::File::create(&temp_path)?;
-
-        file.write_all(doc.to_string().as_bytes())?;
-        file.sync_all()?;
-        drop(file);
-        fs::rename(&temp_path, &config_path)?;
+        let backup_path = codex_dir.join(&name);
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&config_path, fs::Permissions::from_mode(orig_mode));
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
         }
-        Ok(())
-    })();
+        match options.open(&backup_path) {
+            Ok(mut file) => {
+                let res: std::io::Result<()> = (|| {
+                    use std::io::Write;
+                    set_file_mode(&file, orig_mode)?;
+                    file.write_all(content.as_bytes())?;
+                    file.sync_all()
+                })();
+                if res.is_err() {
+                    drop(file);
+                    let _ = fs::remove_file(&backup_path);
+                    return CodexConfigResult::Error("write_failed");
+                }
+                break name;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => counter += 1,
+            Err(_) => return CodexConfigResult::Error("write_failed"),
+        }
+    };
 
-    if write_op.is_err() {
-        let _ = fs::remove_file(&temp_path);
+    if write_config_atomically(
+        codex_dir,
+        &config_path,
+        doc.to_string().as_bytes(),
+        orig_mode,
+    )
+    .is_err()
+    {
         return CodexConfigResult::Error("write_failed");
     }
+
+    // Verification failures restore the original bytes with the same atomic
+    // temp-file + symlink-check + rename path (never `fs::copy`).
+    let rollback = || {
+        let _ = write_config_atomically(codex_dir, &config_path, content.as_bytes(), orig_mode);
+    };
 
     let reparsed_content = match fs::read_to_string(&config_path) {
         Ok(c) => c,
         Err(_) => {
-            let _ = fs::copy(&backup_path, &config_path);
+            rollback();
             return CodexConfigResult::Error("verification_failed");
         }
     };
     let reparsed_doc: DocumentMut = match reparsed_content.parse() {
         Ok(d) => d,
         Err(_) => {
-            let _ = fs::copy(&backup_path, &config_path);
+            rollback();
             return CodexConfigResult::Error("verification_failed");
         }
     };
     let orig_doc: DocumentMut = match content.parse() {
         Ok(d) => d,
         Err(_) => {
-            let _ = fs::copy(&backup_path, &config_path);
+            rollback();
             return CodexConfigResult::Error("verification_failed");
         }
     };
 
     if !verify_config(&orig_doc, &reparsed_doc) {
-        let _ = fs::copy(&backup_path, &config_path);
+        rollback();
         return CodexConfigResult::Error("verification_failed");
     }
 

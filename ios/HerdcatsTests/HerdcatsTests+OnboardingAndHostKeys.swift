@@ -337,6 +337,43 @@ struct SSHHostKeyVerificationTests {
         #expect(model.hostKeyVerificationBlocked)
     }
 
+    @Test func replacementAndLoadEnforceThisDeviceOnlyAccessibility() async throws {
+        let service = "com.enchantinglabs.herdrcat.tests.hostkeys.\(UUID().uuidString)"
+        defer { SecItemDelete([kSecClass: kSecClassGenericPassword, kSecAttrService: service] as CFDictionary) }
+        let other = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        let account = SSHHostKeyStore.account(host: "server", port: 22)
+        func accessibility() throws -> String? {
+            var result: AnyObject?
+            let status = SecItemCopyMatching([
+                kSecClass: kSecClassGenericPassword, kSecAttrService: service, kSecAttrAccount: account,
+                kSecReturnAttributes: true, kSecMatchLimit: kSecMatchLimitOne,
+            ] as CFDictionary, &result)
+            try #require(status == errSecSuccess)
+            return (result as? [String: Any])?[kSecAttrAccessible as String] as? String
+        }
+        let weaker = kSecAttrAccessibleAfterFirstUnlock as String
+        let strict = kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String
+
+        // A pin saved by an older build under a weaker class is upgraded on load.
+        let legacyStatus = SecItemAdd([
+            kSecClass: kSecClassGenericPassword, kSecAttrService: service, kSecAttrAccount: account,
+            kSecValueData: Data(key.utf8), kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlock,
+        ] as CFDictionary, nil)
+        try #require(legacyStatus == errSecSuccess)
+        #expect(try accessibility() == weaker)
+        let store = SSHHostKeyStore(service: service)
+        #expect(try await store.load(host: "server", port: 22) == key)
+        #expect(try accessibility() == strict)
+
+        // Replacement keeps (and re-applies) the strict class.
+        let reset = SecItemUpdate(
+            [kSecClass: kSecClassGenericPassword, kSecAttrService: service, kSecAttrAccount: account] as CFDictionary,
+            [kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlock] as CFDictionary)
+        try #require(reset == errSecSuccess)
+        try await store.replace(other, replacing: key, host: "server", port: 22)
+        #expect(try accessibility() == strict)
+    }
+
     @Test func replacementPersistsAndRejectsStaleOrMissingPins() async throws {
         let service = "com.enchantinglabs.herdrcat.tests.hostkeys.\(UUID().uuidString)"
         defer { SecItemDelete([kSecClass: kSecClassGenericPassword, kSecAttrService: service] as CFDictionary) }

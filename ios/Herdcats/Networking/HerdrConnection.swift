@@ -285,7 +285,9 @@ actor HerdrConnection {
         disconnectHandler = { onDisconnect(capturedGeneration) }
 
         let authenticationMethod = try makeAuthenticationMethod(config)
+        #if DEBUG
         print("[HC] ssh dialing \(config.host):\(config.port)…")
+        #endif
 
         let trustedKey = try await SSHHostKeyStore.shared.load(host: config.host, port: config.port)
         guard slot.matches(attempt) else { throw HerdrError.notConnected }
@@ -304,7 +306,9 @@ actor HerdrConnection {
             Task.detached(priority: .utility) { try? await orphan.close() }
             throw HerdrError.notConnected
         }
+        #if DEBUG
         print("[HC] ssh handshake complete")
+        #endif
         client.onDisconnect { [weak self] in
             guard let self else { return }
             Task { await self.handleDisconnect(expected: capturedGeneration) }
@@ -315,16 +319,20 @@ actor HerdrConnection {
     private func makeAuthenticationMethod(_ config: ConnectionConfig) throws -> SSHAuthenticationMethod {
         switch config.auth {
         case let .password(password):
+            #if DEBUG
             print("[HC] authenticating as '\(config.username)' with password")
+            #endif
             return .passwordBased(username: config.username, password: password)
         case let .privateKey(pem, passphrase):
             let key = try Curve25519.Signing.PrivateKey(openSSHPEM: pem, passphrase: passphrase)
+            #if DEBUG
             let pubKeyString = OpenSSHEd25519.openSSHPublicKeyString(for: key.publicKey.rawRepresentation)
             let fingerprint = OpenSSHEd25519.fingerprint(for: key.publicKey.rawRepresentation)
             print(
                 "[HC] authenticating as '\(config.username)' with ed25519 key "
                     + "(fingerprint: \(fingerprint), pubkey: \(pubKeyString))"
             )
+            #endif
             return .ed25519(username: config.username, privateKey: key)
         }
     }

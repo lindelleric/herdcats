@@ -318,6 +318,87 @@ fn test_symlink_rejected() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn test_dangling_symlink_at_backup_path_is_not_followed() {
+    let temp = TempCodex::new("dangling-backup");
+    let config_path = temp.path.join("config.toml");
+    let original = "[features]\ndaemon_auto_start = true\n";
+    fs::write(&config_path, original).unwrap();
+
+    let outside = temp.path.join("outside-victim");
+    let timestamp = herdcats_bridge::codex_config::utc_timestamp_string();
+    let mut planted = vec![
+        temp.path
+            .join(format!("config.toml.bak.herdcats-{timestamp}")),
+    ];
+    for n in 1..=3 {
+        planted.push(
+            temp.path
+                .join(format!("config.toml.bak.herdcats-{timestamp}_{n}")),
+        );
+    }
+    for link in &planted {
+        std::os::unix::fs::symlink(&outside, link).unwrap();
+    }
+
+    let res = disable_daemon_in_dir(&temp.path);
+    let backup = match res {
+        CodexConfigResult::Changed {
+            backup: Some(ref b),
+            ..
+        } => b.clone(),
+        _ => panic!("Expected changed with backup, got {:?}", res),
+    };
+
+    assert!(
+        !outside.exists() && fs::symlink_metadata(&outside).is_err(),
+        "dangling backup symlink must not be followed"
+    );
+    let backup_path = temp.path.join(&backup);
+    let meta = fs::symlink_metadata(&backup_path).unwrap();
+    assert!(meta.is_file() && !meta.file_type().is_symlink());
+    assert_eq!(fs::read_to_string(&backup_path).unwrap(), original);
+    for link in &planted {
+        assert!(
+            fs::symlink_metadata(link).unwrap().file_type().is_symlink(),
+            "pre-existing symlinks must be left untouched"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_dangling_symlink_at_temp_path_is_not_followed() {
+    let temp = TempCodex::new("dangling-temp");
+    let config_path = temp.path.join("config.toml");
+    fs::write(&config_path, "[features]\ndaemon_auto_start = true\n").unwrap();
+
+    let outside = temp.path.join("outside-victim");
+    let temp_link = temp.path.join(format!(
+        ".config.toml.tmp.herdcats-{}-0",
+        std::process::id()
+    ));
+    std::os::unix::fs::symlink(&outside, &temp_link).unwrap();
+
+    let res = disable_daemon_in_dir(&temp.path);
+    assert!(matches!(res, CodexConfigResult::Changed { .. }), "{res:?}");
+    assert!(fs::symlink_metadata(&outside).is_err());
+    assert!(
+        fs::symlink_metadata(&temp_link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    let meta = fs::symlink_metadata(&config_path).unwrap();
+    assert!(meta.is_file() && !meta.file_type().is_symlink());
+    assert!(
+        fs::read_to_string(&config_path)
+            .unwrap()
+            .contains("daemon_auto_start = false")
+    );
+}
+
 #[test]
 fn test_backup_created_and_mode_preserved() {
     let temp = TempCodex::new("backup-mode");
