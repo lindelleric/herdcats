@@ -19,6 +19,10 @@ pub const CLAUDE_MODELS: &[(&str, &str)] = &[
     ("haiku", "Haiku"),
 ];
 
+/// What Claude Code runs when settings.json names no model; `/model default`
+/// selects it again.
+pub const CLAUDE_DEFAULT_MODEL: &str = "default";
+
 /// Current version behind each tier alias, so lists show "Opus 5.5" rather
 /// than a bare tier. Update with each Claude release; the live transcript id
 /// still wins for the model in use.
@@ -90,6 +94,9 @@ pub fn known_effort(agent: &str, effort: &str) -> bool {
 pub fn claude_model_label(id: &str) -> String {
     if let Some((_, label)) = CLAUDE_MODELS.iter().find(|(alias, _)| *alias == id) {
         return (*label).into();
+    }
+    if id == CLAUDE_DEFAULT_MODEL {
+        return "Default".into();
     }
     let body = match id.strip_prefix("claude-") {
         Some(body) => body,
@@ -221,11 +228,21 @@ fn claude_local_command_change(content: &Value) -> Option<LocalChange> {
         .next()?
         .trim();
     if let Some(rest) = body.strip_prefix("Set model to ") {
-        let tier = rest.split_whitespace().next()?.to_ascii_lowercase();
-        return CLAUDE_MODELS
-            .iter()
-            .find(|(alias, _)| *alias == tier)
-            .map(|(alias, _)| LocalChange::Model((*alias).to_owned()));
+        let mut words = rest.split_whitespace();
+        let tier = words.next()?.to_ascii_lowercase();
+        if tier == CLAUDE_DEFAULT_MODEL {
+            return Some(LocalChange::Model(tier));
+        }
+        let (alias, _) = CLAUDE_MODELS.iter().find(|(alias, _)| *alias == tier)?;
+        // Keep the confirmed version: "Haiku 4.5" is claude-haiku-4-5, not
+        // whatever `haiku` resolves to today.
+        let version = words.next().filter(|word| {
+            !word.is_empty() && word.split('.').all(|part| !part.is_empty() && part.len() <= 2 && part.chars().all(|c| c.is_ascii_digit()))
+        });
+        return Some(LocalChange::Model(match version {
+            Some(version) => format!("claude-{alias}-{}", version.replace('.', "-")),
+            None => (*alias).to_owned(),
+        }));
     }
     let level = body.strip_prefix("Set effort level to ")?.split_whitespace().next()?;
     known_effort("claude", level).then(|| LocalChange::Effort(level.to_owned()))
@@ -1469,18 +1486,50 @@ mod tests {
             serde_json::json!({"type":"assistant","message":{"model":"claude-opus-5-5"},"effort":"medium"}),
             stdout("Set model to Haiku 5.5 and saved as your default for new sessions"),
         ];
-        assert_eq!(claude_scan(&records), Some(("haiku".into(), Some("medium".into()))));
+        assert_eq!(
+            claude_scan(&records),
+            Some(("claude-haiku-5-5".into(), Some("medium".into())))
+        );
         records.push(stdout(
             "Set effort level to low (saved as your default for new sessions): Quick",
         ));
-        assert_eq!(claude_scan(&records), Some(("haiku".into(), Some("low".into()))));
+        assert_eq!(
+            claude_scan(&records),
+            Some(("claude-haiku-5-5".into(), Some("low".into())))
+        );
         records.push(stdout("Kept effort level as low"));
-        assert_eq!(claude_scan(&records), Some(("haiku".into(), Some("low".into()))));
+        assert_eq!(
+            claude_scan(&records),
+            Some(("claude-haiku-5-5".into(), Some("low".into())))
+        );
         records.push(serde_json::json!({"type":"assistant","message":{"model":"claude-haiku-5-5"},"effort":"low"}));
         assert_eq!(
             claude_scan(&records),
             Some(("claude-haiku-5-5".into(), Some("low".into())))
         );
+    }
+
+    #[test]
+    fn claude_local_model_confirmations_keep_their_version() {
+        let change = |text: &str| {
+            claude_local_command_change(&serde_json::json!(format!(
+                "<local-command-stdout>{text}</local-command-stdout>"
+            )))
+        };
+        assert!(matches!(
+            change("Set model to Haiku 4.5 and saved as your default for new sessions"),
+            Some(LocalChange::Model(id)) if id == "claude-haiku-4-5"
+        ));
+        assert!(matches!(
+            change("Set model to Default (recommended)"),
+            Some(LocalChange::Model(id)) if id == "default"
+        ));
+        assert!(matches!(
+            change("Set model to Opus"),
+            Some(LocalChange::Model(id)) if id == "opus"
+        ));
+        assert_eq!(claude_display_label("claude-haiku-4-5"), "Haiku 4.5");
+        assert_eq!(claude_display_label("default"), "Default");
     }
 
     #[test]

@@ -1255,6 +1255,42 @@ fn model_status_lists_an_older_dated_claude_id_as_its_own_current_row() {
 }
 
 #[test]
+fn model_status_finds_a_latest_record_larger_than_the_tail_window() {
+    let (mut service, root, _, path) = model_fixture_claude();
+    let mut text = fs::read_to_string(&path).unwrap();
+    // One assistant reply over 4 MiB, running a different model.
+    text.push_str(&json!({"type":"assistant","uuid":"big","sessionId":SESSION,
+        "message":{"model":"claude-sonnet-5-5","role":"assistant","content":"x".repeat(5 * 1024 * 1024)},
+        "effort":"high"}).to_string());
+    text.push('\n');
+    fs::write(&path, text).unwrap();
+    let reply = model_request(&mut service, "model.status", json!({}));
+    let result = &result_frame(&reply)["result"];
+    assert_eq!(result["model"]["id"], "claude-sonnet-5-5", "{result:?}");
+    assert_eq!(result["effort"], "high");
+    cleanup(&service, root);
+}
+
+#[test]
+fn model_status_reports_claudes_default_model_and_its_effort_without_a_configured_model() {
+    let (mut service, root, _, path) = model_fixture_claude();
+    // A fresh session: no assistant records yet.
+    let text: String = fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .filter(|line| !line.contains("claude-opus-5-5"))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    fs::write(&path, text).unwrap();
+    fs::write(root.join("settings.json"), json!({"effortLevel":"high"}).to_string()).unwrap();
+    let reply = model_request(&mut service, "model.status", json!({}));
+    let result = &result_frame(&reply)["result"];
+    assert_eq!(result["model"], json!({"id":"default","label":"Default"}), "{result:?}");
+    assert_eq!(result["effort"], "high");
+    cleanup(&service, root);
+}
+
+#[test]
 fn model_set_claude_treats_the_active_alias_as_unchanged() {
     // The session runs claude-opus-5-5; the checked "opus" row plus a new
     // effort sends only /effort, never /model.

@@ -941,7 +941,12 @@ impl Service {
             "claude" => {
                 let text = std::fs::read_to_string(self.claude_settings_path.as_ref()?).ok()?;
                 let settings = model_control::parse_claude_settings(&text);
-                let model = settings.model.clone()?;
+                // No configured model means Claude's default; its effort can
+                // still be set and must not be lost with the model.
+                let model = settings
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| model_control::CLAUDE_DEFAULT_MODEL.to_owned());
                 let effort = settings.effort_for(&model).map(str::to_owned);
                 Some((model, effort))
             }
@@ -965,13 +970,26 @@ impl Service {
         {
             return Some(pair);
         }
-        let records = crate::follower::read_tail(file).ok()?;
-        match agent {
-            "claude" => model_control::claude_scan(&records),
-            "codex" => model_control::codex_scan(&records),
+        let scan = |records: &[Value]| match agent {
+            "claude" => model_control::claude_scan(records),
+            "codex" => model_control::codex_scan(records),
             _ => None,
-        }
-        .or_else(|| self.model_scan_fallback(agent))
+        };
+        let wide = file
+            .try_clone()
+            .ok()
+            .filter(|file| file.metadata().is_ok_and(|meta| meta.len() > 4 * 1024 * 1024));
+        let records = crate::follower::read_tail(file).ok()?;
+        // A latest record larger than the usual tail (a huge assistant reply,
+        // or a turn_context pushed out by one) needs the follower's full
+        // bounded window before falling back to settings.
+        scan(&records)
+            .or_else(|| {
+                let records =
+                    crate::follower::read_tail_within(wide?, crate::follower::MAX_SOURCE).ok()?;
+                scan(&records)
+            })
+            .or_else(|| self.model_scan_fallback(agent))
     }
     fn model_scan_current(&mut self, agent: &str, pane: &Pane, file: std::fs::File) -> ModelPair {
         let scanned = self.model_scan_raw(agent, pane, file);
