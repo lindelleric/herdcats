@@ -1336,39 +1336,52 @@ impl Service {
     /// Re-reads the picker and confirms the expected screen with its cursor on
     /// `target` (or on any row when `target` is None).
     fn verify_cursor(&self, pane_id: &str, expected: &PickerScreen, target: Option<usize>) -> bool {
-        let Ok(screen) = self.client.read_visible(pane_id) else {
-            return false;
-        };
-        let parsed = model_control::parse_codex_screen(&screen);
-        match (expected, &parsed) {
-            (PickerScreen::ModelList(_), PickerScreen::ModelList(_))
-            | (PickerScreen::Advanced(_), PickerScreen::Advanced(_)) => {}
-            (
-                PickerScreen::EffortList {
-                    model_label: expected,
-                    ..
-                },
-                PickerScreen::EffortList {
-                    model_label: actual,
-                    ..
-                },
-            ) if expected == actual => {}
-            _ => return false,
-        }
-        if !expected
-            .rows()
-            .iter()
-            .zip(parsed.rows())
-            .all(|(a, b)| a.number == b.number && a.label == b.label)
-            || expected.rows().len() != parsed.rows().len()
-        {
-            return false;
-        }
-        match target {
-            Some(target) => parsed.cursor() == Some(target),
-            None => parsed.cursor().is_some(),
+        let deadline = Instant::now() + Duration::from_millis(1500);
+        loop {
+            let matches = || -> bool {
+                let Ok(screen) = self.client.read_visible(pane_id) else {
+                    return false;
+                };
+                let parsed = model_control::parse_codex_screen(&screen);
+                match (expected, &parsed) {
+                    (PickerScreen::ModelList(_), PickerScreen::ModelList(_))
+                    | (PickerScreen::Advanced(_), PickerScreen::Advanced(_)) => {}
+                    (
+                        PickerScreen::EffortList {
+                            model_label: expected,
+                            ..
+                        },
+                        PickerScreen::EffortList {
+                            model_label: actual,
+                            ..
+                        },
+                    ) if model_control::picker_label(expected)
+                        .eq_ignore_ascii_case(model_control::picker_label(actual)) => {}
+                    _ => return false,
+                }
+                if !expected.rows().iter().zip(parsed.rows()).all(|(a, b)| {
+                    a.number == b.number
+                        && model_control::picker_label(&a.label)
+                            .eq_ignore_ascii_case(model_control::picker_label(&b.label))
+                }) || expected.rows().len() != parsed.rows().len()
+                {
+                    return false;
+                }
+                match target {
+                    Some(target) => parsed.cursor() == Some(target),
+                    None => parsed.cursor().is_some(),
+                }
+            };
+            if matches() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(150));
         }
     }
+
     fn set_codex_model(
         &self,
         identity: &Identity,
@@ -1424,19 +1437,13 @@ impl Service {
                 |screen| matches!(screen, PickerScreen::ModelList(rows) if !rows.is_empty()),
             )
             .ok_or_else(mismatch)?;
-        let PickerScreen::ModelList(rows) = &model_list else {
+        let PickerScreen::ModelList(_) = &model_list else {
             return Err(mismatch());
         };
         // Enter on the model row only advances to the effort step; it never
         // persists anything (verified against the isolated picker).
-        let wanted = [target_label.clone(), format!("{target_label} (current)")];
-        let target_row = rows
-            .iter()
-            .position(|row| {
-                wanted
-                    .iter()
-                    .any(|label| row.label.eq_ignore_ascii_case(label))
-            })
+        let target_row = model_list
+            .row_for_label(&target_label)
             .ok_or_else(mismatch)?;
         walk(&model_list, target_row)?;
         send(&["enter"])?;
@@ -1444,7 +1451,7 @@ impl Service {
         let effort_screen = self
             .wait_codex_kind(pane_id, |screen| {
                 matches!(screen, PickerScreen::EffortList { model_label, rows }
-                    if !rows.is_empty() && model_label.eq_ignore_ascii_case(&target_label))
+                    if !rows.is_empty() && model_control::picker_label(model_label).eq_ignore_ascii_case(model_control::picker_label(&target_label)))
             })
             .ok_or_else(mismatch)?;
         let PickerScreen::EffortList { rows, .. } = &effort_screen else {
@@ -1462,7 +1469,9 @@ impl Service {
             if row_label.starts_with("More reasoning") {
                 let index = rows
                     .iter()
-                    .position(|row| row.label.starts_with("More reasoning"))
+                    .position(|row| {
+                        model_control::picker_label(&row.label).starts_with("More reasoning")
+                    })
                     .ok_or_else(mismatch)?;
                 walk(&effort_screen, index)?;
                 send(&["enter"])?;
@@ -1472,19 +1481,15 @@ impl Service {
                         |screen| matches!(screen, PickerScreen::Advanced(rows) if !rows.is_empty()),
                     )
                     .ok_or_else(mismatch)?;
-                let PickerScreen::Advanced(rows) = &advanced else {
+                let PickerScreen::Advanced(_) = &advanced else {
                     return Err(mismatch());
                 };
                 let label = model_control::effort_label(&effort);
-                let index = rows
-                    .iter()
-                    .position(|row| row.label.eq_ignore_ascii_case(label))
-                    .ok_or_else(mismatch)?;
+                let index = advanced.row_for_label(label).ok_or_else(mismatch)?;
                 walk(&advanced, index)?;
             } else {
-                let index = rows
-                    .iter()
-                    .position(|row| row.label.eq_ignore_ascii_case(row_label))
+                let index = effort_screen
+                    .row_for_label(row_label)
                     .ok_or_else(mismatch)?;
                 walk(&effort_screen, index)?;
             }

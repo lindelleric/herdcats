@@ -324,6 +324,21 @@ pub enum PickerScreen {
     Composer,
 }
 
+/// Codex decorates any picker row with these status suffixes in either order.
+/// Preserve the displayed label in parsed rows, but compare only its base text.
+pub fn picker_label(mut label: &str) -> &str {
+    label = label.trim();
+    loop {
+        match label
+            .strip_suffix(" (default)")
+            .or_else(|| label.strip_suffix(" (current)"))
+        {
+            Some(base) => label = base.trim_end(),
+            None => return label,
+        }
+    }
+}
+
 fn parse_rows(lines: &[&str]) -> Vec<PickerRow> {
     let mut rows = Vec::new();
     for line in lines {
@@ -356,6 +371,7 @@ fn parse_rows(lines: &[&str]) -> Vec<PickerRow> {
 pub fn parse_codex_screen(screen: &str) -> PickerScreen {
     let lines: Vec<&str> = screen.lines().collect();
     for (index, line) in lines.iter().enumerate() {
+        let line = line.trim();
         if line.contains("Select Model and Effort") {
             return PickerScreen::ModelList(parse_rows(&lines[index + 1..]));
         }
@@ -379,9 +395,13 @@ impl PickerScreen {
     /// The model list shows "(current)" on the active model's row.
     pub fn current_model_row(&self) -> Option<&PickerRow> {
         match self {
-            PickerScreen::ModelList(rows) => {
-                rows.iter().find(|row| row.label.ends_with("(current)"))
-            }
+            PickerScreen::ModelList(rows) => rows.iter().find(|row| {
+                row.label
+                    .split_whitespace()
+                    .rev()
+                    .take_while(|part| matches!(*part, "(current)" | "(default)"))
+                    .any(|part| part == "(current)")
+            }),
             _ => None,
         }
     }
@@ -417,7 +437,7 @@ impl PickerScreen {
         Some(plan)
     }
     pub fn row_for_label(&self, label: &str) -> Option<usize> {
-        let normalize = |text: &str| text.trim().to_ascii_lowercase();
+        let normalize = |text: &str| picker_label(text).to_ascii_lowercase();
         let wanted = normalize(label);
         self.rows()
             .iter()
@@ -676,6 +696,52 @@ mod tests {
         assert_eq!(models[1].efforts, vec!["low", "high"]);
         assert!(parse_codex_catalog("{").is_empty());
         assert!(parse_codex_catalog(r#"{"models":[]}"#).is_empty());
+    }
+
+    #[test]
+    fn real_codex_picker_screens_parse_indented_titles_and_status_suffixes() {
+        let models = parse_codex_screen(include_str!("fixtures/codex-model-list.txt"));
+        assert!(matches!(models, PickerScreen::ModelList(_)));
+        assert_eq!(models.rows().len(), 7);
+        assert_eq!(models.cursor(), Some(0));
+        assert_eq!(models.row_for_label("GPT-6.1-Sol"), Some(0));
+        assert_eq!(models.current_model_row().map(|row| row.number), Some(1));
+        let efforts = parse_codex_screen(include_str!("fixtures/codex-effort-list.txt"));
+        assert!(
+            matches!(&efforts, PickerScreen::EffortList { model_label, .. } if model_label == "GPT-6.1-Sol")
+        );
+        assert_eq!(efforts.rows().len(), 5);
+        assert_eq!(efforts.cursor(), Some(0));
+        assert_eq!(efforts.row_for_label("Low"), Some(0));
+        assert_eq!(efforts.row_for_label("Medium"), Some(1));
+        assert_eq!(efforts.arrow_plan(1), Some(vec!["down"]));
+    }
+
+    #[test]
+    fn picker_labels_ignore_status_suffixes_in_either_order_on_any_row() {
+        for suffix in [
+            " (default)",
+            " (current)",
+            " (default) (current)",
+            " (current) (default)",
+        ] {
+            let label = format!("GPT-6.1-Sol{suffix}");
+            assert_eq!(picker_label(&label), "GPT-6.1-Sol");
+            let models = parse_codex_screen(&format!(
+                "Select Model and Effort\n› 1. {label}  Description"
+            ));
+            assert_eq!(models.row_for_label("GPT-6.1-Sol"), Some(0));
+            assert_eq!(
+                models.current_model_row().is_some(),
+                suffix.contains("(current)")
+            );
+            let advanced = parse_codex_screen(&format!(
+                "Advanced Reasoning\n  1. Max{suffix}  Description\n› 2. Ultra{suffix}  Description"
+            ));
+            assert_eq!(advanced.row_for_label("Max"), Some(0));
+            assert_eq!(advanced.row_for_label("Ultra"), Some(1));
+        }
+        assert_eq!(picker_label("A (current) model"), "A (current) model");
     }
 
     #[test]

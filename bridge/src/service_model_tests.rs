@@ -1034,3 +1034,54 @@ fn model_override_resets_with_occupant() {
     assert!(service.watch.as_ref().unwrap().model_override.is_none());
     cleanup(&service, root);
 }
+
+#[test]
+fn model_set_codex_waits_for_delayed_cursor_on_real_picker_screens() {
+    let (mut service, root, herdr, _) = model_fixture_codex();
+    let models = include_str!("fixtures/codex-model-list.txt").to_owned();
+    let before = include_str!("fixtures/codex-effort-list.txt").to_owned();
+    let after = before
+        .replacen("› 1.", "  1.", 1)
+        .replacen("  2. Medium", "› 2. Medium", 1);
+    script_model(
+        &herdr,
+        vec![
+            models,
+            before.clone(),
+            after.clone(),
+            codex_composer_toast("gpt-6.1-sol", "medium"),
+        ],
+    );
+    // After Down, pane.read first sees the old render, then the moved cursor.
+    herdr.lock().unwrap().screens_after_input[2] = [before, after].into();
+    let reply = model_request(
+        &mut service,
+        "model.set",
+        json!({
+            "effort":"medium", "expect":expect_pair("gpt-6.1-sol", Some("low"))
+        }),
+    );
+    let result = &result_frame(&reply)["result"];
+    assert_eq!(result["confirmed"], true);
+    assert_eq!(result["applied"]["effort"], "medium");
+    assert_eq!(
+        herdr.lock().unwrap().inputs,
+        vec![
+            prompt_input("/model"),
+            model_keys_input(&["enter"]),
+            model_keys_input(&["down"]),
+            model_keys_input(&["s"])
+        ]
+    );
+    cleanup(&service, root);
+}
+
+#[test]
+fn model_cursor_verification_ignores_changed_status_suffix_order() {
+    let (service, root, herdr, _) = model_fixture_codex();
+    let before = include_str!("fixtures/codex-effort-list.txt");
+    let expected = model_control::parse_codex_screen(before);
+    herdr.lock().unwrap().screen = before.replace("(default) (current)", "(current) (default)");
+    assert!(service.verify_cursor("w1:p1", &expected, Some(0)));
+    cleanup(&service, root);
+}
