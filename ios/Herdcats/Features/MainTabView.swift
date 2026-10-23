@@ -426,9 +426,8 @@ struct AgentListRow: View {
     private var agent: AgentEntry { item.agent }
 
     var body: some View {
-        HStack(alignment: .top, spacing: QuietListMetrics.columnSpacing) {
+        HStack(alignment: .listTitleCenter, spacing: QuietListMetrics.columnSpacing) {
             StatusDot(status: item.status)
-                .padding(.top, 3)
                 .accessibilityLabel(item.status.label)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -444,6 +443,7 @@ struct AgentListRow: View {
                     Spacer(minLength: 8)
                     RowTimestamp(date: lastUpdated)
                 }
+                .alignmentGuide(.listTitleCenter) { $0[VerticalAlignment.center] }
                 HStack(spacing: 6) {
                     AgentKindIcon(kind: agent.agent, size: 13)
                         .accessibilityElement()
