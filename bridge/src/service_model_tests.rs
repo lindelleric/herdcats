@@ -554,6 +554,49 @@ fn model_set_codex_walks_picker_with_arrows_and_session_key() {
 }
 
 #[test]
+fn model_set_codex_model_only_drops_an_effort_the_target_does_not_offer() {
+    // Current effort xhigh; GPT-6-Astra offers only low/medium/high, so the
+    // model switch keeps Astra's default row instead of failing on xhigh.
+    let (mut service, root, herdr, path) = model_fixture_codex();
+    let text = fs::read_to_string(&path).unwrap().replace(
+        r#""effort":"low""#,
+        r#""effort":"xhigh""#,
+    );
+    fs::write(&path, text).unwrap();
+    herdr.lock().unwrap().screen =
+        "› Ask Codex to do anything\nGPT-6.1-Sol Extra high · Context 100% left".into();
+    let astra = |cursor| codex_effort_list_screen(cursor).replace("GPT-6-Luna", "GPT-6-Astra");
+    script_model(
+        &herdr,
+        vec![
+            codex_model_list_screen(1),
+            codex_model_list_screen(2),
+            astra(2),
+            codex_composer_toast("gpt-6-astra", "medium"),
+        ],
+    );
+    let reply = model_request(
+        &mut service,
+        "model.set",
+        json!({"model":"gpt-6-astra","expect":expect_pair("gpt-6.1-sol", Some("xhigh"))}),
+    );
+    let result = result_frame(&reply)["result"].clone();
+    assert_eq!(result["confirmed"], true, "{reply:?}");
+    assert_eq!(result["applied"]["model"]["id"], "gpt-6-astra");
+    assert_eq!(result["applied"]["effort"], "medium");
+    assert_eq!(
+        herdr.lock().unwrap().inputs,
+        vec![
+            prompt_input("/model"),
+            model_keys_input(&["down"]),
+            model_keys_input(&["enter"]),
+            model_keys_input(&["s"]),
+        ]
+    );
+    cleanup(&service, root);
+}
+
+#[test]
 fn model_set_codex_advanced_reasoning_opens_nested_entry() {
     let (mut service, root, herdr, _) = model_fixture_codex();
     script_model(

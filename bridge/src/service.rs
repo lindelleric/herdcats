@@ -1580,12 +1580,21 @@ impl Service {
             return Err(mismatch());
         };
 
-        // Re-picking the current effort still applies cleanly; a missing
-        // effort keeps the model's default cursor position.
-        if let Some(effort) = target_effort
-            .map(str::to_owned)
-            .or_else(|| current.as_ref().and_then(|(_, effort)| effort.clone()))
-        {
+        // Re-picking the current effort still applies cleanly, but only when
+        // the target model offers it; otherwise the target's default cursor
+        // position applies (a model switch must not fail on a carried effort).
+        let carried = current
+            .as_ref()
+            .and_then(|(_, effort)| effort.clone())
+            .filter(|effort| match catalog.iter().find(|model| model.slug == target_slug) {
+                Some(model) => model.efforts.iter().any(|offered| offered == effort),
+                None => model_control::codex_effort_row_label(effort).is_some_and(|label| {
+                    rows.iter().any(|row| {
+                        model_control::picker_label(&row.label).starts_with(label)
+                    })
+                }),
+            });
+        if let Some(effort) = target_effort.map(str::to_owned).or(carried) {
             let row_label =
                 model_control::codex_effort_row_label(&effort).ok_or("invalid_effort")?;
             if row_label.starts_with("More reasoning") {

@@ -29,6 +29,14 @@ const CLAUDE_ALIAS_VERSIONS: &[(&str, &str)] = &[
     ("haiku", "5.5"),
 ];
 
+/// Full id a tier alias resolves to ("sonnet" → "claude-sonnet-5-5").
+pub fn claude_alias_id(alias: &str) -> Option<String> {
+    CLAUDE_ALIAS_VERSIONS
+        .iter()
+        .find(|(name, _)| *name == alias)
+        .map(|(name, version)| format!("claude-{name}-{}", version.replace('.', "-")))
+}
+
 /// Label shown to people: a versioned name for tier aliases ("Opus 5.5") and
 /// the derived name for concrete ids. Dialog matching keeps using the bare
 /// tier from `claude_model_label`, so a newer CLI version still matches.
@@ -127,11 +135,13 @@ pub fn codex_slug_label(slug: &str) -> String {
 }
 
 /// Last assistant `message.model` plus the effort in effect, from a tail of
-/// Claude transcript records. Effort chain: the assistant record's `effort`
-/// field, else the last `api-request`'s `params.output_config.effort`.
+/// Claude transcript records. Effort chain: the latest assistant record's
+/// `effort` field, else the latest `api-request`'s
+/// `params.output_config.effort` (older transcripts omit the former).
 pub fn claude_scan(records: &[Value]) -> Option<(String, Option<String>)> {
     let mut model = None;
-    let mut effort = None;
+    let mut assistant_effort = None;
+    let mut request_effort = None;
     for record in records {
         match record["type"].as_str() {
             Some("assistant") => {
@@ -140,9 +150,12 @@ pub fn claude_scan(records: &[Value]) -> Option<(String, Option<String>)> {
                     .filter(|s| !s.is_empty())
                 {
                     model = Some(id.to_owned());
-                    if let Some(level) = record["effort"].as_str().filter(|s| !s.is_empty()) {
-                        effort = Some(level.to_owned());
-                    }
+                    // Each assistant record replaces the previous one's effort,
+                    // so a record without the field defers to the requests.
+                    assistant_effort = record["effort"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned);
                 }
             }
             Some("api-request") => {
@@ -150,13 +163,13 @@ pub fn claude_scan(records: &[Value]) -> Option<(String, Option<String>)> {
                     .as_str()
                     .filter(|s| !s.is_empty())
                 {
-                    effort.get_or_insert_with(|| level.to_owned());
+                    request_effort = Some(level.to_owned());
                 }
             }
             _ => {}
         }
     }
-    model.map(|id| (id, effort))
+    model.map(|id| (id, assistant_effort.or(request_effort)))
 }
 
 /// The subset of `~/.claude/settings.json` model control needs. `model` is the
@@ -210,10 +223,13 @@ pub fn parse_claude_settings(text: &str) -> ClaudeSettings {
 }
 
 impl ClaudeSettings {
+    /// `model` may be a tier alias (`sonnet`): `modelSettings` is keyed by full
+    /// ids, so an alias also matches the id it currently resolves to.
     pub fn effort_for(&self, model: &str) -> Option<&str> {
+        let resolved = claude_alias_id(model);
         self.model_settings
             .iter()
-            .find(|(id, _)| id == model)
+            .find(|(id, _)| id == model || Some(id.as_str()) == resolved.as_deref())
             .map(|(_, effort)| effort.as_str())
             .or(self.effort_level.as_deref())
     }
@@ -739,6 +755,8 @@ mod tests {
     fn claude_labels_come_from_the_static_table_or_id_shape() {
         assert_eq!(claude_model_label("opus"), "Opus");
         assert_eq!(claude_display_label("opus"), "Opus 5.5");
+        assert_eq!(claude_alias_id("sonnet").as_deref(), Some("claude-sonnet-5-5"));
+        assert_eq!(claude_alias_id("claude-sonnet-5-5"), None);
         assert_eq!(claude_display_label("fable"), "Fable 5.1");
         assert_eq!(claude_display_label("claude-sonnet-5-5"), "Sonnet 5.5");
         assert_eq!(claude_model_label("claude-opus-5-5"), "Opus 5.5");
@@ -1231,4 +1249,29 @@ mod tests {
         );
         assert!(valid_set_target("codex", Some("gpt-6-luna"), Some("ultra")).is_ok());
     }
+
+    #[test]
+    fn claude_scan_uses_latest_request_effort_when_records_omit_it() {
+        let records = vec![
+            serde_json::json!({"type":"api-request","params":{"output_config":{"effort":"low"}}}),
+            serde_json::json!({"type":"assistant","message":{"model":"claude-opus-5-5"}}),
+            serde_json::json!({"type":"api-request","params":{"output_config":{"effort":"high"}}}),
+            serde_json::json!({"type":"assistant","message":{"model":"claude-opus-5-5"}}),
+        ];
+        assert_eq!(
+            claude_scan(&records),
+            Some(("claude-opus-5-5".into(), Some("high".into())))
+        );
+    }
+
+    #[test]
+    fn claude_settings_effort_resolves_alias_to_full_id() {
+        let settings = parse_claude_settings(
+            r#"{"model":"sonnet","modelSettings":{"claude-sonnet-5-5":{"effortLevel":"xhigh"}}}"#,
+        );
+        assert_eq!(settings.effort_for("sonnet"), Some("xhigh"));
+        assert_eq!(settings.effort_for("claude-sonnet-5-5"), Some("xhigh"));
+        assert_eq!(settings.effort_for("opus"), None);
+    }
+
 }
