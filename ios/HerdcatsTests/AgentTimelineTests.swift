@@ -397,6 +397,7 @@ struct TimelineEntryInterruptionTests {
         #expect(state.isVisible)
         try state.apply(payload(["applied": ["model": ["id": "sonnet", "label": "Sonnet 5.5"], "effort": NSNull()], "confirmed": true]))
         #expect(state.efforts.isEmpty)
+        #expect(state.effortLabel == "Default")
         #expect(state.label == "Sonnet 5.5")
         state.reset()
         #expect(!state.isVisible)
@@ -407,7 +408,7 @@ struct TimelineEntryInterruptionTests {
         for (code, message) in [
             ("agent_busy", "The agent is working — try again when it's idle."),
             ("composer_not_empty", "Clear the agent's input box at the desk first."),
-            ("stale", "Couldn't change the model. Try again."),
+            ("stale", "Something changed at the desk. Check the current model and try again."),
             ("expect_mismatch", "Couldn't change the model. Try again.")
         ] {
             try state.apply(payload(["applied": ["model": ["id": "sonnet", "label": "Sonnet 5.5"], "effort": "medium"],

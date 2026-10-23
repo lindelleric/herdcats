@@ -678,90 +678,106 @@ struct PaneVoiceComposeBar: View {
     }
 
     private var messageBubble: some View {
-        HStack(alignment: .bottom, spacing: 4) {
-            // Editable 1-to-6-row field
-            TextField(placeholder, text: $draft, axis: .vertical)
-                .font(.jost(.subheadline))
-                .lineLimit(1...6)
-                .focused($isComposeFieldFocused)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled(false)
-                .background(ComposeTextInputMarker())
-                .disabled(isSending)
-                .submitLabel(.send)
-                .onSubmit {
-                    guard canSend && !isSending else { return }
-                    onSend()
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 8)
-                .accessibilityLabel("Message text")
-                .accessibilityIdentifier(composeFieldIdentifier)
-
-            if let modelControl, modelControl.isVisible {
-                Button { showsModelConfiguration = true } label: {
-                    HStack(spacing: 3) {
-                        Text(modelControl.label).lineLimit(1).truncationMode(.tail)
-                        Image(systemName: "chevron.down").font(.jost(.caption2)).fixedSize()
-                    }
-                    .font(.jost(.caption))
-                    .foregroundStyle(Theme.accent)
-                    .frame(maxWidth: 140, minHeight: 36)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .layoutPriority(-1)
-                .accessibilityLabel(modelControl.accessibilityLabel)
-                .accessibilityHint("Configure model and effort")
-                .accessibilityIdentifier("timeline-model-control")
-            }
-
-            // Voice button inside bubble, immediately left of Send
-            Button {
-                HapticFeedback.impact(.light)
-                onStartVoice()
-            } label: {
-                Image(systemName: "mic.fill")
-                    .font(.jost(18))
-                    .foregroundStyle(Color.secondary)
-                    .frame(width: 32, height: 36)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(isSending)
-            .accessibilityLabel("Dictate message")
-            .accessibilityIdentifier("pane-compose-voice-button")
-            .fixedSize()
-
-            // Send button: visible when text is present or when sending; shows spinner during send
-            if showsSendButton {
-                Button {
-                    HapticFeedback.impact(.light)
-                    onSend()
-                } label: {
-                    Group {
-                        if isSending {
-                            CircularArcSpinner(size: 18)
-                        } else {
-                            Image(systemName: "arrow.up.circle.fill")
-                                .font(.jost(26))
-                                .foregroundStyle(canSend ? Theme.accent : Color.secondary)
-                        }
-                    }
-                    .frame(width: 34, height: 36)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(!canSend || isSending)
-                .accessibilityLabel("Send Message")
-                .accessibilityIdentifier(composeSendIdentifier)
-                .fixedSize()
-                .transition(.scale(scale: 0.85).combined(with: .opacity))
+        // One layout container keeps the field's identity (and keyboard focus)
+        // when the model row appears after the bridge connects.
+        let showsModelRow = modelControl?.isVisible == true
+        let layout = showsModelRow
+            ? AnyLayout(VStackLayout(spacing: 0))
+            : AnyLayout(HStackLayout(alignment: .bottom, spacing: 4))
+        return layout {
+            messageField
+            HStack(alignment: .bottom, spacing: 4) {
+                if showsModelRow { Spacer(minLength: 0) }
+                messageActions
             }
         }
         .padding(.trailing, 4)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("pane-compose-bubble")
+    }
+
+    private var messageField: some View {
+        // Editable 1-to-6-row field
+        TextField(placeholder, text: $draft, axis: .vertical)
+            .font(.jost(.subheadline))
+            .lineLimit(1...6)
+            .focused($isComposeFieldFocused)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled(false)
+            .background(ComposeTextInputMarker())
+            .disabled(isSending)
+            .submitLabel(.send)
+            .onSubmit {
+                guard canSend && !isSending else { return }
+                onSend()
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 8)
+            .accessibilityLabel("Message text")
+            .accessibilityIdentifier(composeFieldIdentifier)
+    }
+
+    @ViewBuilder private var messageActions: some View {
+        if let modelControl, modelControl.isVisible {
+            Button { showsModelConfiguration = true } label: {
+                HStack(spacing: 3) {
+                    Text(modelControl.label).lineLimit(1).truncationMode(.tail)
+                    Image(systemName: "chevron.down").font(.jost(.caption2)).fixedSize()
+                }
+                .font(.jost(.caption))
+                .foregroundStyle(Theme.accent)
+                .frame(maxWidth: 140, minHeight: 36)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .layoutPriority(-1)
+            .accessibilityLabel(modelControl.accessibilityLabel)
+            .accessibilityHint("Configure model and effort")
+            .accessibilityIdentifier("timeline-model-control")
+        }
+
+        // Voice button inside bubble, immediately left of Send
+        Button {
+            HapticFeedback.impact(.light)
+            onStartVoice()
+        } label: {
+            Image(systemName: "mic.fill")
+                .font(.jost(18))
+                .foregroundStyle(Color.secondary)
+                .frame(width: 32, height: 36)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isSending)
+        .accessibilityLabel("Dictate message")
+        .accessibilityIdentifier("pane-compose-voice-button")
+        .fixedSize()
+
+        // Send button: visible when text is present or when sending; shows spinner during send
+        if showsSendButton {
+            Button {
+                HapticFeedback.impact(.light)
+                onSend()
+            } label: {
+                Group {
+                    if isSending {
+                        CircularArcSpinner(size: 18)
+                    } else {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.jost(26))
+                            .foregroundStyle(canSend ? Theme.accent : Color.secondary)
+                    }
+                }
+                .frame(width: 34, height: 36)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!canSend || isSending)
+            .accessibilityLabel("Send Message")
+            .accessibilityIdentifier(composeSendIdentifier)
+            .fixedSize()
+            .transition(.scale(scale: 0.85).combined(with: .opacity))
+        }
     }
 
     private func attachmentChip(_ attachment: PaneAttachmentInfo) -> some View {
@@ -827,7 +843,7 @@ private struct AgentModelConfigurationSheet: View {
                     }
                     if !state.efforts.isEmpty {
                         NavigationLink(value: "Effort") {
-                            row("Effort", value: state.efforts.first(where: { $0.id == state.pair.effort })?.label ?? "Unknown")
+                            row("Effort", value: state.effortLabel)
                         }
                     }
                 }

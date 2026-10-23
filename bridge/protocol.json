@@ -217,7 +217,7 @@
         "confirm_timeout": "The command or picker never confirmed within about 4 seconds; the Codex picker is dismissed with Escape.",
         "herdr_unavailable": "Herdr socket I/O failed mid-flow."
       },
-      "effect": "Applies from the next turn in the session. Claude writes the CLI's own persisted defaults (settings.json); Codex applies for this session only and writes nothing. On success the model stamp is invalidated so the next poll re-scans and emits model.updated when the transcript reflects the change."
+      "effect": "Applies from the next turn in the session. Claude writes the CLI's own persisted defaults (settings.json); Codex applies for this session only and writes nothing. Confirmed and partially applied pairs override the unchanged scan for model.status, subsequent expect checks and model.updated. The override is discarded when the scanned pair changes or the identity/generation resets."
     }
   ],
   "envelopes": {

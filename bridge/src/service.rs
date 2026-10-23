@@ -187,6 +187,25 @@ struct ApprovalMatchCache {
     stamp: ApprovalInputStamp,
     request: Option<PendingRequest>,
 }
+type ModelPair = Option<(String, Option<String>)>;
+
+struct ModelOverride {
+    applied: ModelPair,
+    scanned_at_set: ModelPair,
+}
+
+impl ModelOverride {
+    fn resolve(slot: &mut Option<Self>, scanned: ModelPair) -> ModelPair {
+        if let Some(current) = slot {
+            if current.scanned_at_set == scanned {
+                return current.applied.clone();
+            }
+            *slot = None;
+        }
+        scanned
+    }
+}
+
 struct Watch {
     pane_id: String,
     identity: Option<Identity>,
@@ -216,6 +235,7 @@ struct Watch {
     // so unchanged files skip tail reads on every poll.
     model_stamp: Option<(u64, (i64, i64))>,
     last_model: Option<(String, Option<String>)>,
+    model_override: Option<ModelOverride>,
 }
 pub struct Service {
     pub client: Client,
@@ -424,6 +444,7 @@ impl Service {
             // A transient read of a new occupant cannot authorize serving the
             // previous occupant's cached transcript.
             watch.identity = None;
+            watch.model_override = None;
             watch.approval_cache = None;
             watch.question_cache = None;
         }
@@ -521,6 +542,7 @@ impl Service {
                 if should_emit {
                     self.generation += 1;
                     watch.identity = None;
+                    watch.model_override = None;
                     watch.previous.clear();
                     watch.follower = if self.include_content {
                         Follower::with_content()
@@ -562,6 +584,8 @@ impl Service {
                     watch.approval_cache = None;
                     watch.question_cache = None;
                     watch.last_model = None;
+                    watch.model_override = None;
+                    watch.model_stamp = None;
                     self.generation += 1;
                     let mut body = page(&data.entries, data.entries.len());
                     body["identity"] = json!(identity);
@@ -876,6 +900,8 @@ impl Service {
             "codex" => model_control::codex_scan(&records),
             _ => None,
         };
+        let observed = observed.or_else(|| self.model_scan_fallback(&identity.agent));
+        let observed = ModelOverride::resolve(&mut watch.model_override, observed);
         let Some(observed) = observed else {
             return Ok(());
         };
@@ -913,11 +939,7 @@ impl Service {
             _ => None,
         }
     }
-    fn model_scan_current(
-        &self,
-        agent: &str,
-        file: std::fs::File,
-    ) -> Option<(String, Option<String>)> {
+    fn model_scan_raw(&self, agent: &str, file: std::fs::File) -> Option<(String, Option<String>)> {
         let records = crate::follower::read_tail(file).ok()?;
         match agent {
             "claude" => model_control::claude_scan(&records),
@@ -925,6 +947,16 @@ impl Service {
             _ => None,
         }
         .or_else(|| self.model_scan_fallback(agent))
+    }
+    fn model_scan_current(&mut self, agent: &str, file: std::fs::File) -> ModelPair {
+        let scanned = self.model_scan_raw(agent, file);
+        self.resolve_model_scan(scanned)
+    }
+    fn resolve_model_scan(&mut self, scanned: ModelPair) -> ModelPair {
+        match self.watch.as_mut() {
+            Some(watch) => ModelOverride::resolve(&mut watch.model_override, scanned),
+            None => scanned,
+        }
     }
     fn codex_catalog(&self) -> Vec<model_control::CodexCatalogModel> {
         let Some(home) = self
@@ -963,7 +995,7 @@ impl Service {
         }
         Ok((pane, file))
     }
-    fn model_status(&self) -> Result<Value> {
+    fn model_status(&mut self) -> Result<Value> {
         if !self.include_model_control {
             return Err("unsupported_capability");
         }
@@ -1092,7 +1124,8 @@ impl Service {
         if !matches!(pane.agent_status.as_str(), "idle" | "done") {
             return Err("agent_busy");
         }
-        let current = self.model_scan_current(agent, file);
+        let scanned_at_set = self.model_scan_raw(agent, file);
+        let current = self.resolve_model_scan(scanned_at_set.clone());
         if current.as_ref().map(|(id, _)| id.as_str()) != expect_model
             || current.as_ref().and_then(|(_, effort)| effort.as_deref()) != expect_effort
         {
@@ -1107,6 +1140,18 @@ impl Service {
         // pair (the confirmation may never reach the transcript).
         if let Some(watch) = self.watch.as_mut() {
             watch.model_stamp = None;
+            let applied = result["applied"]["model"]["id"].as_str().map(|id| {
+                (
+                    id.to_owned(),
+                    result["applied"]["effort"].as_str().map(str::to_owned),
+                )
+            });
+            if result["confirmed"] == true || applied != current {
+                watch.model_override = Some(ModelOverride {
+                    applied,
+                    scanned_at_set,
+                });
+            }
         }
         Ok(result)
     }
@@ -1755,6 +1800,7 @@ impl Service {
                     source_pane: None,
                     model_stamp: None,
                     last_model: None,
+                    model_override: None,
                 });
                 Self::write(out, &json!({"id":id,"result":{"watching":pane}}))?;
                 self.poll(out)

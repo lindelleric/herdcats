@@ -222,6 +222,7 @@ fn test_watch() -> Watch {
         source_pane: None,
         model_stamp: None,
         last_model: None,
+        model_override: None,
     }
 }
 

@@ -432,6 +432,8 @@ fn model_set_claude_confirms_each_step_and_reports_partial() {
         vec![prompt_input("/model sonnet"), prompt_input("/effort high")]
     );
 
+    cleanup(&service, root);
+    let (mut service, root, herdr, _path) = model_fixture_claude();
     // Partial: the model step succeeds, the effort step is invalid.
     script_model(
         &herdr,
@@ -450,6 +452,9 @@ fn model_set_claude_confirms_each_step_and_reports_partial() {
     assert_eq!(result["error"], "invalid_effort");
     assert_eq!(result["applied"]["model"]["label"], "Sonnet 5.5");
     assert_eq!(result["applied"]["effort"], "medium");
+    assert!(service.watch.as_ref().unwrap().model_override.is_some());
+    let status = model_request(&mut service, "model.status", json!({}));
+    assert_eq!(result_frame(&status)["result"]["model"]["id"], "sonnet");
     cleanup(&service, root);
 }
 
@@ -881,5 +886,151 @@ fn model_set_claude_preserves_model_when_draft_appears_before_effort() {
         herdr.lock().unwrap().inputs,
         vec![prompt_input("/model sonnet")]
     );
+    cleanup(&service, root);
+}
+
+#[test]
+fn model_override_preserves_applied_until_scanned_pair_changes() {
+    let original = Some(("old-model".into(), Some("low".into())));
+    let applied = Some(("new-model".into(), Some("high".into())));
+    let mut slot = Some(ModelOverride {
+        applied: applied.clone(),
+        scanned_at_set: original.clone(),
+    });
+    assert_eq!(ModelOverride::resolve(&mut slot, original.clone()), applied);
+    assert!(slot.is_some());
+    let next = Some(("new-model".into(), Some("high".into())));
+    assert_eq!(ModelOverride::resolve(&mut slot, next.clone()), next);
+    assert!(slot.is_none());
+    let mut slot = Some(ModelOverride {
+        applied,
+        scanned_at_set: original,
+    });
+    let desk = Some(("desk-model".into(), Some("medium".into())));
+    assert_eq!(ModelOverride::resolve(&mut slot, desk.clone()), desk);
+    assert!(slot.is_none());
+}
+
+#[test]
+fn model_set_claude_then_effort_uses_override_and_status_reports_applied() {
+    let (mut service, root, herdr, path) = model_fixture_claude();
+    script_model(
+        &herdr,
+        vec![claude_model_screen("/model sonnet"), claude_effort_screen()],
+    );
+    let first = model_request(
+        &mut service,
+        "model.set",
+        json!({
+            "model":"sonnet", "expect":expect_pair("claude-opus-5-5", Some("medium"))
+        }),
+    );
+    assert_eq!(result_frame(&first)["result"]["confirmed"], true);
+    let status = model_request(&mut service, "model.status", json!({}));
+    assert_eq!(result_frame(&status)["result"]["model"]["id"], "sonnet");
+    let second = model_request(
+        &mut service,
+        "model.set",
+        json!({
+            "effort":"high", "expect":expect_pair("sonnet", Some("medium"))
+        }),
+    );
+    assert_eq!(result_frame(&second)["result"]["confirmed"], true);
+    let status = model_request(&mut service, "model.status", json!({}));
+    assert_eq!(result_frame(&status)["result"]["effort"], "high");
+    assert!(service.watch.as_ref().unwrap().model_override.is_some());
+    // A fresh assistant record wins, including the concrete Claude id.
+    let mut text = fs::read_to_string(&path).unwrap();
+    text.push_str(&format!("{}\n", json!({"type":"assistant","uuid":"next-turn","sessionId":SESSION,
+        "message":{"model":"claude-sonnet-5-5","role":"assistant","content":"next"},"effort":"high"})));
+    fs::write(&path, text).unwrap();
+    let status = model_request(&mut service, "model.status", json!({}));
+    assert_eq!(
+        result_frame(&status)["result"]["model"]["id"],
+        "claude-sonnet-5-5"
+    );
+    assert!(service.watch.as_ref().unwrap().model_override.is_none());
+    cleanup(&service, root);
+}
+
+#[test]
+fn model_set_codex_then_effort_uses_override_until_desk_changes_transcript() {
+    let (mut service, root, herdr, path) = model_fixture_codex();
+    script_model(
+        &herdr,
+        vec![
+            codex_model_list_screen(1),
+            codex_model_list_screen(2),
+            codex_model_list_screen(3),
+            codex_model_list_screen(4),
+            codex_effort_list_screen(1),
+            codex_composer_toast("gpt-6-luna", "low"),
+            codex_model_list_screen(4),
+            codex_effort_list_screen(1),
+            codex_effort_list_screen(2),
+            codex_effort_list_screen(3),
+            codex_composer_toast("gpt-6-luna", "high"),
+        ],
+    );
+    let first = model_request(
+        &mut service,
+        "model.set",
+        json!({
+            "model":"gpt-6-luna", "expect":expect_pair("gpt-6.1-sol", Some("low"))
+        }),
+    );
+    assert_eq!(result_frame(&first)["result"]["confirmed"], true);
+    let status = model_request(&mut service, "model.status", json!({}));
+    assert_eq!(result_frame(&status)["result"]["model"]["id"], "gpt-6-luna");
+    let second = model_request(
+        &mut service,
+        "model.set",
+        json!({
+            "effort":"high", "expect":expect_pair("gpt-6-luna", Some("low"))
+        }),
+    );
+    assert_eq!(result_frame(&second)["result"]["confirmed"], true);
+    let status = model_request(&mut service, "model.status", json!({}));
+    assert_eq!(result_frame(&status)["result"]["effort"], "high");
+    let mut text = fs::read_to_string(&path).unwrap();
+    text.push_str(&format!(
+        "{}\n",
+        json!({"type":"turn_context","payload":{
+        "model":"gpt-6-astra","effort":"medium","cwd":"/fixture/work"}})
+    ));
+    fs::write(&path, text).unwrap();
+    let mut out = Vec::new();
+    service.poll(&mut out).unwrap();
+    assert!(
+        frames(out)
+            .iter()
+            .any(|frame| frame["event"] == "model.updated"
+                && frame["data"]["model"] == "gpt-6-astra")
+    );
+    assert!(service.watch.as_ref().unwrap().model_override.is_none());
+    let status = model_request(&mut service, "model.status", json!({}));
+    assert_eq!(
+        result_frame(&status)["result"]["model"]["id"],
+        "gpt-6-astra"
+    );
+    cleanup(&service, root);
+}
+
+#[test]
+fn model_override_resets_with_occupant() {
+    let (mut service, root, herdr, _) = model_fixture_claude();
+    script_model(&herdr, vec![claude_model_screen("/model sonnet")]);
+    let reply = model_request(
+        &mut service,
+        "model.set",
+        json!({
+            "model":"sonnet", "expect":expect_pair("claude-opus-5-5", Some("medium"))
+        }),
+    );
+    assert_eq!(result_frame(&reply)["result"]["confirmed"], true);
+    assert!(service.watch.as_ref().unwrap().model_override.is_some());
+    herdr.lock().unwrap().terminal_id = Some("replacement".into());
+    service.poll(&mut Vec::new()).unwrap();
+    assert!(service.watch.as_ref().unwrap().model_override.is_none());
     cleanup(&service, root);
 }

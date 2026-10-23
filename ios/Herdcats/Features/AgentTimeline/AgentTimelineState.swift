@@ -264,6 +264,10 @@ import Observation
             ?? (pair.model == nil ? models.first(where: { $0.current == true }) : nil)
     }
     var efforts: [AgentEffortOption] { selectedModel?.efforts ?? [] }
+    var effortLabel: String {
+        guard let effort = pair.effort else { return "Default" }
+        return efforts.first(where: { $0.id == effort })?.label ?? "Unknown"
+    }
     var selectedModelID: String? { selectedModel?.id }
 
     func connect(_ client: AgentBridgeClient?, supported: Bool) {
@@ -361,6 +365,7 @@ import Observation
     static func message(for code: String?) -> String {
         switch code {
         case "agent_busy": return "The agent is working — try again when it's idle."
+        case "stale": return "Something changed at the desk. Check the current model and try again."
         case "composer_not_empty": return "Clear the agent's input box at the desk first."
         default: return "Couldn't change the model. Try again."
         }
