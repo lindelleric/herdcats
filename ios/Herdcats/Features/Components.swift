@@ -622,6 +622,43 @@ struct AgentKindIcon: View {
     }
 }
 
+// MARK: - Quiet list rows
+
+/// Shared geometry for the Spaces and Agents lists: a narrow leading status
+/// column replaces the `#number`, so every title starts at the same x.
+enum QuietListMetrics {
+    static let statusColumn: CGFloat = 14
+    static let columnSpacing: CGFloat = 10
+    static var titleInset: CGFloat { statusColumn + columnSpacing }
+}
+
+/// Hairline under a list row, inset to the title column.
+struct QuietListDivider: View {
+    var leadingInset: CGFloat = QuietListMetrics.titleInset
+
+    var body: some View {
+        Rectangle()
+            .fill(Theme.hairline)
+            .frame(height: 0.5)
+            .padding(.leading, leadingInset)
+    }
+}
+
+/// Last-activity time pinned to a row's top-right corner.
+struct RowTimestamp: View {
+    let date: Date?
+
+    var body: some View {
+        if let date {
+            Text(PaneUpdatedFormat.label(for: date))
+                .font(.jost(.caption))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .fixedSize()
+        }
+    }
+}
+
 // MARK: - Stat chip
 
 struct StatChip: View {
@@ -630,15 +667,14 @@ struct StatChip: View {
     let caption: String
 
     var body: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 4) {
             Image(systemName: icon)
                 .font(.jost(10, weight: .semibold))
-                .foregroundStyle(.secondary)
             Text(value)
-                .font(.jost(13, weight: .semibold))
+                .font(.jost(13, weight: .medium))
                 .monospacedDigit()
-                .foregroundStyle(.primary)
         }
+        .foregroundStyle(.secondary)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(caption): \(value)")
     }

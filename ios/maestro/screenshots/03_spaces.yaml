@@ -22,7 +22,8 @@ appId: com.enchantinglabs.herdrcat
     timeout: 45000
 
 - extendedWaitUntil:
-    visible: "#1"
+    visible:
+      id: "space-row-1"
     timeout: 45000
 
 - waitForAnimationToEnd:
