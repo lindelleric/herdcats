@@ -264,10 +264,10 @@ fn model_status_reads_claude_transcript_and_options() {
     assert_eq!(
         result["models"],
         json!([
-            {"id":"fable","label":"Fable","efforts":efforts},
-            {"id":"opus","label":"Opus","current":true,"efforts":efforts},
-            {"id":"sonnet","label":"Sonnet","efforts":efforts},
-            {"id":"haiku","label":"Haiku","efforts":efforts}
+            {"id":"fable","label":"Fable 5.1","efforts":efforts},
+            {"id":"opus","label":"Opus 5.5","current":true,"efforts":efforts},
+            {"id":"sonnet","label":"Sonnet 5.5","efforts":efforts},
+            {"id":"haiku","label":"Haiku 5.5","efforts":efforts}
         ])
     );
     assert_eq!(result["efforts"], efforts);
@@ -293,7 +293,7 @@ fn model_status_reads_claude_transcript_and_options() {
     let reply = model_request(&mut service, "model.status", json!({}));
     let result = result_frame(&reply)["result"].clone();
     assert_eq!(result["model"]["id"], "sonnet");
-    assert_eq!(result["model"]["label"], "Sonnet");
+    assert_eq!(result["model"]["label"], "Sonnet 5.5");
     assert_eq!(result["effort"], "high");
     let models = result["models"].as_array().unwrap().clone();
     assert_eq!(
@@ -363,7 +363,7 @@ fn model_updated_emits_on_transcript_change_only() {
         .filter(|frame| frame["event"] == "model.updated")
         .collect();
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0]["data"]["model"], "claude-opus-5-5");
+    assert_eq!(events[0]["data"]["model"], json!({"id":"claude-opus-5-5","label":"Opus 5.5"}));
     assert_eq!(events[0]["data"]["effort"], "medium");
     // Unchanged file: no further emission.
     let mut out = Vec::new();
@@ -389,7 +389,7 @@ fn model_updated_emits_on_transcript_change_only() {
         .filter(|frame| frame["event"] == "model.updated")
         .collect();
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0]["data"]["model"], "claude-sonnet-5-5");
+    assert_eq!(events[0]["data"]["model"], json!({"id":"claude-sonnet-5-5","label":"Sonnet 5.5"}));
     assert_eq!(events[0]["data"]["effort"], "high");
     // Without the opt-in no events are emitted.
     service.include_model_control = false;
@@ -998,7 +998,7 @@ fn model_set_codex_then_effort_uses_override_until_desk_changes_transcript() {
         frames(out)
             .iter()
             .any(|frame| frame["event"] == "model.updated"
-                && frame["data"]["model"] == "gpt-6-astra")
+                && frame["data"]["model"]["id"] == "gpt-6-astra")
     );
     assert!(service.watch.as_ref().unwrap().model_override.is_none());
     let status = model_request(&mut service, "model.status", json!({}));

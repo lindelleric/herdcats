@@ -622,12 +622,29 @@ struct PaneVoiceComposeBar: View {
                 attachmentChip(attachment)
             }
 
-            HStack(alignment: .bottom, spacing: 8) {
-                photoPickerButton
-                messageBubble
+            // Conversation panes put the field on its own full-width row and
+            // the photo, model and voice controls on the row under it. The
+            // choice depends only on the surface, so the field keeps its
+            // identity (and focus) when the model control appears.
+            if modelControl != nil {
+                VStack(alignment: .leading, spacing: 0) {
+                    messageField
+                    HStack(alignment: .center, spacing: 4) {
+                        photoPickerButton
+                        Spacer(minLength: 0)
+                        messageActions
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+            } else {
+                HStack(alignment: .bottom, spacing: 8) {
+                    photoPickerButton
+                    messageBubble
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
         }
         .modifier(PaneInputGlassSurface(cornerRadius: DesignSystem.CornerRadius.lg))
         .simultaneousGesture(
@@ -678,18 +695,9 @@ struct PaneVoiceComposeBar: View {
     }
 
     private var messageBubble: some View {
-        // One layout container keeps the field's identity (and keyboard focus)
-        // when the model row appears after the bridge connects.
-        let showsModelRow = modelControl?.isVisible == true
-        let layout = showsModelRow
-            ? AnyLayout(VStackLayout(spacing: 0))
-            : AnyLayout(HStackLayout(alignment: .bottom, spacing: 4))
-        return layout {
+        HStack(alignment: .bottom, spacing: 4) {
             messageField
-            HStack(alignment: .bottom, spacing: 4) {
-                if showsModelRow { Spacer(minLength: 0) }
-                messageActions
-            }
+            messageActions
         }
         .padding(.trailing, 4)
         .accessibilityElement(children: .contain)
@@ -720,13 +728,17 @@ struct PaneVoiceComposeBar: View {
     @ViewBuilder private var messageActions: some View {
         if let modelControl, modelControl.isVisible {
             Button { showsModelConfiguration = true } label: {
-                HStack(spacing: 3) {
-                    Text(modelControl.label).lineLimit(1).truncationMode(.tail)
-                    Image(systemName: "chevron.down").font(.jost(.caption2)).fixedSize()
-                }
-                .font(.jost(.caption))
+                (Text(modelControl.modelName).bold()
+                    + Text(modelControl.effortText.map { " " + $0 } ?? ""))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .font(.jost(.subheadline))
                 .foregroundStyle(Theme.accent)
-                .frame(maxWidth: 140, minHeight: 36)
+                // Hug the text: the mic glyph sits ~10pt inside its 32pt frame and
+                // Send's circle ~4pt inside its 34pt frame, so 3pt here makes the
+                // label-to-mic gap match the mic-to-Send gap (measured ~18pt each).
+                .padding(.trailing, 3)
+                .frame(minHeight: 36)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)

@@ -251,12 +251,16 @@ import Observation
     private var scope = UUID()
 
     var isVisible: Bool { supported && identity != nil }
-    var label: String {
-        let model = pair.model?.label ?? "Model"
-        return model + (pair.effort.map { " · " + $0.lowercased() } ?? "")
+    /// The live model's own label keeps its version ("Opus 5.5"); the catalog
+    /// name is used only when the bridge sent a bare id as the label.
+    var modelName: String {
+        if let model = pair.model, model.label != model.id { return model.label }
+        return selectedModel?.label ?? pair.model?.label ?? "Model"
     }
+    var effortText: String? { pair.effort?.lowercased() }
+    var label: String { modelName + (effortText.map { " " + $0 } ?? "") }
     var accessibilityLabel: String {
-        "Model \(pair.model?.label ?? "unknown")" + (pair.effort.map { ", effort " + $0.lowercased() } ?? "")
+        "Model \(pair.model == nil ? "unknown" : modelName)" + (effortText.map { ", effort " + $0 } ?? "")
     }
     var selectedModel: AgentModelOption? {
         models.first(where: { $0.id == pair.model?.id })

@@ -19,6 +19,26 @@ pub const CLAUDE_MODELS: &[(&str, &str)] = &[
     ("haiku", "Haiku"),
 ];
 
+/// Current version behind each tier alias, so lists show "Opus 5.5" rather
+/// than a bare tier. Update with each Claude release; the live transcript id
+/// still wins for the model in use.
+const CLAUDE_ALIAS_VERSIONS: &[(&str, &str)] = &[
+    ("fable", "5.1"),
+    ("opus", "5.5"),
+    ("sonnet", "5.5"),
+    ("haiku", "5.5"),
+];
+
+/// Label shown to people: a versioned name for tier aliases ("Opus 5.5") and
+/// the derived name for concrete ids. Dialog matching keeps using the bare
+/// tier from `claude_model_label`, so a newer CLI version still matches.
+pub fn claude_display_label(id: &str) -> String {
+    match CLAUDE_ALIAS_VERSIONS.iter().find(|(alias, _)| *alias == id) {
+        Some((_, version)) => format!("{} {version}", claude_model_label(id)),
+        None => claude_model_label(id),
+    }
+}
+
 /// Effort levels offered in the UI. `auto` is valid for the CLI but hidden.
 pub const CLAUDE_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 
@@ -718,6 +738,9 @@ mod tests {
     #[test]
     fn claude_labels_come_from_the_static_table_or_id_shape() {
         assert_eq!(claude_model_label("opus"), "Opus");
+        assert_eq!(claude_display_label("opus"), "Opus 5.5");
+        assert_eq!(claude_display_label("fable"), "Fable 5.1");
+        assert_eq!(claude_display_label("claude-sonnet-5-5"), "Sonnet 5.5");
         assert_eq!(claude_model_label("claude-opus-5-5"), "Opus 5.5");
         assert_eq!(claude_model_label("claude-fable-5-1"), "Fable 5.1");
         assert_eq!(claude_model_label("claude-haiku-4-5-20251001"), "Haiku 4.5");

@@ -750,6 +750,15 @@ final class AgentTimelineUITests: XCTestCase {
         let control = app.buttons["timeline-model-control"]
         XCTAssertTrue(control.waitForExistence(timeout: 5))
         XCTAssertEqual(control.label, "Model Opus 5.5, effort high")
+        let field = app.textFields["timeline-compose-field"].exists
+            ? app.textFields["timeline-compose-field"] : app.textViews["timeline-compose-field"]
+        field.tap()
+        field.typeText("Hi")
+        XCTAssertTrue(app.buttons["timeline-compose-send"].waitForExistence(timeout: 3))
+        let composer = XCTAttachment(screenshot: app.screenshot())
+        composer.name = "Composer with model control"
+        composer.lifetime = .keepAlways
+        add(composer)
         control.tap()
         XCTAssertTrue(app.navigationBars["Configure"].waitForExistence(timeout: 3))
         XCTAssertFalse(app.navigationBars["Configure"].buttons["Done"].exists)

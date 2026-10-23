@@ -390,7 +390,7 @@ struct TimelineEntryInterruptionTests {
             ],
             "efforts": [["id": "low", "label": "Low"]]
         ]), options: true)
-        #expect(state.label == "Opus 5.5 · high")
+        #expect(state.label == "Opus 5.5 high")
         #expect(state.accessibilityLabel == "Model Opus 5.5, effort high")
         #expect(state.efforts.map(\.id) == ["high"])
         #expect(state.selectedModelID == "opus")
@@ -423,7 +423,7 @@ struct TimelineEntryInterruptionTests {
         let state = state()
         let update = try payload(["model": "claude-opus-5-5", "effort": "high"])
         try state.update(update)
-        #expect(state.label == "Opus 5.5 · high")
+        #expect(state.label == "Opus 5.5 high")
         #expect(AgentModelOption.label(for: "claude-opus-5-5-20261001") == "Opus 5.5")
         var stale = update
         stale.generation = 2
@@ -440,7 +440,7 @@ struct TimelineEntryInterruptionTests {
         try timeline.consume(AgentBridgeFrame(event: "timeline.snapshot", epoch: "e", seq: 1, data: data), owner: owner)
         try timeline.consume(AgentBridgeFrame(event: "model.updated", epoch: "e", seq: 2,
             data: payload(["model": "claude-opus-5-5", "effort": "high"])), owner: owner)
-        #expect(timeline.modelControl.label == "Opus 5.5 · high")
+        #expect(timeline.modelControl.label == "Opus 5.5 high")
         timeline.end(owner: owner, error: .closed)
         #expect(timeline.modelControl.pair.model == nil)
         #expect(!timeline.modelControl.isVisible)

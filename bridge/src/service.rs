@@ -914,9 +914,17 @@ impl Service {
                 .model_override
                 .as_ref()
                 .and_then(|value| value.label_for(&Some(observed.clone())));
-            let model = label
-                .map(|label| json!({"id":observed.0,"label":label}))
-                .unwrap_or_else(|| json!(observed.0));
+            // Always a labeled object, so clients never fall back to raw ids.
+            let label = label.unwrap_or_else(|| match identity.agent.as_str() {
+                "claude" => model_control::claude_display_label(&observed.0),
+                _ => self
+                    .codex_catalog()
+                    .iter()
+                    .find(|model| model.slug == observed.0)
+                    .map(|model| model.label.clone())
+                    .unwrap_or_else(|| model_control::codex_slug_label(&observed.0)),
+            });
+            let model = json!({"id":observed.0,"label":label});
             self.event(
                 out,
                 "model.updated",
@@ -1030,7 +1038,9 @@ impl Service {
             "claude" => {
                 let mut models: Vec<Value> = model_control::CLAUDE_MODELS
                     .iter()
-                    .map(|(alias, label)| json!({"id":alias,"label":label}))
+                    .map(|(alias, _)| {
+                        json!({"id":alias,"label":model_control::claude_display_label(alias)})
+                    })
                     .collect();
                 let matches_alias = |alias: &str| {
                     current_id.is_some_and(|id| {
@@ -1044,11 +1054,15 @@ impl Service {
                 for entry in &mut models {
                     if entry["id"].as_str().is_some_and(matches_alias) {
                         entry["current"] = json!(true);
+                        // The transcript's concrete id carries the real version.
+                        if let Some(id) = current_id {
+                            entry["label"] = json!(model_control::claude_display_label(id));
+                        }
                         marked = true;
                     }
                 }
                 if !marked && let Some(id) = current_id {
-                    models.push(json!({"id":id,"label":model_control::claude_model_label(id),"current":true}));
+                    models.push(json!({"id":id,"label":model_control::claude_display_label(id),"current":true}));
                 }
                 let efforts = model_control::CLAUDE_EFFORTS
                     .iter()
@@ -1107,7 +1121,7 @@ impl Service {
             .and_then(|value| value.label_for(&current));
         let current_label = confirmed_label.or_else(|| {
             current.as_ref().map(|(id, _)| match agent {
-                "claude" => model_control::claude_model_label(id),
+                "claude" => model_control::claude_display_label(id),
                 _ => self
                     .codex_catalog()
                     .iter()
@@ -1307,7 +1321,7 @@ impl Service {
                 .as_ref()
                 .and_then(|watch| watch.model_override.as_ref())
                 .and_then(|value| value.label_for(current))
-                .unwrap_or_else(|| model_control::claude_model_label(&id));
+                .unwrap_or_else(|| model_control::claude_display_label(&id));
             (id, label)
         });
         let mut applied_effort = current.as_ref().and_then(|(_, effort)| effort.clone());
