@@ -1206,7 +1206,7 @@ fn model_set_codex_leftover_identical_toast_times_out_without_escape_into_compos
 
 #[test]
 fn codex_dismissal_waits_for_nested_picker_transitions_and_stops_at_composer() {
-    let (service, root, herdr, _) = model_fixture_codex();
+    let (mut service, root, herdr, _) = model_fixture_codex();
     let advanced = codex_advanced_screen();
     let effort = codex_effort_list_screen(5);
     script_model(
@@ -1219,7 +1219,8 @@ fn codex_dismissal_waits_for_nested_picker_transitions_and_stops_at_composer() {
         // First Escape initially returns the stale Advanced screen.
         state.screens_after_input[0] = [advanced, effort].into();
     }
-    service.dismiss_codex_picker("w1:p1");
+    let identity = watched_identity(&mut service);
+    service.dismiss_codex_picker(&identity);
     assert_eq!(
         herdr.lock().unwrap().inputs,
         vec![model_keys_input(&["esc"]), model_keys_input(&["esc"])]
@@ -1228,16 +1229,62 @@ fn codex_dismissal_waits_for_nested_picker_transitions_and_stops_at_composer() {
     cleanup(&service, root);
 }
 
+/// The identity the watch verifies for the fixture's current occupant.
+fn watched_identity(service: &mut Service) -> Identity {
+    service.poll(&mut Vec::new()).unwrap();
+    service.watch.as_ref().unwrap().identity.clone().unwrap()
+}
+
+#[test]
+fn codex_dismissal_never_sends_escape_into_a_replacement_occupant() {
+    let (mut service, root, herdr, _) = model_fixture_codex();
+    let identity = watched_identity(&mut service);
+    {
+        let mut state = herdr.lock().unwrap();
+        // Same pane id, new terminal that also has a picker open.
+        state.terminal_id = Some("replacement".into());
+        state.screen = codex_effort_list_screen(1);
+    }
+    service.dismiss_codex_picker(&identity);
+    assert!(herdr.lock().unwrap().inputs.is_empty());
+    cleanup(&service, root);
+}
+
+#[test]
+fn model_set_claude_rejects_a_newer_desk_confirmation_for_another_model() {
+    let (mut service, root, herdr, _) = model_fixture_claude();
+    // Our /model haiku is followed on screen by a desk-side /model sonnet.
+    let screen = "  Claude Code                         v2.1.309\n\
+         ❯ /model haiku\n\
+           ⎿  Set model to Haiku 5.5 and saved as your default for new sessions\n\
+         ❯ /model sonnet\n\
+           ⎿  Set model to Sonnet 5.5 and saved as your default for new sessions\n\
+         ❯ Try \"fix lint errors\"\n"
+        .to_owned();
+    script_model(&herdr, vec![screen]);
+    let reply = model_request(
+        &mut service,
+        "model.set",
+        json!({"model":"haiku", "expect":expect_pair("claude-opus-5-5", Some("medium"))}),
+    );
+    let result = &result_frame(&reply)["result"];
+    assert_eq!(result["confirmed"], false, "{reply:?}");
+    assert_eq!(result["error"], "stale");
+    assert_eq!(result["applied"]["model"]["id"], "claude-opus-5-5");
+    cleanup(&service, root);
+}
+
 #[test]
 fn codex_dismissal_never_sends_escape_to_unknown_or_composer_screens() {
-    let (service, root, herdr, _) = model_fixture_codex();
+    let (mut service, root, herdr, _) = model_fixture_codex();
     for screen in [
         "Browsing transcript · ↵ rewind",
         "unrecognized screen",
         "› Ask Codex to do anything",
     ] {
         herdr.lock().unwrap().screen = screen.into();
-        service.dismiss_codex_picker("w1:p1");
+        let identity = watched_identity(&mut service);
+    service.dismiss_codex_picker(&identity);
     }
     assert!(herdr.lock().unwrap().inputs.is_empty());
     cleanup(&service, root);
@@ -1245,10 +1292,11 @@ fn codex_dismissal_never_sends_escape_to_unknown_or_composer_screens() {
 
 #[test]
 fn codex_dismissal_does_not_repeat_escape_on_an_unchanged_picker() {
-    let (service, root, herdr, _) = model_fixture_codex();
+    let (mut service, root, herdr, _) = model_fixture_codex();
     script_model(&herdr, vec![]);
     herdr.lock().unwrap().screen = codex_effort_list_screen(1);
-    service.dismiss_codex_picker("w1:p1");
+    let identity = watched_identity(&mut service);
+    service.dismiss_codex_picker(&identity);
     assert_eq!(
         herdr.lock().unwrap().inputs,
         vec![model_keys_input(&["esc"])]

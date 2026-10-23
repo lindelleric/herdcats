@@ -37,6 +37,13 @@ pub fn claude_alias_id(alias: &str) -> Option<String> {
         .map(|(name, version)| format!("claude-{name}-{}", version.replace('.', "-")))
 }
 
+/// Whether a confirmed label ("Haiku 5.5") names the requested alias or id,
+/// matched by its derived label as a case-insensitive prefix.
+pub fn claude_label_names(label: &str, wanted: &str) -> bool {
+    let expected = claude_model_label(wanted).to_ascii_lowercase();
+    !wanted.is_empty() && label.trim().to_ascii_lowercase().starts_with(&expected)
+}
+
 /// Label shown to people: a versioned name for tier aliases ("Opus 5.5") and
 /// the derived name for concrete ids. Dialog matching keeps using the bare
 /// tier from `claude_model_label`, so a newer CLI version still matches.
@@ -757,6 +764,10 @@ mod tests {
         assert_eq!(claude_display_label("opus"), "Opus 5.5");
         assert_eq!(claude_alias_id("sonnet").as_deref(), Some("claude-sonnet-5-5"));
         assert_eq!(claude_alias_id("claude-sonnet-5-5"), None);
+        assert!(claude_label_names("Haiku 5.5", "haiku"));
+        assert!(claude_label_names("Opus 5.5", "claude-opus-5-5"));
+        assert!(!claude_label_names("Haiku 5.5", "sonnet"));
+        assert!(!claude_label_names("Haiku 5.5", ""));
         assert_eq!(claude_display_label("fable"), "Fable 5.1");
         assert_eq!(claude_display_label("claude-sonnet-5-5"), "Sonnet 5.5");
         assert_eq!(claude_model_label("claude-opus-5-5"), "Opus 5.5");

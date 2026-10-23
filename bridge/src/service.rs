@@ -1249,7 +1249,13 @@ impl Service {
                     }
                 } else if let Some((_, outcome)) = screen.rsplit_once(command) {
                     match model_control::claude_confirmation(outcome) {
+                        // A desk-side /model after ours can be the newest line;
+                        // accept only a confirmation naming the requested model.
                         Some(ClaudeConfirmation::Model(label)) if want_effort.is_none() => {
+                            let wanted = want_model.unwrap_or_default();
+                            if !model_control::claude_label_names(&label, wanted) {
+                                return (None, Some("stale"));
+                            }
                             return (Some(label), None);
                         }
                         Some(ClaudeConfirmation::Effort(level))
@@ -1385,8 +1391,14 @@ impl Service {
     }
     /// Never send Escape into the composer: Esc-Esc opens Codex's rewind UI.
     /// An unchanged render cannot authorize another key after the first Escape.
-    fn dismiss_codex_picker(&self, pane_id: &str) {
+    fn dismiss_codex_picker(&self, identity: &Identity) {
+        let pane_id = identity.pane_id.as_str();
         for _ in 0..3 {
+            // Never send Escape into a replacement occupant: the pane id can be
+            // reused by another terminal or session that has its own picker open.
+            if self.model_pane_file(identity).is_err() {
+                return;
+            }
             let Ok(screen) = self.client.read_visible(pane_id) else {
                 return;
             };
@@ -1521,12 +1533,12 @@ impl Service {
             .map(|model| model.label.clone())
             .unwrap_or_else(|| model_control::codex_slug_label(target_slug));
         let mismatch = || -> &'static str {
-            self.dismiss_codex_picker(pane_id);
+            self.dismiss_codex_picker(identity);
             "picker_mismatch"
         };
         // Mid-flow occupant/status failures dismiss the open picker first.
         let stale = || -> &'static str {
-            self.dismiss_codex_picker(pane_id);
+            self.dismiss_codex_picker(identity);
             "stale"
         };
         let send = |keys: &[&str]| -> Result<()> {
@@ -1640,7 +1652,7 @@ impl Service {
         let Some((applied_slug, applied_effort)) =
             self.wait_codex_toast(pane_id, baseline_count, target_slug, target_effort)
         else {
-            self.dismiss_codex_picker(pane_id);
+            self.dismiss_codex_picker(identity);
             return Err("confirm_timeout");
         };
         let applied_label = if applied_slug == target_slug {
