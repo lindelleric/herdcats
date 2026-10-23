@@ -419,6 +419,35 @@ struct TimelineMarkdownTests {
         #expect(links("[\u{200C}https://bank.com](https://bank.com/x)").count == 1)
         // Ordinary labels with invisible characters are unaffected.
         #expect(links("[read\u{200B}me](https://example.com)").count == 1)
+        // Invisible characters are also removed from the displayed text of a kept link.
+        let cleaned = TimelineMarkdown.sanitized("[\u{200C}https://bank.com](https://bank.com/x)")
+        #expect(String(cleaned.characters) == "https://bank.com")
+    }
+
+    @Test func bidiControlsCannotDisguiseAValidatedLabel() {
+        // U+202E reverses the glyphs that follow it: a label validated as
+        // https://moc.live could render as something else entirely. The control
+        // is removed from the displayed text, not just from the validation copy.
+        let disguised = TimelineMarkdown.sanitized("[https://\u{202E}moc.live](https://moc.live)")
+        #expect(disguised.runs.compactMap(\.link) == [URL(string: "https://moc.live")!])
+        #expect(String(disguised.characters) == "https://moc.live")
+        // Other bidi controls (pop, isolates) are cleaned the same way.
+        #expect(links("[https://\u{202D}moc\u{202C}.live](https://moc.live)").count == 1)
+        let isolated = TimelineMarkdown.sanitized("[\u{2066}https://moc.live\u{2069}](https://moc.live/x)")
+        #expect(String(isolated.characters) == "https://moc.live")
+        #expect(isolated.runs.compactMap(\.link).count == 1)
+
+        // A mismatching target is still stripped after normalization.
+        #expect(links("[https://\u{202E}moc.live](https://evil.example)").isEmpty)
+
+        // Styling splits the label into runs; every fragment is cleaned.
+        let styled = TimelineMarkdown.sanitized("[https://**\u{202E}moc.live**](https://moc.live)")
+        #expect(String(styled.characters) == "https://moc.live")
+        #expect(styled.runs.compactMap(\.link).count == styled.runs.count)
+
+        // Text outside links keeps its original characters.
+        let mixed = TimelineMarkdown.sanitized("plain \u{202E}text and [x](https://example.com)")
+        #expect(String(mixed.characters) == "plain \u{202E}text and x")
     }
 
     @Test func defaultIgnorableNonFormatScalarsCannotHideADeceptiveLabel() {

@@ -1743,6 +1743,21 @@ enum TimelineMarkdown {
         var attributed = (try? AttributedString(
             markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
             ?? AttributedString(text)
+        // Bidi controls and other invisible scalars are removed from the rendered
+        // text of linked runs too: validating a normalized label while displaying
+        // the original would let a bidi override (U+202E, ...) show a host that
+        // differs from the one the check approved. Ranges are captured up front
+        // and replaced last-to-first so earlier ranges stay valid.
+        let linkedRuns = attributed.runs
+            .filter { $0.link != nil }
+            .map { (range: $0.range, attributes: $0.attributes) }
+        for run in linkedRuns.reversed() {
+            let original = String(attributed[run.range].characters)
+            let cleaned = droppingInvisibleCharacters(original)
+            guard cleaned != original else { continue }
+            attributed.replaceSubrange(
+                run.range, with: AttributedString(cleaned, attributes: run.attributes))
+        }
         // Inline styling (`**bold**`, `_em_`, `code`) splits one link into several runs
         // that share the same URL. Coalesce adjacent runs so the complete visible label
         // is validated, not each styled fragment on its own.
@@ -1787,15 +1802,22 @@ enum TimelineMarkdown {
     /// and control characters are dropped so they cannot hide a URL-looking
     /// label from the check.
     private static func visibleText(of label: String) -> String {
+        droppingInvisibleCharacters(label).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Drops every scalar that never renders visibly: format and control
+    /// characters, bidi overrides/isolates, and other default-ignorable code
+    /// points (variation selectors, combining grapheme joiner, ...).
+    private static func droppingInvisibleCharacters(_ text: String) -> String {
         var scalars = String.UnicodeScalarView()
-        for scalar in label.unicodeScalars {
+        for scalar in text.unicodeScalars {
             if scalar.properties.isDefaultIgnorableCodePoint { continue }
             switch scalar.properties.generalCategory {
             case .format, .control: continue
             default: scalars.append(scalar)
             }
         }
-        return String(scalars).trimmingCharacters(in: .whitespacesAndNewlines)
+        return String(scalars)
     }
 
     private static func hasSchemeAndHost(_ text: String) -> Bool {
