@@ -264,6 +264,7 @@ fn model_status_reads_claude_transcript_and_options() {
     assert_eq!(
         result["models"],
         json!([
+            {"id":"default","label":"Default","efforts":efforts},
             {"id":"fable","label":"Fable 5.1","efforts":efforts},
             {"id":"opus","label":"Opus 5.5","current":true,"efforts":efforts},
             {"id":"sonnet","label":"Sonnet 5.5","efforts":efforts},
@@ -1288,6 +1289,33 @@ fn model_status_reports_claudes_default_model_and_its_effort_without_a_configure
     assert_eq!(result["model"], json!({"id":"default","label":"Default"}), "{result:?}");
     assert_eq!(result["effort"], "high");
     cleanup(&service, root);
+}
+
+#[test]
+fn model_set_rechecks_the_occupant_right_before_the_first_prompt() {
+    // The pane is replaced after the composer read; nothing may be sent.
+    for agent in ["claude", "codex"] {
+        let (mut service, root, herdr, _) = if agent == "claude" {
+            model_fixture_claude()
+        } else {
+            model_fixture_codex()
+        };
+        // Swap the pane right after the composer read (Codex reads its footer
+        // first), so only the recheck before the prompt can catch it.
+        let composer_read = if agent == "claude" { 1 } else { 2 };
+        herdr.lock().unwrap().terminal_after_reads = Some((composer_read, "replacement".into()));
+        let expect = if agent == "claude" {
+            expect_pair("claude-opus-5-5", Some("medium"))
+        } else {
+            expect_pair("gpt-6.1-sol", Some("low"))
+        };
+        let reply = model_request(&mut service, "model.set", json!({"effort":"high","expect":expect}));
+        let frame = result_frame(&reply);
+        let code = frame["error"]["code"].as_str().or(frame["result"]["error"].as_str());
+        assert_eq!(code, Some("stale"), "{agent}: {reply:?}");
+        assert!(herdr.lock().unwrap().inputs.is_empty(), "{agent}");
+        cleanup(&service, root);
+    }
 }
 
 #[test]

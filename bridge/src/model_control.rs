@@ -656,13 +656,19 @@ pub fn codex_change_toast(screen: &str) -> Option<(String, String)> {
     Some((slug.to_owned(), effort.to_owned()))
 }
 
+/// A change toast is fresh when the screen has more toasts than the baseline
+/// read before `s`, or when its bottom-most toast differs from the baseline's
+/// (a short terminal can scroll the old toast away as the new one appears).
+/// An identical toast that merely stays on screen never confirms.
 pub fn codex_fresh_change(
     screen: &str,
-    baseline_count: usize,
+    baseline: &str,
     slug: &str,
     effort: Option<&str>,
 ) -> Option<(String, String)> {
-    if codex_change_toast_count(screen) <= baseline_count {
+    let more = codex_change_toast_count(screen) > codex_change_toast_count(baseline);
+    let replaced = codex_toast_lines(screen).next_back() != codex_toast_lines(baseline).next_back();
+    if !more && !replaced {
         return None;
     }
     let applied = codex_change_toast(screen)?;
@@ -1235,16 +1241,19 @@ mod tests {
         let both = format!("{old}\n{new}");
         assert_eq!(codex_change_toast_count(&both), 2);
         assert_eq!(
-            codex_fresh_change(&both, 1, "gpt-6-luna", Some("medium")),
+            codex_fresh_change(&both, old, "gpt-6-luna", Some("medium")),
             Some(("gpt-6-luna".into(), "medium".into()))
         );
+        // The old toast scrolled away as the new one appeared: still fresh.
         assert_eq!(
-            codex_fresh_change(new, 1, "gpt-6-luna", Some("medium")),
-            None
+            codex_fresh_change(new, old, "gpt-6-luna", Some("medium")),
+            Some(("gpt-6-luna".into(), "medium".into()))
         );
-        assert_eq!(codex_fresh_change(&both, 1, "gpt-6.1-sol", None), None);
+        // The same toast merely remaining on screen is not a confirmation.
+        assert_eq!(codex_fresh_change(new, new, "gpt-6-luna", Some("medium")), None);
+        assert_eq!(codex_fresh_change(&both, old, "gpt-6.1-sol", None), None);
         assert_eq!(
-            codex_fresh_change(&both, 1, "gpt-6-luna", Some("high")),
+            codex_fresh_change(&both, old, "gpt-6-luna", Some("high")),
             None
         );
         assert_eq!(

@@ -1054,8 +1054,10 @@ impl Service {
         let current_id = current.as_ref().map(|(id, _)| id.as_str());
         let (models, efforts) = match agent {
             "claude" => {
-                let mut models: Vec<Value> = model_control::CLAUDE_MODELS
-                    .iter()
+                // Claude's default stays selectable so a session can switch back.
+                let default = model_control::CLAUDE_DEFAULT_MODEL;
+                let mut models: Vec<Value> = std::iter::once(&(default, ""))
+                    .chain(model_control::CLAUDE_MODELS.iter())
                     .map(|(alias, _)| {
                         json!({"id":alias,"label":model_control::claude_display_label(alias)})
                     })
@@ -1313,7 +1315,13 @@ impl Service {
     /// Proves the agent's composer is empty before submitting a prompt through
     /// `agent.prompt`, which would otherwise append to a desk-side draft.
     /// Fails closed: an unreadable or unparsable screen refuses the send.
-    fn composer_clear(&self, pane_id: &str, agent: &str) -> Result<()> {
+    fn composer_clear(&self, identity: &Identity, agent: &str) -> Result<()> {
+        self.composer_empty(&identity.pane_id, agent)?;
+        // Re-verify the occupant last, immediately before the caller's prompt,
+        // so a pane replaced after the composer read never receives it.
+        self.recheck_idle(identity)
+    }
+    fn composer_empty(&self, pane_id: &str, agent: &str) -> Result<()> {
         let screen = self
             .client
             .read_visible(pane_id)
@@ -1375,7 +1383,7 @@ impl Service {
             })
         {
             let command = format!("/model {target}");
-            self.composer_clear(pane_id, "claude")?;
+            self.composer_clear(identity, "claude")?;
             let baseline = self.client.read_visible(pane_id).unwrap_or_default();
             self.client
                 .agent_prompt(pane_id, &command)
@@ -1398,7 +1406,7 @@ impl Service {
             // second command; failures keep the applied model step.
             if let Err(code) = self
                 .recheck_idle(identity)
-                .and_then(|()| self.composer_clear(pane_id, "claude"))
+                .and_then(|()| self.composer_clear(identity, "claude"))
             {
                 error = Some(if code == "composer_not_empty" {
                     code
@@ -1488,7 +1496,7 @@ impl Service {
     fn wait_codex_toast(
         &self,
         pane_id: &str,
-        baseline_count: usize,
+        baseline: &str,
         slug: &str,
         effort: Option<&str>,
     ) -> Option<(String, String)> {
@@ -1496,7 +1504,7 @@ impl Service {
         loop {
             let screen = self.client.read_visible(pane_id).unwrap_or_default();
             if let Some(applied) =
-                model_control::codex_fresh_change(&screen, baseline_count, slug, effort)
+                model_control::codex_fresh_change(&screen, baseline, slug, effort)
             {
                 return Some(applied);
             }
@@ -1600,7 +1608,7 @@ impl Service {
             Ok(())
         };
 
-        self.composer_clear(pane_id, "codex")?;
+        self.composer_clear(identity, "codex")?;
         self.client
             .agent_prompt(pane_id, "/model")
             .map_err(|_| "herdr_unavailable")?;
@@ -1685,11 +1693,10 @@ impl Service {
         // `s` applies for this session only; digits or enter would persist a
         // new global default in config.toml.
         let baseline = self.client.read_visible(pane_id).map_err(|_| mismatch())?;
-        let baseline_count = model_control::codex_change_toast_count(&baseline);
         send(&["s"])?;
 
         let Some((applied_slug, applied_effort)) =
-            self.wait_codex_toast(pane_id, baseline_count, target_slug, target_effort)
+            self.wait_codex_toast(pane_id, &baseline, target_slug, target_effort)
         else {
             self.dismiss_codex_picker(identity);
             return Err("confirm_timeout");
@@ -2157,6 +2164,9 @@ mod tests {
     #[derive(Default)]
     struct HerdrState {
         ansi_screen: Option<String>,
+        // (n, terminal): from the n-th plain pane.read on, snapshots report a
+        // replacement terminal (the pane was swapped right after that read).
+        terminal_after_reads: Option<(usize, String)>,
         agent: Option<String>,
         status: Option<String>,
         screen: String,
@@ -2238,6 +2248,8 @@ mod tests {
                     "pane.read" => {
                         assert_eq!(request["params"], json!({"pane_id":"w1:p1","source":"visible"}));
                         state.reads += 1;
+                        if let Some((count, terminal)) = state.terminal_after_reads.clone()
+                            && state.reads >= count { state.terminal_id = Some(terminal); }
                         if state.allow_question_input {
                             if let Some(screen) = state.screens_before_input.pop_front()
                                 .or_else(|| state.active_input_screens.pop_front()) {
