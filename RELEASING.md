@@ -54,8 +54,11 @@ tags when computing the next version or changelog ranges.
 
 `publish` requires local `main` to match `origin/main` when `origin` is configured
 (push merged commits before publishing). If a step fails after the local tag is
-created, the script prints recovery steps: retry with `./ios/bin/changelog` (if
-needed), `./ios/bin/beta`, and `git push origin herdcats-vX.Y.Z`, or remove the
+created, the script prints recovery steps. Before the TestFlight upload has run,
+retry with `./ios/bin/changelog` (if needed), `./ios/bin/beta`, and
+`git push origin herdcats-vX.Y.Z`. Once the upload already completed, do not
+rerun `bin/beta` — the same CFBundleVersion would be rejected as a duplicate —
+just finish with `git push origin herdcats-vX.Y.Z`. Alternatively remove the
 local tag with `git tag -d herdcats-vX.Y.Z` and run `publish` again.
 
 `ios/bin/release` remains the bump-only helper (release branch required, no tag).

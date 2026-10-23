@@ -133,6 +133,72 @@ class ReleasePreparationTests(unittest.TestCase):
         self.assertIn('stub-changelog', result.stdout)
         self.assertIn('stub-beta', result.stdout)
 
+    def test_mixed_tag_prefixes_sort_by_version_not_prefix(self):
+        # A legacy-prefix tag alongside a newer new-prefix tag must not make
+        # version:refname rank the legacy prefix as newer.
+        self.git('tag', 'herdrcat-v0.3.1')
+        self.set_build('85', marketing='0.3.2')
+        self.git('add', '.')
+        self.git('commit', '-m', 'fix(ios): user-visible change')
+        self.git('tag', 'herdcats-v0.3.2')
+        self.set_build('86', marketing='0.3.2')
+        self.git('add', '.')
+        self.git('commit', '-m', 'fix(ios): post-release change')
+
+        result = self.run_helper('next-version')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Unreleased commits since herdcats-v0.3.2', result.stdout)
+        self.assertIn('Suggested next version: 0.3.3', result.stdout)
+
+        # Restore the real changelog over the stub; keep opencode out of the test.
+        changelog = self.root / 'ios/bin/changelog'
+        changelog.write_text((PROJECT / 'ios/bin/changelog').read_text())
+        changelog.chmod(0o755)
+        (self.root / 'tools/opencode').write_text('#!/bin/sh\nexit 1\n')
+        (self.root / 'tools/opencode').chmod(0o755)
+        result = self.run_helper('changelog')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Generating changelog: herdrcat-v0.3.1..herdcats-v0.3.2', result.stdout)
+
+    def make_read_only_bare_origin(self):
+        bare = Path(self.temp.name).parent / f'{self.root.name}-readonly-origin.git'
+        bare.mkdir()
+        subprocess.check_call(['git', 'init', '--bare', '-b', 'main', str(bare)])
+        self.git('remote', 'add', 'origin', str(bare))
+        self.git('push', '-u', 'origin', 'main')
+        for path in [bare, *bare.rglob('*')]:
+            path.chmod(path.stat().st_mode & ~0o222)
+        return bare
+
+    def restore_bare_origin(self, bare):
+        for path in [bare, *bare.rglob('*')]:
+            path.chmod(path.stat().st_mode | 0o200)
+
+    def test_deploy_publish_failure_after_upload_suggests_push_only_recovery(self):
+        bare = self.make_read_only_bare_origin()
+        try:
+            # y = tag, y = changelog OK, y = attempt the (doomed) tag push
+            result = self.run_helper('deploy', 'publish', input='y\ny\ny\n')
+        finally:
+            self.restore_bare_origin(bare)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('stub-beta', result.stdout)
+        self.assertIn('upload already completed', result.stderr)
+        self.assertIn('git push origin herdcats-v0.3.1', result.stderr)
+        self.assertIn('same CFBundleVersion', result.stderr)
+        self.assertNotIn('Retry upload', result.stderr)
+
+    def test_deploy_publish_failure_before_upload_keeps_retry_advice(self):
+        (self.root / 'ios/bin/changelog').write_text('#!/bin/sh\nexit 1\n')
+        (self.root / 'ios/bin/changelog').chmod(0o755)
+        # The stub swap dirties the fixture repo; publish demands a clean tree.
+        self.git('add', '-A')
+        self.git('commit', '-m', 'chore: failing changelog stub')
+        result = self.run_helper('deploy', 'publish', input='y\n')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Retry upload', result.stderr)
+        self.assertNotIn('upload already completed', result.stderr)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

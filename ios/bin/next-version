@@ -16,10 +16,28 @@ set -euo pipefail
 ROOT="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 cd "$ROOT"
 
-# Newest by version among current and legacy prefixes.
-LAST_TAG="$(git tag --sort=-version:refname --list 'herdcats-v*' 'herdrcat-v*' | head -n 1)"
+resolve_release_tag() {
+  local version="$1"
+  if git rev-parse --verify "herdcats-v${version}" >/dev/null 2>&1; then
+    echo "herdcats-v${version}"
+  elif git rev-parse --verify "herdrcat-v${version}" >/dev/null 2>&1; then
+    echo "herdrcat-v${version}"
+  else
+    return 1
+  fi
+}
 
-if [[ -z "$LAST_TAG" ]]; then
+# Newest release version among current and legacy prefixes. The prefix is
+# stripped before sorting: version:refname would otherwise compare the full
+# tag names and rank the two prefixes against each other (herdrcat-v0.3.1
+# sorts as newer than herdcats-v0.3.2), suggesting an already-released
+# version after the first publish under the new prefix.
+LAST_VERSION="$(git tag --list 'herdcats-v*' 'herdrcat-v*' \
+  | sed -E 's/^(herdcats|herdrcat)-v//' \
+  | sort -u -t. -k1,1nr -k2,2nr -k3,3nr \
+  | head -n 1)"
+
+if [[ -z "$LAST_VERSION" ]]; then
   CURRENT="$(sed -n -E 's/^[[:space:]]*CFBundleShortVersionString:[[:space:]]*"?([^"]*)"?.*/\1/p' ios/project.yml | head -n 1)"
   echo "No herdcats-v* (or legacy herdrcat-v*) tag yet; this is the first release."
   echo ""
@@ -27,8 +45,7 @@ if [[ -z "$LAST_TAG" ]]; then
   exit 0
 fi
 
-LAST_VERSION="${LAST_TAG#herdcats-v}"
-LAST_VERSION="${LAST_VERSION#herdrcat-v}"
+LAST_TAG="$(resolve_release_tag "$LAST_VERSION")"
 RANGE="${LAST_TAG}..HEAD"
 
 if [[ -z "$(git log "$RANGE" --oneline -- ios/)" ]]; then

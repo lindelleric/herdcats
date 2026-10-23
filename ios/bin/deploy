@@ -178,6 +178,7 @@ read_marketing_version() {
 }
 
 publish_failed_after_tag=0
+publish_upload_done=0
 
 print_publish_recovery() {
   local ec=$?
@@ -185,9 +186,16 @@ print_publish_recovery() {
     local recovery_tag="${PUBLISH_RECOVERY_TAG:-}"
     echo "" >&2
     echo "Publish failed after creating local tag ${recovery_tag}." >&2
-    echo "Recovery options:" >&2
-    echo "  • Retry upload: ./ios/bin/changelog (if needed), then ./ios/bin/beta, then git push origin ${recovery_tag}" >&2
-    echo "  • Or delete local tag and restart publish: git tag -d ${recovery_tag}" >&2
+    if [[ "$publish_upload_done" -eq 1 ]]; then
+      echo "Recovery options:" >&2
+      echo "  • The TestFlight upload already completed; finish with: git push origin ${recovery_tag}" >&2
+      echo "  • Do not rerun ./ios/bin/beta: the same CFBundleVersion upload would be rejected as a duplicate." >&2
+      echo "  • Or delete local tag and restart publish: git tag -d ${recovery_tag}" >&2
+    else
+      echo "Recovery options:" >&2
+      echo "  • Retry upload: ./ios/bin/changelog (if needed), then ./ios/bin/beta, then git push origin ${recovery_tag}" >&2
+      echo "  • Or delete local tag and restart publish: git tag -d ${recovery_tag}" >&2
+    fi
   fi
 }
 
@@ -243,6 +251,7 @@ cmd_publish() {
 
   banner "Step 3/4: TestFlight upload"
   "$BIN_DIR/beta"
+  publish_upload_done=1
 
   banner "Step 4/4: push tag"
   if ! git remote get-url origin >/dev/null 2>&1; then

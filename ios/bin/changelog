@@ -27,6 +27,17 @@ resolve_release_tag() {
   fi
 }
 
+# Newest release version first. Tags come in two prefix styles (herdcats-v*,
+# legacy herdrcat-v*); version:refname would compare the full tag names and
+# rank the prefixes against each other (herdrcat-v0.3.1 sorts as newer than
+# herdcats-v0.3.2), so strip the prefix before sorting and resolve the tag
+# names afterwards.
+newest_release_versions() {
+  git tag --list 'herdcats-v*' 'herdrcat-v*' \
+    | sed -E 's/^(herdcats|herdrcat)-v//' \
+    | sort -u -t. -k1,1nr -k2,2nr -k3,3nr
+}
+
 if [[ $# -eq 2 ]]; then
   FROM_TAG="$(resolve_release_tag "$1")" || {
     echo "Error: no herdcats-v$1 or herdrcat-v$1 tag found." >&2
@@ -44,12 +55,14 @@ elif [[ $# -eq 1 ]]; then
   }
   RANGE="${FROM_TAG}..HEAD"
 elif [[ $# -eq 0 ]]; then
-  TAGS="$(git tag --sort=-version:refname --list 'herdcats-v*' 'herdrcat-v*')"
-  TO_TAG="$(head -n 1 <<< "$TAGS")"
-  FROM_TAG="$(sed -n 2p <<< "$TAGS")"
-  if [[ -z "$TO_TAG" ]]; then
+  VERSIONS="$(newest_release_versions)"
+  TO_TAG="$(resolve_release_tag "$(head -n 1 <<< "$VERSIONS")")" || {
     echo "Error: no herdcats-v* (or legacy herdrcat-v*) tags found. Publish a tested release tag first; see RELEASING.md." >&2
     exit 1
+  }
+  FROM_TAG=""
+  if [[ -n "$(sed -n 2p <<< "$VERSIONS")" ]]; then
+    FROM_TAG="$(resolve_release_tag "$(sed -n 2p <<< "$VERSIONS")")"
   fi
   # First release: everything up to the only tag.
   RANGE="${FROM_TAG:+$FROM_TAG..}$TO_TAG"
