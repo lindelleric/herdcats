@@ -497,6 +497,78 @@ pub fn codex_fresh_change(
     (applied.0 == slug && effort.is_none_or(|wanted| applied.1 == wanted)).then_some(applied)
 }
 
+/// Claude's cache-invalidation confirmation shown after conversation history exists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaudeSwitchDialog {
+    pub model: bool,
+    pub options: Vec<(u32, String)>,
+}
+
+impl ClaudeSwitchDialog {
+    pub fn can_decline(&self) -> bool {
+        self.options
+            .iter()
+            .filter(|(number, _)| *number == 2)
+            .count()
+            == 1
+            && self
+                .options
+                .iter()
+                .any(|(number, label)| *number == 2 && label == "No, go back")
+    }
+    pub fn matches(&self, target_model: Option<&str>, target_effort: Option<&str>) -> bool {
+        if self.options.len() != 2
+            || !self.can_decline()
+            || self.options[0].0 != 1
+            || self.options[1].0 != 2
+        {
+            return false;
+        }
+        let Some(target) = self.options[0].1.strip_prefix("Yes, switch to ") else {
+            return false;
+        };
+        if self.model {
+            target_model.is_some_and(|model| {
+                target
+                    .to_ascii_lowercase()
+                    .starts_with(&claude_model_label(model).to_ascii_lowercase())
+            })
+        } else {
+            target_effort.is_some_and(|effort| target.eq_ignore_ascii_case(effort))
+        }
+    }
+}
+
+pub fn claude_switch_dialog(screen: &str) -> Option<ClaudeSwitchDialog> {
+    let lines: Vec<_> = screen.lines().collect();
+    let (index, model) =
+        lines
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, line)| match line.trim() {
+                "Switch model?" => Some((index, true)),
+                "Change effort level?" => Some((index, false)),
+                _ => None,
+            })?;
+    let mut options = Vec::new();
+    for raw in &lines[index + 1..] {
+        let line = raw.trim().trim_start_matches('❯').trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some((number, label)) = line.split_once(". ")
+            && let Ok(number) = number.parse::<u32>()
+        {
+            options.push((number, label.trim().to_owned()));
+        } else if !options.is_empty() || raw.trim_start().starts_with('❯') {
+            // Historical dialog text followed by a composer/result is not a live dialog.
+            return None;
+        }
+    }
+    Some(ClaudeSwitchDialog { model, options })
+}
+
 /// Claude's confirmation lines after `/model` and `/effort`. Returns the
 /// confirmed display label for model lines, and the level for effort lines.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -504,11 +576,15 @@ pub enum ClaudeConfirmation {
     Model(String),
     Effort(String),
     Invalid(String),
+    Kept,
 }
 
 pub fn claude_confirmation(screen: &str) -> Option<ClaudeConfirmation> {
-    for line in screen.lines() {
+    for line in screen.lines().rev() {
         let line = line.trim().trim_start_matches('⎿').trim();
+        if line.starts_with("Kept effort level as ") || line.starts_with("Kept model as ") {
+            return Some(ClaudeConfirmation::Kept);
+        }
         if let Some(rest) = line.strip_prefix("Set model to ") {
             let label = rest.split(" and saved").next().unwrap_or(rest).trim();
             if !label.is_empty() {
@@ -886,6 +962,54 @@ mod tests {
         assert_eq!(
             codex_change_toast(&format!("{new}\n• Model changed to gpt-6-luna medium")),
             None
+        );
+    }
+
+    #[test]
+    fn claude_cache_switch_dialogs_match_real_screens_and_fail_closed() {
+        let effort_screen = include_str!("fixtures/claude-effort-confirm.txt");
+        let effort = claude_switch_dialog(effort_screen).unwrap();
+        assert!(effort.matches(None, Some("medium")));
+        assert!(!effort.matches(None, Some("high")));
+        assert!(!effort.matches(Some("haiku"), None));
+        let model_screen = include_str!("fixtures/claude-model-confirm.txt");
+        assert!(
+            claude_switch_dialog(model_screen)
+                .unwrap()
+                .matches(Some("haiku"), None)
+        );
+        assert!(
+            !claude_switch_dialog(model_screen)
+                .unwrap()
+                .matches(Some("opus"), None)
+        );
+        assert!(
+            claude_switch_dialog(&model_screen.replace("Haiku", "HAIKU"))
+                .unwrap()
+                .matches(Some("haiku"), None)
+        );
+        assert!(
+            !claude_switch_dialog(&effort_screen.replace("No, go back", "Other action"))
+                .unwrap()
+                .matches(None, Some("medium"))
+        );
+        assert!(
+            !claude_switch_dialog(&format!("{effort_screen}  3. Unexpected option"))
+                .unwrap()
+                .matches(None, Some("medium"))
+        );
+        assert!(claude_switch_dialog(&format!("{effort_screen}\n❯ new draft")).is_none());
+        assert!(
+            claude_switch_dialog(&effort_screen.replace("Change effort level?", "Other dialog?"))
+                .is_none()
+        );
+        assert_eq!(
+            claude_confirmation("⎿ Kept effort level as low"),
+            Some(ClaudeConfirmation::Kept)
+        );
+        assert_eq!(
+            claude_confirmation("⎿ Kept model as Sonnet 5.5"),
+            Some(ClaudeConfirmation::Kept)
         );
     }
 

@@ -193,7 +193,7 @@
       "result_types": {
         "applied": "{model: {id, label}|null, effort: id|null}; the pair in effect after the attempt: the confirmed new values for steps that succeeded, the prior values otherwise",
         "confirmed": "boolean; true when every requested step was confirmed on screen",
-        "error": "null on success; unknown_model, invalid_effort, stale, composer_not_empty or confirm_timeout when a sent command failed its screen confirmation (partial results still return applied)"
+        "error": "null on success; unknown_model, invalid_effort, stale, composer_not_empty, picker_mismatch, change_declined or confirm_timeout when a sent command failed its screen confirmation (partial results still return applied)"
       },
       "requires": "initialize with params.model_control true and a watch with a resolved native identity",
       "validation": [
@@ -201,6 +201,7 @@
         "A fresh Herdr snapshot and adapter re-resolution must still show the same pane, terminal, agent and native session; otherwise stale.",
         "The transcript scan must equal the expect pair exactly; otherwise stale (the desk changed it).",
         "Claude sends /model first, waits for the Set model to confirmation (its text supplies the applied label), then /effort and its confirmation; an invalid model stops the flow, an invalid effort still reports the applied model.",
+        "Claude may show a Switch model? or Change effort level? cache-switch dialog. The bridge verifies both numbered options and the requested target (case-insensitive model-label prefix or exact effort), rechecks occupant/idle status and the visible dialog, then sends digit 1 once. A mismatched target returns picker_mismatch. A timeout or mismatch sends digit 2 only while a fresh read still shows the recognizable dialog with No, go back. The Set confirmation must differ from the pre-send baseline and follow the submitted command; Kept model/effort results fail with change_declined.",
         "Before every agent.prompt, the visible composer must be provably empty or the request returns composer_not_empty without sending input. Occupant and idle/done status are rechecked before subsequent sends; a mid-flow change returns stale (with Claude partial applied values) and dismisses an open Codex picker.",
         "Codex submits /model through Herdr's agent.prompt, then drives the picker with arrows and verifies the screen, model label, row labels and cursor before enter or s; enter on the model list only advances to the effort step, including lists with ten or more models; max/ultra open the nested Advanced Reasoning entry first. The effort is applied with the s session-only key, never the digit/enter default-persist paths, so config.toml is not written."
       ],
@@ -213,7 +214,8 @@
         "agent_busy": "Pane status is working or blocked; no input sent.",
         "stale": "Occupant/status changed or the expect pair disagrees with the transcript; no further apply input is sent. An open Codex picker is dismissed.",
         "composer_not_empty": "The composer contains a draft or could not be proven empty; no prompt is sent (Claude may return a previously applied model as a partial result).",
-        "picker_mismatch": "A Codex picker screen did not show the expected title/rows; the picker is dismissed with Escape.",
+        "change_declined": "Claude kept the prior model or effort; applied retains the previously confirmed pair.",
+        "picker_mismatch": "A Claude cache-switch dialog did not match the requested target (declined only while visible), or a Codex picker screen did not show the expected title/rows; the picker is dismissed with Escape.",
         "confirm_timeout": "The command or picker never confirmed within about 4 seconds; the Codex picker is dismissed with Escape.",
         "herdr_unavailable": "Herdr socket I/O failed mid-flow."
       },

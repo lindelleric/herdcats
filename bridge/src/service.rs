@@ -1155,47 +1155,90 @@ impl Service {
         }
         Ok(result)
     }
-    /// Waits for a Claude slash-command outcome. The screen must differ from
-    /// the pre-send baseline and contain the submitted command's echo, so a
-    /// confirmation line left over from an earlier turn cannot match.
+    /// Decline only a currently visible cache-switch dialog on the same idle occupant.
+    fn decline_claude_switch(&self, identity: &Identity) {
+        if self.recheck_idle(identity).is_err() {
+            return;
+        }
+        let Ok(screen) = self.client.read_visible(&identity.pane_id) else {
+            return;
+        };
+        if model_control::claude_switch_dialog(&screen).is_some_and(|dialog| dialog.can_decline()) {
+            let _ = self.client.send_keys(&identity.pane_id, &["2"]);
+        }
+    }
+    /// Wait for a direct result or accept the matching cache-switch dialog once.
+    /// Result lines must follow the submitted command and differ from the baseline.
     fn wait_claude_confirmation(
         &self,
-        pane_id: &str,
+        identity: &Identity,
         baseline: &str,
         command: &str,
         want_effort: Option<&str>,
     ) -> (Option<String>, Option<&'static str>) {
-        let deadline = Instant::now() + Duration::from_secs(4);
+        let pane_id = &identity.pane_id;
+        let mut baseline = baseline.to_owned();
+        let mut deadline = Instant::now() + Duration::from_secs(4);
+        let mut accepted = false;
+        let want_model = want_effort
+            .is_none()
+            .then(|| command.trim_start_matches("/model "));
         loop {
             let screen = self.client.read_visible(pane_id).unwrap_or_default();
-            if screen != baseline && screen.contains(command) {
-                match model_control::claude_confirmation(&screen) {
-                    Some(ClaudeConfirmation::Model(label)) if want_effort.is_none() => {
-                        return (Some(label), None);
+            if screen != baseline {
+                if let Some(dialog) = model_control::claude_switch_dialog(&screen) {
+                    if !dialog.matches(want_model, want_effort) {
+                        self.decline_claude_switch(identity);
+                        return (None, Some("picker_mismatch"));
                     }
-                    Some(ClaudeConfirmation::Effort(level))
-                        if want_effort.is_some_and(|wanted| level == wanted) =>
-                    {
-                        return (Some(level), None);
-                    }
-                    Some(ClaudeConfirmation::Invalid(payload)) => {
-                        let expected_invalid = match want_effort {
-                            None => payload.contains(command.trim_start_matches("/model ")),
-                            Some(wanted) => payload == wanted,
-                        };
-                        if expected_invalid {
-                            let code = if want_effort.is_none() {
-                                "unknown_model"
-                            } else {
-                                "invalid_effort"
-                            };
-                            return (None, Some(code));
+                    if !accepted {
+                        if self.recheck_idle(identity).is_err() {
+                            return (None, Some("stale"));
+                        }
+                        // A fresh read must still show exactly the verified dialog.
+                        let fresh = self.client.read_visible(pane_id).unwrap_or_default();
+                        if model_control::claude_switch_dialog(&fresh).as_ref() == Some(&dialog) {
+                            if self.client.send_keys(pane_id, &["1"]).is_err() {
+                                return (None, Some("herdr_unavailable"));
+                            }
+                            accepted = true;
+                            baseline = fresh;
+                            deadline = Instant::now() + Duration::from_secs(4);
                         }
                     }
-                    _ => {}
+                } else if let Some((_, outcome)) = screen.rsplit_once(command) {
+                    match model_control::claude_confirmation(outcome) {
+                        Some(ClaudeConfirmation::Model(label)) if want_effort.is_none() => {
+                            return (Some(label), None);
+                        }
+                        Some(ClaudeConfirmation::Effort(level))
+                            if want_effort.is_some_and(|wanted| level == wanted) =>
+                        {
+                            return (Some(level), None);
+                        }
+                        Some(ClaudeConfirmation::Kept) => return (None, Some("change_declined")),
+                        Some(ClaudeConfirmation::Invalid(payload)) => {
+                            let expected_invalid = match want_effort {
+                                None => payload.contains(command.trim_start_matches("/model ")),
+                                Some(wanted) => payload == wanted,
+                            };
+                            if expected_invalid {
+                                return (
+                                    None,
+                                    Some(if want_effort.is_none() {
+                                        "unknown_model"
+                                    } else {
+                                        "invalid_effort"
+                                    }),
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
             if Instant::now() >= deadline {
+                self.decline_claude_switch(identity);
                 return (None, Some("confirm_timeout"));
             }
             thread::sleep(Duration::from_millis(150));
@@ -1246,7 +1289,7 @@ impl Service {
                 .agent_prompt(pane_id, &command)
                 .map_err(|_| "herdr_unavailable")?;
             let (label, failure) =
-                self.wait_claude_confirmation(pane_id, &baseline, &command, None);
+                self.wait_claude_confirmation(identity, &baseline, &command, None);
             match (label, failure) {
                 (Some(label), _) => applied_model = Some((target.to_owned(), label)),
                 (None, Some(code)) => error = Some(code),
@@ -1276,7 +1319,7 @@ impl Service {
                     .agent_prompt(pane_id, &command)
                     .map_err(|_| "herdr_unavailable")?;
                 let (level, failure) =
-                    self.wait_claude_confirmation(pane_id, &baseline, &command, Some(target));
+                    self.wait_claude_confirmation(identity, &baseline, &command, Some(target));
                 match (level, failure) {
                     (Some(level), _) => applied_effort = Some(level),
                     (None, Some(code)) => error = Some(code),

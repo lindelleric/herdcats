@@ -1206,3 +1206,166 @@ fn codex_dismissal_does_not_repeat_escape_on_an_unchanged_picker() {
     );
     cleanup(&service, root);
 }
+
+#[test]
+fn model_set_claude_accepts_each_cache_switch_dialog_and_confirms_results() {
+    let (mut service, root, herdr, _) = model_fixture_claude();
+    let model_dialog = include_str!("fixtures/claude-model-confirm.txt").to_owned();
+    let effort_dialog =
+        include_str!("fixtures/claude-effort-confirm.txt").replace("medium", "high");
+    let applied_model = claude_model_screen("/model haiku").replace("Sonnet 5.5", "Haiku 5.5");
+    script_model(
+        &herdr,
+        vec![
+            model_dialog,
+            applied_model,
+            effort_dialog,
+            claude_effort_screen(),
+        ],
+    );
+    let reply = model_request(
+        &mut service,
+        "model.set",
+        json!({
+            "model":"haiku", "effort":"high", "expect":expect_pair("claude-opus-5-5", Some("medium"))
+        }),
+    );
+    let result = &result_frame(&reply)["result"];
+    assert_eq!(result["confirmed"], true);
+    assert_eq!(result["applied"]["model"]["label"], "Haiku 5.5");
+    assert_eq!(result["applied"]["effort"], "high");
+    assert_eq!(
+        herdr.lock().unwrap().inputs,
+        vec![
+            prompt_input("/model haiku"),
+            model_keys_input(&["1"]),
+            prompt_input("/effort high"),
+            model_keys_input(&["1"])
+        ]
+    );
+    cleanup(&service, root);
+}
+
+#[test]
+fn model_set_claude_declines_mismatched_dialog_target() {
+    let (mut service, root, herdr, _) = model_fixture_claude();
+    script_model(
+        &herdr,
+        vec![include_str!("fixtures/claude-effort-confirm.txt").into()],
+    );
+    let reply = model_request(
+        &mut service,
+        "model.set",
+        json!({
+            "effort":"high", "expect":expect_pair("claude-opus-5-5", Some("medium"))
+        }),
+    );
+    assert_eq!(result_frame(&reply)["result"]["error"], "picker_mismatch");
+    assert_eq!(result_frame(&reply)["result"]["confirmed"], false);
+    assert_eq!(
+        herdr.lock().unwrap().inputs,
+        vec![prompt_input("/effort high"), model_keys_input(&["2"])]
+    );
+    cleanup(&service, root);
+}
+
+#[test]
+fn model_set_claude_timeout_declines_only_a_still_visible_dialog() {
+    for visible in [true, false] {
+        let (mut service, root, herdr, _) = model_fixture_claude();
+        let dialog = include_str!("fixtures/claude-effort-confirm.txt").replace("medium", "high");
+        let after = if visible {
+            dialog.clone()
+        } else {
+            claude_idle_screen()
+        };
+        script_model(&herdr, vec![dialog, after]);
+        let reply = model_request(
+            &mut service,
+            "model.set",
+            json!({
+                "effort":"high", "expect":expect_pair("claude-opus-5-5", Some("medium"))
+            }),
+        );
+        assert_eq!(result_frame(&reply)["result"]["error"], "confirm_timeout");
+        let mut expected = vec![prompt_input("/effort high"), model_keys_input(&["1"])];
+        if visible {
+            expected.push(model_keys_input(&["2"]));
+        }
+        assert_eq!(herdr.lock().unwrap().inputs, expected);
+        cleanup(&service, root);
+    }
+}
+
+#[test]
+fn model_set_claude_kept_result_is_failure_without_further_keys() {
+    let (mut service, root, herdr, _) = model_fixture_claude();
+    script_model(
+        &herdr,
+        vec!["❯ /effort high\n  ⎿ Kept effort level as medium\n❯ Try \"fix lint errors\"".into()],
+    );
+    let reply = model_request(
+        &mut service,
+        "model.set",
+        json!({
+            "effort":"high", "expect":expect_pair("claude-opus-5-5", Some("medium"))
+        }),
+    );
+    assert_eq!(result_frame(&reply)["result"]["error"], "change_declined");
+    assert_eq!(
+        result_frame(&reply)["result"]["applied"]["effort"],
+        "medium"
+    );
+    assert_eq!(
+        herdr.lock().unwrap().inputs,
+        vec![prompt_input("/effort high")]
+    );
+    cleanup(&service, root);
+}
+
+#[test]
+fn model_set_claude_dialog_acceptance_rechecks_idle_status() {
+    let (mut service, root, herdr, _) = model_fixture_claude();
+    let dialog = include_str!("fixtures/claude-effort-confirm.txt").replace("medium", "high");
+    script_model(&herdr, vec![dialog]);
+    herdr.lock().unwrap().status_after_inputs = Some((1, "working".into()));
+    let reply = model_request(
+        &mut service,
+        "model.set",
+        json!({
+            "effort":"high", "expect":expect_pair("claude-opus-5-5", Some("medium"))
+        }),
+    );
+    assert_eq!(result_frame(&reply)["result"]["error"], "stale");
+    assert_eq!(
+        herdr.lock().unwrap().inputs,
+        vec![prompt_input("/effort high")]
+    );
+    cleanup(&service, root);
+}
+
+#[test]
+fn model_set_claude_declines_mismatched_model_label() {
+    let (mut service, root, herdr, _) = model_fixture_claude();
+    script_model(
+        &herdr,
+        vec![include_str!("fixtures/claude-model-confirm.txt").into()],
+    );
+    let reply = model_request(
+        &mut service,
+        "model.set",
+        json!({
+            "model":"sonnet", "expect":expect_pair("claude-opus-5-5", Some("medium"))
+        }),
+    );
+    assert_eq!(result_frame(&reply)["result"]["error"], "picker_mismatch");
+    assert_eq!(
+        result_frame(&reply)["result"]["applied"]["model"]["id"],
+        "claude-opus-5-5"
+    );
+    assert_eq!(
+        herdr.lock().unwrap().inputs,
+        vec![prompt_input("/model sonnet"), model_keys_input(&["2"])]
+    );
+    cleanup(&service, root);
+}
