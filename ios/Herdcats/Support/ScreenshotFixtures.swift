@@ -76,7 +76,17 @@ enum ScreenshotFixtures {
         return QuotaReport(generatedAt: nil, schemaVersion: 1, providers: entries, cliVersion: nil)
     }
 
-    static let terminal = """
+    static var terminal: String {
+        if ProcessInfo.processInfo.arguments.contains("-hc.long-terminal-selection") {
+            return (0..<400).map { index in
+                let marker = String(format: "%04d", index)
+                return "row\(marker) target\(marker) " + String(repeating: "content ", count: index % 12)
+            }.joined(separator: "\n")
+        }
+        return terminalPreview
+    }
+
+    private static let terminalPreview = """
     \u{001B}[38;5;208m╭─ Claude Code ───────────────────────────────────────╮\u{001B}[0m
       Herdcats · onboarding polish · Claude
     \u{001B}[38;5;208m╰────────────────────────────────────────────────────╯\u{001B}[0m
