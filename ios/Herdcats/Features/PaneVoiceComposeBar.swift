@@ -709,7 +709,8 @@ struct PaneVoiceComposeBar: View {
     private var messageField: some View {
         // Editable 1-to-6-row field
         TextField(placeholder, text: $draft, axis: .vertical)
-            .font(.jost(.subheadline))
+            // Conversation composers match the timeline's body text size.
+            .font(.jost(modelControl != nil ? .body : .subheadline))
             .lineLimit(1...6)
             .focused($isComposeFieldFocused)
             .textInputAutocapitalization(.never)
