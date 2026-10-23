@@ -730,7 +730,7 @@ struct SpacesScreen: View {
     @State private var isShowingRenameAlert = false
     @State private var closeTarget: Space?
     @State private var isShowingCloseConfirmation = false
-    /// Space whose swipe "More" drawer is open.
+    /// Space whose "More" drawer is open from a swipe or long press.
     @State private var actionsTarget: Space?
     /// Chosen in the drawer; performed in `onDismiss` so the next sheet or
     /// alert is not presented while the drawer is still on screen.
@@ -1076,8 +1076,8 @@ struct SpacesScreen: View {
 
     // MARK: Pieces
 
-    /// Makes a space row open the space and adds the trailing swipe
-    /// actions: More (the actions drawer) and Close.
+    /// Opens a space on tap, its More drawer on long press, and offers
+    /// trailing swipe actions: More and Close.
     private func spaceLink<Row: View>(_ space: Space, @ViewBuilder row: () -> Row) -> some View {
         // A direct NavigationLink keeps the tap on UIKit's cell selection.
         // Any SwiftUI gesture on the row content (tap, Button, drag) can win
@@ -1091,6 +1091,12 @@ struct SpacesScreen: View {
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             swipeCloseButton(space)
             swipeMoreButton(space)
+        }
+        .onLongPressGesture {
+            actionsTarget = space
+        }
+        .accessibilityAction(named: "More") {
+            actionsTarget = space
         }
     }
 
