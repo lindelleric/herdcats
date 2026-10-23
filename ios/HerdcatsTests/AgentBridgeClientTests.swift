@@ -146,7 +146,7 @@ struct AgentBridgeClientTests {
         try await wait(wire)
         let bytes = await wire.commands[0]
         let request = try #require(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
-        #expect(request["params"] as? NSDictionary == ["protocol": 1, "record_content": true, "approvals": true, "questions": true] as NSDictionary)
+        #expect(request["params"] as? NSDictionary == ["protocol": 1, "record_content": true, "approvals": true, "questions": true, "model_control": true] as NSDictionary)
         let id = try await wire.requestId()
         await client.receive(Data("{\"id\":\"\(id)\",\"result\":{\"protocol\":1,\"epoch\":\"e\",\"capabilities\":{\"claude_timeline\":true,\"record_content\":true,\"approvals\":true,\"questions\":true}}}\n".utf8))
         for _ in 0..<500 {
@@ -746,6 +746,54 @@ struct TimelineHistoryClientTests {
         let id = try await wire.requestId()
         await client.receive(Data("{\"id\":\"\(id)\",\"result\":{\"generation\":1,\"entries\":[],\"has_more\":false}}\n".utf8))
         #expect(try await retry.value.generation == 1)
+        #expect(await wire.closes == 0)
+        await client.close()
+    }
+}
+
+extension AgentBridgeClientTests {
+    @Test func modelControlRequestsAreGatedAndPreserveRemoteErrorCodes() async throws {
+        let wire = BridgeTestWire()
+        let client = AgentBridgeClient(write: { await wire.write($0) }, close: { await wire.close() }, onEvent: { _ in })
+        do {
+            _ = try await client.modelStatus()
+            Issue.record("Model control without a capability was accepted")
+        } catch { #expect((error as? AgentBridgeError)?.code == "unsupported_capability") }
+        #expect(await wire.commands.isEmpty)
+        let handshake = Task { try await client.performHandshakeAndWatch(paneId: "p1") }
+        try await wait(wire)
+        var id = try await wire.requestId()
+        await client.receive(Data("{\"id\":\"\(id)\",\"result\":{\"protocol\":1,\"epoch\":\"e\",\"capabilities\":{\"claude_timeline\":true,\"record_content\":true,\"model_control\":true}}}\n".utf8))
+        for _ in 0..<500 {
+            if await wire.commands.count == 2 { break }
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        id = try await wire.requestId()
+        await client.receive(Data("{\"id\":\"\(id)\",\"result\":{}}\n".utf8))
+        try await handshake.value
+        for code in ["agent_busy", "composer_not_empty", "stale"] {
+            let count = await wire.commands.count
+            let change = Task { try await client.setModel(model: "sonnet", effort: nil,
+                expect: AgentModelExpectation(model: nil, effort: "medium")) }
+            for _ in 0..<500 {
+                if await wire.commands.count > count { break }
+                try await Task.sleep(for: .milliseconds(2))
+            }
+            let request = try #require(JSONSerialization.jsonObject(with: await wire.commands.last!) as? [String: Any])
+            #expect(request["method"] as? String == "model.set")
+            let params = try #require(request["params"] as? [String: Any])
+            #expect(params["model"] as? String == "sonnet")
+            #expect(params["effort"] == nil)
+            let expect = try #require(params["expect"] as? [String: Any])
+            #expect(expect["model"] is NSNull)
+            #expect(expect["effort"] as? String == "medium")
+            id = try await wire.requestId()
+            await client.receive(Data("{\"id\":\"\(id)\",\"error\":{\"code\":\"\(code)\"}}\n".utf8))
+            do {
+                _ = try await change.value
+                Issue.record("Model refusal accepted")
+            } catch { #expect((error as? AgentBridgeError)?.code == code) }
+        }
         #expect(await wire.closes == 0)
         await client.close()
     }

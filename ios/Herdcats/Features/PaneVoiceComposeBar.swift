@@ -103,6 +103,8 @@ struct PaneAttachmentInfo: Identifiable, Sendable {
 ///    Voice immediately left of Send, and Send hidden for blank/whitespace text.
 struct PaneVoiceComposeBar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var showsModelConfiguration = false
+    var modelControl: AgentModelControlState? = nil
     @State private var isKeysDrawerOpen = false
     @State private var isArrowRowOpen = false
 
@@ -262,6 +264,12 @@ struct PaneVoiceComposeBar: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("pane-voice-compose-bar")
+        .sheet(isPresented: $showsModelConfiguration) {
+            if let modelControl { AgentModelConfigurationSheet(state: modelControl) }
+        }
+        .onChange(of: modelControl?.isVisible) { _, visible in
+            if visible != true { showsModelConfiguration = false }
+        }
     }
 
     // MARK: - 1. Live Mode Bar
@@ -690,6 +698,24 @@ struct PaneVoiceComposeBar: View {
                 .accessibilityLabel("Message text")
                 .accessibilityIdentifier(composeFieldIdentifier)
 
+            if let modelControl, modelControl.isVisible {
+                Button { showsModelConfiguration = true } label: {
+                    HStack(spacing: 3) {
+                        Text(modelControl.label).lineLimit(1).truncationMode(.tail)
+                        Image(systemName: "chevron.down").font(.jost(.caption2)).fixedSize()
+                    }
+                    .font(.jost(.caption))
+                    .foregroundStyle(Theme.accent)
+                    .frame(maxWidth: 140, minHeight: 36)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .layoutPriority(-1)
+                .accessibilityLabel(modelControl.accessibilityLabel)
+                .accessibilityHint("Configure model and effort")
+                .accessibilityIdentifier("timeline-model-control")
+            }
+
             // Voice button inside bubble, immediately left of Send
             Button {
                 HapticFeedback.impact(.light)
@@ -705,6 +731,7 @@ struct PaneVoiceComposeBar: View {
             .disabled(isSending)
             .accessibilityLabel("Dictate message")
             .accessibilityIdentifier("pane-compose-voice-button")
+            .fixedSize()
 
             // Send button: visible when text is present or when sending; shows spinner during send
             if showsSendButton {
@@ -728,6 +755,7 @@ struct PaneVoiceComposeBar: View {
                 .disabled(!canSend || isSending)
                 .accessibilityLabel("Send Message")
                 .accessibilityIdentifier(composeSendIdentifier)
+                .fixedSize()
                 .transition(.scale(scale: 0.85).combined(with: .opacity))
             }
         }
@@ -781,5 +809,91 @@ struct PaneVoiceComposeBar: View {
         .padding(8)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("pane-attachment-chip")
+    }
+}
+
+
+private struct AgentModelConfigurationSheet: View {
+    let state: AgentModelControlState
+    @State private var path: [String] = []
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    var body: some View {
+        NavigationStack(path: $path) {
+            Form {
+                Section {
+                    NavigationLink(value: "Model") {
+                        row("Model", value: state.pair.model?.label ?? "Unknown")
+                    }
+                    if !state.efforts.isEmpty {
+                        NavigationLink(value: "Effort") {
+                            row("Effort", value: state.efforts.first(where: { $0.id == state.pair.effort })?.label ?? "Unknown")
+                        }
+                    }
+                }
+                .listRowBackground(Theme.cardBackground)
+                .disabled(state.isChanging)
+                if state.isChanging { ProgressView().listRowBackground(Theme.cardBackground) }
+                if let error = state.errorMessage {
+                    Text(error)
+                        .foregroundStyle(Theme.destructive)
+                        .listRowBackground(Theme.cardBackground)
+                        .accessibilityIdentifier("model-configuration-error")
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(Theme.background)
+            .navigationTitle("Configure")
+            .navigationBarTitleDisplayMode(.inline)
+            .navigationDestination(for: String.self) { destination in
+                List {
+                    if destination == "Model" {
+                        ForEach(state.models) { model in
+                            option(model.label, selected: state.selectedModelID == model.id) {
+                                Task { await state.change(model: model.id) }
+                            }
+                        }
+                    } else {
+                        ForEach(state.efforts) { effort in
+                            option(effort.label, selected: state.pair.effort == effort.id) {
+                                Task { await state.change(effort: effort.id) }
+                            }
+                        }
+                    }
+                }
+                .disabled(state.isChanging)
+                .scrollContentBackground(.hidden)
+                .background(Theme.background)
+                .navigationTitle(destination)
+                .navigationBarTitleDisplayMode(.inline)
+            }
+        }
+        .font(.jost(.body))
+        .tint(Theme.accent)
+        .presentationDetents(path.isEmpty && !typeSize.isAccessibilitySize ? [.height(300)] : [.medium, .large])
+        .presentationDragIndicator(.visible)
+        .task { await state.refresh() }
+    }
+
+    private func row(_ title: String, value: String) -> some View {
+        HStack {
+            Text(title).foregroundStyle(Theme.text)
+            Spacer()
+            Text(value).foregroundStyle(Theme.textMuted).multilineTextAlignment(.trailing)
+        }
+    }
+    private func option(_ label: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button {
+            path = []
+            action()
+        } label: {
+            HStack {
+                Text(label).foregroundStyle(Theme.text)
+                Spacer()
+                if selected { Image(systemName: "checkmark").foregroundStyle(Theme.accent) }
+            }
+        }
+        .listRowBackground(Theme.cardBackground)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }

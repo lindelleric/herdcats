@@ -67,6 +67,7 @@ struct AgentBridgeCapabilities: Codable, Equatable, Sendable {
     var questions: Bool? = nil
     var approvals: Bool? = nil
     var recordContent: Bool? = nil
+    var modelControl: Bool = false
 
     init(
         claudeTimeline: Bool,
@@ -75,9 +76,11 @@ struct AgentBridgeCapabilities: Codable, Equatable, Sendable {
         codexDaemonStop: Bool? = false,
         recordContent: Bool? = nil,
         approvals: Bool? = nil,
-        questions: Bool? = nil
+        questions: Bool? = nil,
+        modelControl: Bool = false
     ) {
         self.claudeTimeline = claudeTimeline
+        self.modelControl = modelControl
         self.codexTimeline = codexTimeline
         self.codexDaemonConfig = codexDaemonConfig
         self.codexDaemonStop = codexDaemonStop
@@ -88,6 +91,7 @@ struct AgentBridgeCapabilities: Codable, Equatable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.modelControl = try container.decodeIfPresent(Bool.self, forKey: .modelControl) ?? false
         self.claudeTimeline = try container.decode(Bool.self, forKey: .claudeTimeline)
         self.codexTimeline = try container.decodeIfPresent(Bool.self, forKey: .codexTimeline) ?? false
         self.codexDaemonConfig = try container.decodeIfPresent(Bool.self, forKey: .codexDaemonConfig) ?? false
@@ -234,6 +238,12 @@ struct AgentBridgePayload: Codable, Sendable {
     var step: AgentQuestionStep?
     var fresh: Bool?
     var countdown: String?
+    var model: AgentModelOption?
+    var effort: String?
+    var models: [AgentModelOption]?
+    var efforts: [AgentEffortOption]?
+    var applied: AgentModelPair?
+    var error: String?
 }
 struct AgentBridgeRemoteError: Codable, Sendable {
     let code: String
@@ -642,5 +652,63 @@ struct TimelineFileChange: Identifiable, Sendable {
             else { append(.added, after[new]); new += 1 }
         }
         return result
+    }
+}
+
+struct AgentEffortOption: Codable, Equatable, Identifiable, Sendable {
+    let id: String
+    let label: String
+}
+
+/// Status replies carry an object; model.updated carries just the model id.
+struct AgentModelOption: Codable, Equatable, Identifiable, Sendable {
+    let id: String
+    let label: String
+    var efforts: [AgentEffortOption] = []
+    var current: Bool? = nil
+
+    init(id: String, label: String, efforts: [AgentEffortOption] = [], current: Bool? = nil) {
+        self.id = id
+        self.label = label
+        self.efforts = efforts
+        self.current = current
+    }
+    init(from decoder: Decoder) throws {
+        if let id = try? decoder.singleValueContainer().decode(String.self) {
+            self.init(id: id, label: Self.label(for: id))
+        } else {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            self.init(id: try c.decode(String.self, forKey: .id),
+                label: try c.decode(String.self, forKey: .label),
+                efforts: try c.decodeIfPresent([AgentEffortOption].self, forKey: .efforts) ?? [],
+                current: try c.decodeIfPresent(Bool.self, forKey: .current))
+        }
+    }
+    static func label(for id: String) -> String {
+        let parts = id.replacingOccurrences(of: "claude-", with: "").split(separator: "-")
+        if let tier = parts.first, ["opus", "sonnet", "haiku", "fable"].contains(String(tier)) {
+            let version = parts.dropFirst().prefix(while: { part in
+                part.count <= 2 && part.allSatisfy { $0.isASCII && $0.isNumber }
+            }).joined(separator: ".")
+            return tier.capitalized + (version.isEmpty ? "" : " " + version)
+        }
+        return id
+    }
+}
+
+struct AgentModelPair: Codable, Equatable, Sendable {
+    var model: AgentModelOption?
+    var effort: String?
+}
+
+/// Nulls must be encoded: the bridge requires both keys even before the first turn.
+struct AgentModelExpectation: Encodable, Sendable {
+    let model: String?
+    let effort: String?
+    enum CodingKeys: String, CodingKey { case model, effort }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(model, forKey: .model)
+        try c.encode(effort, forKey: .effort)
     }
 }
