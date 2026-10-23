@@ -1283,6 +1283,12 @@ fn model_status_reports_claudes_default_model_and_its_effort_without_a_configure
         .map(|line| format!("{line}\n"))
         .collect();
     fs::write(&path, text).unwrap();
+    // No settings.json at all (a fresh install) still means Claude's default.
+    let _ = fs::remove_file(root.join("settings.json"));
+    let reply = model_request(&mut service, "model.status", json!({}));
+    let result = &result_frame(&reply)["result"];
+    assert_eq!(result["model"], json!({"id":"default","label":"Default"}), "{result:?}");
+    assert_eq!(result["effort"], Value::Null);
     fs::write(root.join("settings.json"), json!({"effortLevel":"high"}).to_string()).unwrap();
     let reply = model_request(&mut service, "model.status", json!({}));
     let result = &result_frame(&reply)["result"];

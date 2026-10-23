@@ -939,7 +939,13 @@ impl Service {
     fn model_scan_fallback(&self, agent: &str) -> Option<(String, Option<String>)> {
         match agent {
             "claude" => {
-                let text = std::fs::read_to_string(self.claude_settings_path.as_ref()?).ok()?;
+                // A missing settings.json (a fresh install) is empty settings:
+                // Claude still runs its default model.
+                let text = self
+                    .claude_settings_path
+                    .as_ref()
+                    .and_then(|path| std::fs::read_to_string(path).ok())
+                    .unwrap_or_default();
                 let settings = model_control::parse_claude_settings(&text);
                 // No configured model means Claude's default; its effort can
                 // still be set and must not be lost with the model.

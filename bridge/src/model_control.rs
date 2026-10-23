@@ -840,12 +840,12 @@ pub fn composer_state(agent: &str, screen: &str) -> Composer {
     };
     // A multiline draft continues on the lines under the marker (its first
     // line may even be blank); any text before the composer's end is a draft.
+    // Blank lines can sit inside a draft, so only a border or footer ends it.
     let continued = lines[index + 1..]
         .iter()
         .map(|line| line.trim())
-        .take_while(|line| !line.is_empty() && !is_composer_edge(line))
-        .next()
-        .is_some();
+        .take_while(|line| !is_composer_edge(line))
+        .any(|line| !line.is_empty());
     if continued {
         return Composer::Draft;
     }
@@ -1450,6 +1450,15 @@ mod tests {
         );
         assert_eq!(
             composer_state("codex", "›\n  second line\n\n  GPT-6.1-Sol low · Context 100% left"),
+            Composer::Draft
+        );
+        // Several blank lines before the draft's first text.
+        assert_eq!(
+            composer_state("claude", "─────\n❯ \n\n\n  text after two newlines\n─────"),
+            Composer::Draft
+        );
+        assert_eq!(
+            composer_state("codex", "›\n\n\n  later text\n\n  GPT-6.1-Sol low · Context 100% left"),
             Composer::Draft
         );
         // Real empty composers: the box border or a blank line follows.
