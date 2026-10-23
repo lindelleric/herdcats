@@ -471,9 +471,13 @@ struct StatusDot: View {
                 WorkingStatusIcon()
             } else {
                 Circle()
-                    .fill(status.color)
+                    .fill(status == .idle ? Color.clear : status.color)
+                    .overlay {
+                        if status == .idle {
+                            Circle().strokeBorder(status.color, lineWidth: 1.5)
+                        }
+                    }
                     .frame(width: 9, height: 9)
-                    .shadow(color: status.color.opacity(0.8), radius: animated && pulsing ? 5 : 2)
                     .scaleEffect(animated && pulsing ? 1.25 : 0.9)
                     .animation(
                         animated ? .easeInOut(duration: 0.8).repeatForever(autoreverses: true) : .default,
@@ -623,6 +627,16 @@ struct AgentKindIcon: View {
 }
 
 // MARK: - Quiet list rows
+
+extension VerticalAlignment {
+    private enum ListTitleCenter: AlignmentID {
+        static func defaultValue(in context: ViewDimensions) -> CGFloat {
+            context[VerticalAlignment.center]
+        }
+    }
+
+    static let listTitleCenter = VerticalAlignment(ListTitleCenter.self)
+}
 
 /// Shared geometry for the Spaces and Agents lists: a narrow leading status
 /// column replaces the `#number`, so every title starts at the same x.

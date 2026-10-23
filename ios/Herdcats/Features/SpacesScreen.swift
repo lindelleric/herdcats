@@ -1641,9 +1641,8 @@ struct SpaceRow: View {
     private var workspace: Workspace { group.root.workspace }
 
     var body: some View {
-        HStack(alignment: .top, spacing: QuietListMetrics.columnSpacing) {
+        HStack(alignment: .listTitleCenter, spacing: QuietListMetrics.columnSpacing) {
             StatusDot(status: group.root.status)
-                .padding(.top, 3)
                 .accessibilityLabel(group.root.status.label)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -1656,6 +1655,7 @@ struct SpaceRow: View {
                     Spacer(minLength: 8)
                     RowTimestamp(date: lastUpdated)
                 }
+                .alignmentGuide(.listTitleCenter) { $0[VerticalAlignment.center] }
                 HStack(spacing: 12) {
                     StatChip(icon: "rectangle.split.3x1", value: "\(workspace.tabCount)", caption: "tabs")
                     StatChip(icon: "rectangle.split.2x2", value: "\(workspace.paneCount)", caption: "panes")
