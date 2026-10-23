@@ -866,7 +866,6 @@ private struct AgentModelConfigurationSheet: View {
                 }
                 .listRowBackground(Theme.cardBackground)
                 .disabled(state.isChanging)
-                if state.isChanging { ProgressView().listRowBackground(Theme.cardBackground) }
                 if let error = state.errorMessage {
                     Text(error)
                         .foregroundStyle(Theme.destructive)
@@ -879,6 +878,17 @@ private struct AgentModelConfigurationSheet: View {
             .background(Theme.background)
             .navigationTitle("Configure")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                // The app's spinner sits in front of the title while a change applies.
+                ToolbarItem(placement: .principal) {
+                    HStack(spacing: 8) {
+                        if state.isChanging { CircularArcSpinner(size: 14) }
+                        Text("Configure").font(.jost(.headline))
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityAddTraits(.isHeader)
+                }
+            }
             .navigationDestination(for: String.self) { destination in
                 List {
                     if destination == "Model" {
