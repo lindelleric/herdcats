@@ -61,6 +61,17 @@ impl Client {
         frame["result"]["read"]["text"].as_str()
             .map(str::to_owned).ok_or("invalid_herdr_response")
     }
+    /// The visible screen with ANSI styling kept, to tell faint placeholders
+    /// from typed text.
+    pub fn read_visible_ansi(&self, pane_id: &str) -> Result<String> {
+        let frame = self.request(
+            "pane.read", "pane.read",
+            json!({"pane_id":pane_id,"source":"visible","format":"ansi"}),
+            "invalid_herdr_response",
+        )?;
+        frame["result"]["read"]["text"].as_str()
+            .map(str::to_owned).ok_or("invalid_herdr_response")
+    }
     pub fn send_text(&self, pane_id: &str, text: &str) -> Result<()> {
         self.request("pane.send_text", "pane.send_text", json!({"pane_id":pane_id,"text":text}),
             "invalid_herdr_response")?;

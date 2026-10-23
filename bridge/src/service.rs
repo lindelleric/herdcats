@@ -1301,6 +1301,19 @@ impl Service {
             .map_err(|_| "composer_not_empty")?;
         match model_control::composer_state(agent, &screen) {
             model_control::Composer::Empty => Ok(()),
+            // Placeholder-shaped text may be the user's draft: accept it only
+            // when the styled screen shows it faint, as idle suggestions are.
+            model_control::Composer::Placeholder(text) => {
+                let styled = self
+                    .client
+                    .read_visible_ansi(pane_id)
+                    .map_err(|_| "composer_not_empty")?;
+                if model_control::placeholder_is_faint(agent, &styled, &text) {
+                    Ok(())
+                } else {
+                    Err("composer_not_empty")
+                }
+            }
             _ => Err("composer_not_empty"),
         }
     }
@@ -1333,7 +1346,14 @@ impl Service {
         let mut applied_effort = current.as_ref().and_then(|(_, effort)| effort.clone());
         let mut error: Option<&str> = None;
         if let Some(target) = target_model
-            .filter(|target| Some(*target) != current.as_ref().map(|(id, _)| id.as_str()))
+            // A checked alias row (`opus`) is unchanged when the session runs the
+            // id it resolves to (`claude-opus-5-5`); sending /model would only
+            // rewrite the user's saved default.
+            .filter(|target| {
+                !current.as_ref().is_some_and(|(id, _)| {
+                    id == target || model_control::claude_alias_id(target).as_deref() == Some(id)
+                })
+            })
         {
             let command = format!("/model {target}");
             self.composer_clear(pane_id, "claude")?;
@@ -2117,6 +2137,7 @@ mod tests {
     // refresh boundary makes source_changing independent of timing/file races.
     #[derive(Default)]
     struct HerdrState {
+        ansi_screen: Option<String>,
         agent: Option<String>,
         status: Option<String>,
         screen: String,
@@ -2179,6 +2200,22 @@ mod tests {
                 let request: Value = serde_json::from_str(&line).unwrap();
                 let mut state = server_state.lock().unwrap();
                 let result = match request["method"].as_str().unwrap() {
+                    "pane.read" if request["params"]["format"] == "ansi" => {
+                        assert_eq!(request["params"], json!({"pane_id":"w1:p1","source":"visible","format":"ansi"}));
+                        // Real agents draw idle placeholders faint; a test sets
+                        // `ansi_screen` to model typed, unstyled text instead.
+                        let text = state.ansi_screen.clone().unwrap_or_else(|| {
+                            state.screen.lines().map(|line| {
+                                for marker in ["❯ ", "› "] {
+                                    if let Some(rest) = line.trim_start().strip_prefix(marker) {
+                                        return format!("{marker}\u{1b}[2m{rest}\u{1b}[0m");
+                                    }
+                                }
+                                line.to_owned()
+                            }).collect::<Vec<_>>().join("\n")
+                        });
+                        json!({"read":{"text":text}})
+                    }
                     "pane.read" => {
                         assert_eq!(request["params"], json!({"pane_id":"w1:p1","source":"visible"}));
                         state.reads += 1;

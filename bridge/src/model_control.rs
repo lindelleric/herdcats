@@ -741,6 +741,9 @@ pub fn claude_confirmation(screen: &str) -> Option<ClaudeConfirmation> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Composer {
     Empty,
+    /// Text that matches an idle placeholder. Plain text cannot tell it from
+    /// the same words typed by the user, so callers must confirm it is dim.
+    Placeholder(String),
     Draft,
     Unknown,
 }
@@ -783,11 +786,82 @@ pub fn composer_state(agent: &str, screen: &str) -> Composer {
     match agent {
         // Claude's dimmed idle suggestion always reads `Try "…"`.
         "claude" if rest.starts_with("Try \"") && rest.ends_with('"') && rest.len() >= 6 => {
-            Composer::Empty
+            Composer::Placeholder(rest.to_owned())
         }
-        "codex" if CODEX_PLACEHOLDERS.contains(&rest) => Composer::Empty,
+        "codex" if CODEX_PLACEHOLDERS.contains(&rest) => Composer::Placeholder(rest.to_owned()),
         _ => Composer::Draft,
     }
+}
+
+/// Whether the composer line of an ANSI screen renders `placeholder` faint
+/// (SGR 2), as both agents draw idle suggestions. Typed input is not faint,
+/// so anything unparseable counts as a draft.
+pub fn placeholder_is_faint(agent: &str, ansi_screen: &str, placeholder: &str) -> bool {
+    let marker = match agent {
+        "claude" => '❯',
+        "codex" => '›',
+        _ => return false,
+    };
+    let Some(line) = ansi_screen
+        .lines()
+        .rev()
+        .find(|line| strip_ansi(line).trim_start().starts_with(marker))
+    else {
+        return false;
+    };
+    let Some(start) = line.find(placeholder) else {
+        return false;
+    };
+    // The SGR state in force where the placeholder starts.
+    let mut faint = false;
+    let mut rest = &line[..start];
+    while let Some(index) = rest.find("\u{1b}[") {
+        rest = &rest[index + 2..];
+        let Some(end) = rest.find(|c: char| c.is_ascii_alphabetic()) else {
+            break;
+        };
+        if rest.as_bytes()[end] == b'm' {
+            let mut params = rest[..end].split(';');
+            while let Some(param) = params.next() {
+                match param {
+                    "" | "0" | "22" => faint = false,
+                    "2" => faint = true,
+                    // Extended colours carry arguments (`48;2;r;g;b`, `38;5;n`)
+                    // whose numbers must not read as attributes.
+                    "38" | "48" | "58" => match params.next() {
+                        Some("2") => {
+                            params.nth(2);
+                        }
+                        Some("5") => {
+                            params.next();
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
+        }
+        rest = &rest[end + 1..];
+    }
+    faint
+}
+
+fn strip_ansi(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Well-formed model ids/aliases and efforts accepted by `model.set`.
@@ -1234,10 +1308,24 @@ mod tests {
     }
 
     #[test]
+    fn placeholder_counts_only_when_rendered_faint() {
+        // Real Codex 0.163 composer line (pane.read with strip_ansi false).
+        let dim = "\u{1b}[0m\u{1b}[1m\u{1b}[48;2;65;69;76m›\u{1b}[0m\u{1b}[48;2;65;69;76m \u{1b}[0m\u{1b}[2m\u{1b}[48;2;65;69;76mAsk Codex to do anything\u{1b}[0m";
+        assert!(placeholder_is_faint("codex", dim, "Ask Codex to do anything"));
+        // The same words typed by the user render at normal intensity.
+        let typed = "\u{1b}[0m\u{1b}[1m\u{1b}[2m›\u{1b}[0m\u{1b}[48;2;65;69;76m Explain this codebase\u{1b}[0m";
+        assert!(!placeholder_is_faint("codex", typed, "Explain this codebase"));
+        assert!(!placeholder_is_faint("codex", "› Explain this codebase", "Explain this codebase"));
+        let claude = "\u{1b}[0m❯ \u{1b}[2mTry \"fix lint errors\"\u{1b}[22m";
+        assert!(placeholder_is_faint("claude", claude, "Try \"fix lint errors\""));
+        assert!(!placeholder_is_faint("claude", "❯ Try \"fix lint errors\"", "Try \"fix lint errors\""));
+    }
+
+    #[test]
     fn composer_state_treats_placeholders_as_empty_and_fails_closed() {
         assert_eq!(
             composer_state("claude", "…\n❯ Try \"fix lint errors\"\n"),
-            Composer::Empty
+            Composer::Placeholder("Try \"fix lint errors\"".into())
         );
         assert_eq!(composer_state("claude", "…\n❯\n"), Composer::Empty);
         assert_eq!(
@@ -1254,7 +1342,7 @@ mod tests {
                 "claude",
                 "❯ /model  Set the AI model\n…\n❯ Try \"fix lint errors\"\n"
             ),
-            Composer::Empty
+            Composer::Placeholder("Try \"fix lint errors\"".into())
         );
         assert_eq!(
             composer_state("claude", "no marker at all"),
@@ -1265,11 +1353,11 @@ mod tests {
                 "codex",
                 "› Ask Codex to do anything\nlow · Context 100% left"
             ),
-            Composer::Empty
+            Composer::Placeholder("Ask Codex to do anything".into())
         );
         assert_eq!(
             composer_state("codex", "› Ask a follow-up question"),
-            Composer::Empty
+            Composer::Placeholder("Ask a follow-up question".into())
         );
         assert_eq!(composer_state("codex", "› hello draft"), Composer::Draft);
         assert_eq!(composer_state("codex", "no marker"), Composer::Unknown);
@@ -1277,11 +1365,11 @@ mod tests {
     }
 
     #[test]
-    fn codex_rotating_placeholders_are_empty_but_substituted_drafts_are_not() {
+    fn codex_rotating_placeholders_need_a_style_check_and_substituted_drafts_do_not() {
         for placeholder in CODEX_PLACEHOLDERS {
             assert_eq!(
                 composer_state("codex", &format!("› {placeholder}\nContext 100% left")),
-                Composer::Empty,
+                Composer::Placeholder((*placeholder).to_owned()),
                 "{placeholder}"
             );
         }

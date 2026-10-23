@@ -1236,6 +1236,57 @@ fn watched_identity(service: &mut Service) -> Identity {
 }
 
 #[test]
+fn model_set_claude_treats_the_active_alias_as_unchanged() {
+    // The session runs claude-opus-5-5; the checked "opus" row plus a new
+    // effort sends only /effort, never /model.
+    let (mut service, root, herdr, _) = model_fixture_claude();
+    script_model(&herdr, vec![claude_effort_screen()]);
+    let reply = model_request(
+        &mut service,
+        "model.set",
+        json!({"model":"opus","effort":"high","expect":expect_pair("claude-opus-5-5", Some("medium"))}),
+    );
+    assert_eq!(result_frame(&reply)["result"]["confirmed"], true, "{reply:?}");
+    assert_eq!(herdr.lock().unwrap().inputs, vec![prompt_input("/effort high")]);
+    cleanup(&service, root);
+}
+
+#[test]
+fn model_set_refuses_a_typed_draft_that_matches_a_placeholder() {
+    for (fixture, screen) in [
+        ("claude", "❯ Try \"fix lint errors\""),
+        ("codex", "› Explain this codebase"),
+    ] {
+        let (mut service, root, herdr, _) = if fixture == "claude" {
+            model_fixture_claude()
+        } else {
+            model_fixture_codex()
+        };
+        {
+            let mut state = herdr.lock().unwrap();
+            state.screen = screen.into();
+            // Typed by the user: same words, normal intensity.
+            state.ansi_screen = Some(format!("\u{1b}[0m{screen}\u{1b}[0m"));
+        }
+        let expect = if fixture == "claude" {
+            expect_pair("claude-opus-5-5", Some("medium"))
+        } else {
+            expect_pair("gpt-6.1-sol", Some("low"))
+        };
+        let reply = model_request(
+            &mut service,
+            "model.set",
+            json!({"effort":"high","expect":expect}),
+        );
+        let frame = result_frame(&reply);
+        let code = frame["error"]["code"].as_str().or(frame["result"]["error"].as_str());
+        assert_eq!(code, Some("composer_not_empty"), "{fixture}: {reply:?}");
+        assert!(herdr.lock().unwrap().inputs.is_empty(), "{fixture}");
+        cleanup(&service, root);
+    }
+}
+
+#[test]
 fn codex_dismissal_never_sends_escape_into_a_replacement_occupant() {
     let (mut service, root, herdr, _) = model_fixture_codex();
     let identity = watched_identity(&mut service);
