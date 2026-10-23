@@ -304,6 +304,36 @@ pub fn parse_codex_catalog(text: &str) -> Vec<CodexCatalogModel> {
     models.into_iter().map(|(_, _, model)| model).collect()
 }
 
+/// The live idle footer is authoritative for session-only changes after reconnect.
+/// Match an entire catalog display name and known effort before the Context delimiter.
+pub fn codex_idle_footer(
+    screen: &str,
+    catalog: &[CodexCatalogModel],
+) -> Option<(String, Option<String>)> {
+    for line in screen.lines().rev() {
+        let Some((prefix, _)) = line.trim().split_once(" · Context ") else {
+            continue;
+        };
+        let mut matches = catalog.iter().filter_map(|model| {
+            let effort = prefix
+                .strip_prefix(model.label.as_str())?
+                .strip_prefix(' ')?;
+            let id = ["low", "medium", "high", "xhigh", "max", "ultra", "minimal"]
+                .into_iter()
+                .find(|id| {
+                    effort.eq_ignore_ascii_case(id) || effort.eq_ignore_ascii_case(effort_label(id))
+                })?;
+            Some((model.slug.clone(), Some(id.to_owned())))
+        });
+        if let Some(pair) = matches.next()
+            && matches.next().is_none()
+        {
+            return Some(pair);
+        }
+    }
+    None
+}
+
 /// One numbered row of a picker screen.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PickerRow {
@@ -788,6 +818,43 @@ mod tests {
         assert_eq!(models[1].efforts, vec!["low", "high"]);
         assert!(parse_codex_catalog("{").is_empty());
         assert!(parse_codex_catalog(r#"{"models":[]}"#).is_empty());
+    }
+
+    #[test]
+    fn codex_idle_footer_requires_catalog_label_context_delimiter_and_known_effort() {
+        let catalog = vec![CodexCatalogModel {
+            slug: "gpt-6-sol".into(),
+            label: "GPT-6-Sol".into(),
+            efforts: vec![],
+        }];
+        let footer = include_str!("fixtures/codex-idle-footer.txt");
+        assert_eq!(
+            codex_idle_footer(footer, &catalog),
+            Some(("gpt-6-sol".into(), Some("high".into())))
+        );
+        assert_eq!(
+            codex_idle_footer(
+                include_str!("fixtures/codex-idle-footer-extra-high.txt"),
+                &catalog
+            ),
+            Some(("gpt-6-sol".into(), Some("xhigh".into())))
+        );
+        for screen in [
+            include_str!("fixtures/codex-idle-footer-unknown.txt").to_owned(),
+            footer.replace("GPT-6-Sol", "gpt-6-sol"),
+            footer.replace("GPT-6-Sol", "GPT-6-Sol Plus"),
+            footer.replace(" · Context ", " · Tokens "),
+            footer.replace(" high ·", " impossible ·"),
+        ] {
+            assert_eq!(codex_idle_footer(&screen, &catalog), None);
+        }
+        let mut catalog = catalog;
+        catalog.push(CodexCatalogModel {
+            slug: "ambiguous-slug".into(),
+            label: "GPT-6-Sol".into(),
+            efforts: vec![],
+        });
+        assert_eq!(codex_idle_footer(footer, &catalog), None);
     }
 
     #[test]

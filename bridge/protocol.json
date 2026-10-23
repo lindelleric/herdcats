@@ -161,7 +161,7 @@
         "identity": "object; the watched timeline identity",
         "generation": "u64; current timeline generation",
         "agent": "claude or codex",
-        "model": "{id, label} or null; the model in effect from the transcript (Claude assistant message.model + effort, Codex last turn_context), falling back to Claude settings.json or Codex config.toml when no turns exist yet",
+        "model": "{id, label} or null; the model in effect from the transcript (Claude assistant message.model + effort, Codex idle/done catalog-matched live footer, otherwise last turn_context), falling back to Claude settings.json or Codex config.toml when no turns exist yet",
         "effort": "reasoning effort id (low, medium, high, xhigh, max, ultra, minimal) or null",
         "models": "selectable {id, label, efforts: [{id, label}], current?: bool} models, each with its own effort options (empty when none): Claude tier aliases (fable, opus, sonnet, haiku) plus the live current id when unmapped; Codex catalog slugs from models_cache.json filtered to visibility=list and ordered by priority; exactly one entry carries current=true when a model is known",
         "efforts": "effort options for the current model: Claude low/medium/high/xhigh/max (auto hidden); Codex per-model supported_reasoning_levels, or the standard set when the model is unknown; empty when none"
@@ -364,10 +364,10 @@
       "field_types": {
         "identity": "object; the watched timeline identity",
         "generation": "u64; current timeline generation",
-        "model": "string; the model id observed in the transcript",
+        "model": "string model id, or {id, label} while a confirmed override holds (preserving the CLI-confirmed display label)",
         "effort": "string or null; the effort observed in the transcript"
       },
-      "effect": "Emitted only when initialize opted into model control, after a transcript change re-scans to a different model/effort pair (and once after an identity/generation reset). Driven by per-turn transcript records, so desktop changes on a session with no turns yet surface through model.status instead. Pairs with model.set results: the request's applied pair is authoritative until the transcript catches up."
+      "effect": "Emitted only when initialize opted into model control, after a transcript or live Codex idle-footer scan observes a different model/effort pair (and once after an identity/generation reset). Claude confirmed labels remain authoritative while the watch override holds. Codex session-only changes survive reconnects through the catalog-matched idle/done footer; missing or unparseable footers fall back to transcript/config. Pairs with model.set results: the request's applied pair is authoritative until the transcript catches up."
     }
   },
   "entry_fields": {

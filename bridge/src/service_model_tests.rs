@@ -99,8 +99,9 @@ fn codex_advanced_screen() -> String {
 }
 
 fn codex_composer_toast(slug: &str, effort: &str) -> String {
+    let label = model_control::codex_slug_label(slug);
     format!(
-        "› Ask Codex to do anything\n• Model changed to {slug} {effort} for this session only\nGPT-6-Luna {effort} · Context 100% left"
+        "› Ask Codex to do anything\n• Model changed to {slug} {effort} for this session only\n{label} {effort} · Context 100% left"
     )
 }
 
@@ -334,7 +335,8 @@ fn model_status_reads_codex_turn_context_and_catalog() {
         ])
     );
     assert!(herdr.lock().unwrap().inputs.is_empty());
-    // Without turn_context records, config.toml defaults apply.
+    // Without a footer or turn_context records, config.toml defaults apply.
+    herdr.lock().unwrap().screen = "› Ask Codex to do anything".into();
     fs::write(
         &path,
         format!(
@@ -882,6 +884,7 @@ fn model_override_preserves_applied_until_scanned_pair_changes() {
     let applied = Some(("new-model".into(), Some("high".into())));
     let mut slot = Some(ModelOverride {
         applied: applied.clone(),
+        applied_label: None,
         scanned_at_set: original.clone(),
     });
     assert_eq!(ModelOverride::resolve(&mut slot, original.clone()), applied);
@@ -891,6 +894,7 @@ fn model_override_preserves_applied_until_scanned_pair_changes() {
     assert!(slot.is_none());
     let mut slot = Some(ModelOverride {
         applied,
+        applied_label: None,
         scanned_at_set: original,
     });
     let desk = Some(("desk-model".into(), Some("medium".into())));
@@ -979,6 +983,8 @@ fn model_set_codex_then_effort_uses_override_until_desk_changes_transcript() {
     assert_eq!(result_frame(&second)["result"]["confirmed"], true);
     let status = model_request(&mut service, "model.status", json!({}));
     assert_eq!(result_frame(&status)["result"]["effort"], "high");
+    // With no parseable live footer, a later transcript record becomes authoritative.
+    herdr.lock().unwrap().screen = "› Ask Codex to do anything".into();
     let mut text = fs::read_to_string(&path).unwrap();
     text.push_str(&format!(
         "{}\n",
@@ -1368,4 +1374,152 @@ fn model_set_claude_declines_mismatched_model_label() {
         vec![prompt_input("/model sonnet"), model_keys_input(&["2"])]
     );
     cleanup(&service, root);
+}
+
+#[test]
+fn claude_override_retains_confirmed_label_in_status_events_and_later_effort_change() {
+    let (mut service, root, herdr, _) = model_fixture_claude();
+    script_model(
+        &herdr,
+        vec![
+            claude_model_screen("/model haiku").replace("Sonnet 5.5", "Haiku 5.5"),
+            claude_effort_screen(),
+        ],
+    );
+    let first = model_request(
+        &mut service,
+        "model.set",
+        json!({
+            "model":"haiku", "expect":expect_pair("claude-opus-5-5", Some("medium"))
+        }),
+    );
+    assert_eq!(result_frame(&first)["result"]["confirmed"], true);
+    let status = model_request(&mut service, "model.status", json!({}));
+    assert_eq!(
+        result_frame(&status)["result"]["model"],
+        json!({"id":"haiku","label":"Haiku 5.5"})
+    );
+    // model.set polls after writing its result, so its frames already contain
+    // the labeled event. The later status poll must not repeat that event.
+    let updates: Vec<_> = first
+        .iter()
+        .filter(|frame| {
+            frame["event"] == "model.updated"
+                && frame["data"]["model"] == json!({"id":"haiku","label":"Haiku 5.5"})
+        })
+        .collect();
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0]["data"]["effort"], "medium");
+    assert!(!status.iter().any(|frame| frame["event"] == "model.updated"));
+    let second = model_request(
+        &mut service,
+        "model.set",
+        json!({
+            "effort":"high", "expect":expect_pair("haiku", Some("medium"))
+        }),
+    );
+    assert_eq!(
+        result_frame(&second)["result"]["applied"]["model"]["label"],
+        "Haiku 5.5"
+    );
+    let status = model_request(&mut service, "model.status", json!({}));
+    assert_eq!(
+        result_frame(&status)["result"]["model"]["label"],
+        "Haiku 5.5"
+    );
+    cleanup(&service, root);
+}
+
+#[test]
+fn codex_reconnected_bridge_uses_live_footer_for_status_expect_and_updates() {
+    let (mut service, root, herdr, _) = model_fixture_codex();
+    herdr.lock().unwrap().screen =
+        "› Ask Codex to do anything\nGPT-6-Luna high · Context 96% left · weekly 94% left".into();
+    let status = model_request(&mut service, "model.status", json!({}));
+    assert_eq!(result_frame(&status)["result"]["model"]["id"], "gpt-6-luna");
+    assert_eq!(result_frame(&status)["result"]["effort"], "high");
+    assert!(service.watch.as_ref().unwrap().model_override.is_none());
+    // The unchanged transcript stamp must not suppress later footer changes.
+    herdr.lock().unwrap().status = Some("done".into());
+    herdr.lock().unwrap().screen =
+        "› Ask Codex to do anything\nGPT-6-Luna Extra high · Context 96% left".into();
+    let status = model_request(&mut service, "model.status", json!({}));
+    assert!(
+        status
+            .iter()
+            .any(|frame| frame["event"] == "model.updated" && frame["data"]["effort"] == "xhigh")
+    );
+    script_model(
+        &herdr,
+        vec![
+            codex_model_list_screen(4),
+            codex_effort_list_screen(4),
+            codex_effort_list_screen(3),
+            codex_composer_toast("gpt-6-luna", "high"),
+        ],
+    );
+    let change = model_request(
+        &mut service,
+        "model.set",
+        json!({
+            "effort":"high", "expect":expect_pair("gpt-6-luna", Some("xhigh"))
+        }),
+    );
+    assert_eq!(result_frame(&change)["result"]["confirmed"], true);
+    cleanup(&service, root);
+}
+
+#[test]
+fn codex_footer_falls_back_for_unknown_labels_missing_footers_and_busy_panes() {
+    let (mut service, root, herdr, _) = model_fixture_codex();
+    for (screen, status) in [
+        (
+            include_str!("fixtures/codex-idle-footer-unknown.txt"),
+            "idle",
+        ),
+        ("› Ask Codex to do anything", "idle"),
+        ("GPT-6-Luna high · Context 96% left", "working"),
+        ("GPT-6-Luna high · Context 96% left", "blocked"),
+    ] {
+        {
+            let mut state = herdr.lock().unwrap();
+            state.screen = screen.into();
+            state.status = Some(status.into());
+        }
+        let reply = model_request(&mut service, "model.status", json!({}));
+        assert_eq!(result_frame(&reply)["result"]["model"]["id"], "gpt-6.1-sol");
+        assert_eq!(result_frame(&reply)["result"]["effort"], "low");
+    }
+    cleanup(&service, root);
+}
+
+#[test]
+fn claude_scan_never_uses_a_codex_footer() {
+    let (mut service, root, herdr, _) = model_fixture_claude();
+    herdr.lock().unwrap().screen = include_str!("fixtures/codex-idle-footer.txt").into();
+    let status = model_request(&mut service, "model.status", json!({}));
+    assert_eq!(
+        result_frame(&status)["result"]["model"]["id"],
+        "claude-opus-5-5"
+    );
+    cleanup(&service, root);
+}
+
+#[test]
+fn model_override_keeps_confirmed_label_only_while_the_baseline_holds() {
+    let baseline = Some(("claude-opus-5-5".into(), Some("medium".into())));
+    let applied = Some(("haiku".into(), Some("medium".into())));
+    let mut slot = Some(ModelOverride {
+        applied: applied.clone(),
+        applied_label: Some("Haiku 5.5".into()),
+        scanned_at_set: baseline.clone(),
+    });
+    let observed = ModelOverride::resolve(&mut slot, baseline);
+    assert_eq!(
+        slot.as_ref().unwrap().label_for(&observed),
+        Some("Haiku 5.5".into())
+    );
+    let actual = Some(("claude-haiku-5-5".into(), Some("medium".into())));
+    assert_eq!(ModelOverride::resolve(&mut slot, actual.clone()), actual);
+    assert!(slot.is_none());
 }

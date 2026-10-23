@@ -191,10 +191,16 @@ type ModelPair = Option<(String, Option<String>)>;
 
 struct ModelOverride {
     applied: ModelPair,
+    applied_label: Option<String>,
     scanned_at_set: ModelPair,
 }
 
 impl ModelOverride {
+    fn label_for(&self, pair: &ModelPair) -> Option<String> {
+        (self.applied == *pair)
+            .then(|| self.applied_label.clone())
+            .flatten()
+    }
     fn resolve(slot: &mut Option<Self>, scanned: ModelPair) -> ModelPair {
         if let Some(current) = slot {
             if current.scanned_at_set == scanned {
@@ -886,32 +892,36 @@ impl Service {
             }
             _ => return Ok(()),
         };
-        if watch.model_stamp == Some(stamp) {
+        let live_footer =
+            identity.agent == "codex" && matches!(watch.status.as_str(), "idle" | "done");
+        if watch.model_stamp == Some(stamp) && !live_footer {
             return Ok(());
         }
-        // Record the stamp even when the tail read fails: a transient read
-        // error must not turn every poll into a full tail scan.
+        // Claude can skip unchanged transcript scans; Codex idle footers must
+        // remain live even when session-only changes leave that stamp unchanged.
         watch.model_stamp = Some(stamp);
-        let Ok(records) = crate::follower::read_tail(file) else {
+        let Some(pane) = watch.source_pane.as_ref() else {
             return Ok(());
         };
-        let observed = match identity.agent.as_str() {
-            "claude" => model_control::claude_scan(&records),
-            "codex" => model_control::codex_scan(&records),
-            _ => None,
-        };
-        let observed = observed.or_else(|| self.model_scan_fallback(&identity.agent));
+        let observed = self.model_scan_raw(&identity.agent, pane, file);
         let observed = ModelOverride::resolve(&mut watch.model_override, observed);
         let Some(observed) = observed else {
             return Ok(());
         };
         if watch.last_model.as_ref() != Some(&observed) {
             watch.last_model = Some(observed.clone());
+            let label = watch
+                .model_override
+                .as_ref()
+                .and_then(|value| value.label_for(&Some(observed.clone())));
+            let model = label
+                .map(|label| json!({"id":observed.0,"label":label}))
+                .unwrap_or_else(|| json!(observed.0));
             self.event(
                 out,
                 "model.updated",
                 json!({"identity":identity,"generation":self.generation,
-                    "model":observed.0,"effort":observed.1}),
+                    "model":model,"effort":observed.1}),
             )?;
         }
         Ok(())
@@ -939,7 +949,14 @@ impl Service {
             _ => None,
         }
     }
-    fn model_scan_raw(&self, agent: &str, file: std::fs::File) -> Option<(String, Option<String>)> {
+    fn model_scan_raw(&self, agent: &str, pane: &Pane, file: std::fs::File) -> ModelPair {
+        if agent == "codex"
+            && matches!(pane.agent_status.as_str(), "idle" | "done")
+            && let Ok(screen) = self.client.read_visible(&pane.pane_id)
+            && let Some(pair) = model_control::codex_idle_footer(&screen, &self.codex_catalog())
+        {
+            return Some(pair);
+        }
         let records = crate::follower::read_tail(file).ok()?;
         match agent {
             "claude" => model_control::claude_scan(&records),
@@ -948,8 +965,8 @@ impl Service {
         }
         .or_else(|| self.model_scan_fallback(agent))
     }
-    fn model_scan_current(&mut self, agent: &str, file: std::fs::File) -> ModelPair {
-        let scanned = self.model_scan_raw(agent, file);
+    fn model_scan_current(&mut self, agent: &str, pane: &Pane, file: std::fs::File) -> ModelPair {
+        let scanned = self.model_scan_raw(agent, pane, file);
         self.resolve_model_scan(scanned)
     }
     fn resolve_model_scan(&mut self, scanned: ModelPair) -> ModelPair {
@@ -1005,9 +1022,9 @@ impl Service {
             .clone()
             .filter(|_| watch.unavailable.is_none())
             .ok_or("timeline_unavailable")?;
-        let (_, file) = self.model_pane_file(&identity)?;
+        let (pane, file) = self.model_pane_file(&identity)?;
         let agent = identity.agent.as_str();
-        let current = self.model_scan_current(agent, file);
+        let current = self.model_scan_current(agent, &pane, file);
         let current_id = current.as_ref().map(|(id, _)| id.as_str());
         let (models, efforts) = match agent {
             "claude" => {
@@ -1083,14 +1100,21 @@ impl Service {
             }
             _ => return Err("unsupported_agent"),
         };
-        let current_label = current.as_ref().map(|(id, _)| match agent {
-            "claude" => model_control::claude_model_label(id),
-            _ => self
-                .codex_catalog()
-                .iter()
-                .find(|model| model.slug == *id)
-                .map(|model| model.label.clone())
-                .unwrap_or_else(|| model_control::codex_slug_label(id)),
+        let confirmed_label = self
+            .watch
+            .as_ref()
+            .and_then(|watch| watch.model_override.as_ref())
+            .and_then(|value| value.label_for(&current));
+        let current_label = confirmed_label.or_else(|| {
+            current.as_ref().map(|(id, _)| match agent {
+                "claude" => model_control::claude_model_label(id),
+                _ => self
+                    .codex_catalog()
+                    .iter()
+                    .find(|model| model.slug == *id)
+                    .map(|model| model.label.clone())
+                    .unwrap_or_else(|| model_control::codex_slug_label(id)),
+            })
         });
         Ok(json!({
             "identity":identity, "generation":self.generation, "agent":agent,
@@ -1124,7 +1148,7 @@ impl Service {
         if !matches!(pane.agent_status.as_str(), "idle" | "done") {
             return Err("agent_busy");
         }
-        let scanned_at_set = self.model_scan_raw(agent, file);
+        let scanned_at_set = self.model_scan_raw(agent, &pane, file);
         let current = self.resolve_model_scan(scanned_at_set.clone());
         if current.as_ref().map(|(id, _)| id.as_str()) != expect_model
             || current.as_ref().and_then(|(_, effort)| effort.as_deref()) != expect_effort
@@ -1149,6 +1173,9 @@ impl Service {
             if result["confirmed"] == true || applied != current {
                 watch.model_override = Some(ModelOverride {
                     applied,
+                    applied_label: result["applied"]["model"]["label"]
+                        .as_str()
+                        .map(str::to_owned),
                     scanned_at_set,
                 });
             }
@@ -1274,9 +1301,15 @@ impl Service {
         target_effort: Option<&str>,
     ) -> Result<Value> {
         let pane_id = identity.pane_id.as_str();
-        let mut applied_model = current
-            .clone()
-            .map(|(id, _)| (id.clone(), model_control::claude_model_label(&id)));
+        let mut applied_model = current.clone().map(|(id, _)| {
+            let label = self
+                .watch
+                .as_ref()
+                .and_then(|watch| watch.model_override.as_ref())
+                .and_then(|value| value.label_for(current))
+                .unwrap_or_else(|| model_control::claude_model_label(&id));
+            (id, label)
+        });
         let mut applied_effort = current.as_ref().and_then(|(_, effort)| effort.clone());
         let mut error: Option<&str> = None;
         if let Some(target) = target_model
