@@ -1266,6 +1266,9 @@ struct AgentTimelineView: View {
                         try timeline.consume(AgentTimelineScreenshotFixture.questionFrame(paneId: paneId), owner: owner)
                         questionResponse.sync(timeline.pendingQuestion)
                     }
+                    if ScreenshotFixtures.screen.hasPrefix("timeline-model") {
+                        timeline.modelControl.loadScreenshotFixture(agent: ScreenshotFixtures.paneAgent)
+                    }
                 } catch { timeline.end(owner: owner, error: (error as? AgentBridgeError) ?? .invalidFrame) }
                 return
             }

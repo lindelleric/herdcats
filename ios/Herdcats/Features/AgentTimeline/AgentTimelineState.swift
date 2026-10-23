@@ -240,8 +240,8 @@ import Observation
 /// the same occupant and generation; retiring a timeline invalidates pending UI work.
 @MainActor @Observable final class AgentModelControlState {
     private(set) var supported = false
-    private(set) var pair = AgentModelPair()
-    private(set) var models: [AgentModelOption] = []
+    fileprivate(set) var pair = AgentModelPair()
+    fileprivate(set) var models: [AgentModelOption] = []
     private(set) var isChanging = false
     var errorMessage: String?
     private var client: AgentBridgeClient?
@@ -371,3 +371,22 @@ import Observation
         }
     }
 }
+
+#if DEBUG && targetEnvironment(simulator)
+extension AgentModelControlState {
+    /// Screenshot-only catalog for `-hc.screen timeline-model*`; requires a bound identity.
+    func loadScreenshotFixture(agent: String) {
+        let efforts = ["low", "medium", "high", "xhigh", "max"].map {
+            AgentEffortOption(id: $0, label: $0 == "xhigh" ? "Extra high" : $0.capitalized)
+        }
+        let models = agent == "codex"
+            ? ["GPT-6.1-Sol", "GPT-6-Astra", "GPT-6-Sol", "GPT-6-Luna", "GPT-5.6-Sol", "GPT-5.6-Terra", "GPT-5.6-Luna"]
+                .map { AgentModelOption(id: $0.lowercased(), label: $0, efforts: efforts) }
+            : ["Fable 5.1", "Opus 5.5", "Sonnet 5.5", "Haiku 5.5"]
+                .map { AgentModelOption(id: $0.split(separator: " ")[0].lowercased(), label: $0, efforts: efforts) }
+        connect(nil, supported: true)
+        self.models = models
+        pair = AgentModelPair(model: models[agent == "codex" ? 0 : 1], effort: "high")
+    }
+}
+#endif

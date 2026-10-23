@@ -742,4 +742,28 @@ final class AgentTimelineUITests: XCTestCase {
         XCTAssertFalse(app.scrollViews["pane-output-scroll-view"].exists)
         app.terminate()
     }
+
+    func testModelControlOpensConfigureSheetWithModelAndEffortRows() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-model-control", "-paneShowComposeByDefault", "YES"]
+        launch(app)
+        let control = app.buttons["timeline-model-control"]
+        XCTAssertTrue(control.waitForExistence(timeout: 5))
+        XCTAssertEqual(control.label, "Model Opus 5.5, effort high")
+        control.tap()
+        XCTAssertTrue(app.navigationBars["Configure"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.navigationBars["Configure"].buttons["Done"].exists)
+        let configure = XCTAttachment(screenshot: app.screenshot())
+        configure.name = "Configure sheet"
+        configure.lifetime = .keepAlways
+        add(configure)
+        XCTAssertTrue(app.buttons["model-configuration-effort"].exists)
+        app.buttons["model-configuration-model"].tap()
+        XCTAssertTrue(app.buttons["Haiku 5.5"].waitForExistence(timeout: 3))
+        let models = XCTAttachment(screenshot: app.screenshot())
+        models.name = "Model list"
+        models.lifetime = .keepAlways
+        add(models)
+        app.terminate()
+    }
 }

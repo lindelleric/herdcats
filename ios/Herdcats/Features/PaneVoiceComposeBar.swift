@@ -841,10 +841,12 @@ private struct AgentModelConfigurationSheet: View {
                     NavigationLink(value: "Model") {
                         row("Model", value: state.pair.model?.label ?? "Unknown")
                     }
+                    .accessibilityIdentifier("model-configuration-model")
                     if !state.efforts.isEmpty {
                         NavigationLink(value: "Effort") {
                             row("Effort", value: state.effortLabel)
                         }
+                        .accessibilityIdentifier("model-configuration-effort")
                     }
                 }
                 .listRowBackground(Theme.cardBackground)
@@ -858,6 +860,7 @@ private struct AgentModelConfigurationSheet: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .contentMargins(.top, 8, for: .scrollContent)
             .background(Theme.background)
             .navigationTitle("Configure")
             .navigationBarTitleDisplayMode(.inline)
