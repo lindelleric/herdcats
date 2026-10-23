@@ -946,9 +946,14 @@ fn strip_ansi(line: &str) -> String {
 
 /// Well-formed model ids/aliases and efforts accepted by `model.set`.
 pub fn valid_set_target(agent: &str, model: Option<&str>, effort: Option<&str>) -> Result<()> {
+    // The model is typed into the terminal (`/model <id>`), so it may only
+    // hold characters model ids use: no whitespace, line breaks or controls.
+    let id_char = |c: char| c.is_ascii_alphanumeric() || "-._:/@[]".contains(c);
     let check = |value: Option<&str>, max: usize| match value {
         None => Ok(()),
-        Some(value) if !value.is_empty() && value.len() <= max => Ok(()),
+        Some(value) if !value.is_empty() && value.len() <= max && value.chars().all(id_char) => {
+            Ok(())
+        }
         Some(_) => Err("invalid_request"),
     };
     check(model, 128)?;
@@ -1509,6 +1514,16 @@ mod tests {
             "invalid_request"
         );
         assert!(valid_set_target("codex", Some("gpt-6-luna"), Some("ultra")).is_ok());
+        for id in ["claude-opus-5-5[1m]", "default", "us.anthropic.claude-opus-5-5", "gateway/model@v1"] {
+            assert!(valid_set_target("claude", Some(id), None).is_ok(), "{id}");
+        }
+        for id in ["sonnet\nadditional text", "sonnet more", "opus\r", "a\u{1b}[2J", "opus\t"] {
+            assert_eq!(
+                valid_set_target("claude", Some(id), None).unwrap_err(),
+                "invalid_request",
+                "{id:?}"
+            );
+        }
     }
 
     #[test]
