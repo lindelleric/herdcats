@@ -689,9 +689,11 @@ struct PaneVoiceComposeBar: View {
     }
 
     /// Send is visible if the draft has non-whitespace text OR a send is currently in progress.
-    /// It is hidden only for blank drafts when idle.
+    /// With the model control showing it stays visible (disabled while blank) so
+    /// the action row keeps its shape; otherwise it hides for blank idle drafts.
     private var showsSendButton: Bool {
-        isSending || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        isSending || modelControl?.isVisible == true
+            || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var messageBubble: some View {
