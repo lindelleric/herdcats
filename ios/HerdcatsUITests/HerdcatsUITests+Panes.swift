@@ -3,6 +3,107 @@ import UIKit
 import XCTest
 
 extension HerdcatsUITests {
+    func testTerminalSelectionMatchesPressedWordAfterScrolling() {
+        checkTerminalSelectionPosition(keyboardOpen: false)
+    }
+
+    func testTerminalSelectionMatchesPressedWordWithKeyboardOpen() {
+        checkTerminalSelectionPosition(keyboardOpen: true)
+    }
+
+    func testDraggingTerminalSelectionKeepsTextUnderFinger() {
+        checkTerminalSelectionPosition(keyboardOpen: false, dragSelection: true)
+    }
+
+    func testTerminalSelectionMatchesPressedWordWithDraftedComposer() {
+        checkTerminalSelectionPosition(keyboardOpen: true, hasDraft: true)
+    }
+
+    private func checkTerminalSelectionPosition(keyboardOpen: Bool, dragSelection: Bool = false,
+                                                hasDraft: Bool = false) {
+        let app = XCUIApplication()
+        app.launchArguments = ["-hc.screenshots", "-hc.screen", "pane",
+                               "-hc.long-terminal-selection", "-paneTextSizePreference.v2", "medium",
+                               "-paneShowComposeByDefault", "NO"]
+        if hasDraft { app.launchArguments.append("-hc.selection-draft") }
+        app.launch()
+        let terminalButton = app.buttons["timeline-open-terminal"]
+        if terminalButton.waitForExistence(timeout: 3) { terminalButton.tap() }
+        let output = app.textViews["pane-output-text"]
+        XCTAssertTrue(output.waitForExistence(timeout: 5))
+        let scroll = app.scrollViews["pane-output-scroll-view"]
+        if !dragSelection { scroll.swipeUp(velocity: .fast) }
+        if keyboardOpen {
+            liveKeyboardButton(app).tap()
+            let field = composeField(app)
+            XCTAssertTrue(field.waitForExistence(timeout: 5))
+            XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        }
+        Thread.sleep(forTimeInterval: 1)
+        let viewport = scroll.frame
+        func probe() -> [String: Any] {
+            let data = (output.value as? String ?? "{}").data(using: .utf8)!
+            return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        }
+        let geometry = probe()
+        let frame = CGRect(x: geometry["x"] as? Double ?? 0,
+                           y: geometry["y"] as? Double ?? 0,
+                           width: geometry["width"] as? Double ?? 0, height: 0)
+        XCTAssertGreaterThan(frame.width, 0)
+        // Use complete glyph layout as an independent reference for wrapped
+        // lines, rather than assuming a row's height or trusting hit testing.
+        let content = (0..<400).map { index in
+            let marker = String(format: "%04d", index)
+            return "row\(marker) target\(marker) " + String(repeating: "content ", count: index % 12)
+        }.joined(separator: "\n")
+        let storage = NSTextStorage(string: content, attributes: [
+            .font: UIFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        ])
+        let layout = NSLayoutManager()
+        let container = NSTextContainer(size: CGSize(width: frame.width, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        layout.addTextContainer(container)
+        storage.addLayoutManager(layout)
+        layout.ensureLayout(for: container)
+        let desiredY = viewport.minY + viewport.height * 0.7
+        let words = (0..<400).map { index -> (String, CGRect) in
+            let word = String(format: "target%04d", index)
+            let range = (content as NSString).range(of: word)
+            let glyphs = layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            return (word, layout.boundingRect(forGlyphRange: glyphs, in: container))
+        }
+        let candidate = words.min { abs($0.1.midY + frame.minY - desiredY) < abs($1.1.midY + frame.minY - desiredY) }!
+        let endWord = words.min { abs($0.1.midY - candidate.1.midY - 50) < abs($1.1.midY - candidate.1.midY - 50) }!
+        let expectedWord = candidate.0
+        let start = app.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: frame.minX + candidate.1.midX,
+                                 dy: frame.minY + candidate.1.midY))
+        if dragSelection {
+            let end = app.coordinate(withNormalizedOffset: .zero)
+                .withOffset(CGVector(dx: frame.minX + endWord.1.midX,
+                                     dy: frame.minY + endWord.1.midY))
+            start.press(forDuration: 1, thenDragTo: end)
+        } else {
+            start.press(forDuration: 1)
+        }
+        XCTAssertTrue(app.menuItems["Copy"].waitForExistence(timeout: 3)
+                      || app.buttons["Copy"].exists)
+        let selection = probe()
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        if dragSelection {
+            let selected = selection["selected"] as? String ?? ""
+            XCTAssertTrue(selected.hasPrefix(expectedWord) && selected.count > expectedWord.count,
+                          "Dragging should extend the selection without moving its starting word")
+        } else {
+            XCTAssertEqual(selection["selected"] as? String, expectedWord,
+                           "Selection must match the word under the finger after scrolling")
+        }
+        XCTAssertEqual(selection["y"] as? Double ?? 0, frame.minY, accuracy: 15,
+                       "Starting selection must not move the text away from the finger")
+    }
+
     func testTerminalOutputOffersNativeTextSelection() {
         let app = XCUIApplication()
         app.launchArguments = ["-hc.screenshots", "-hc.screen", "pane",

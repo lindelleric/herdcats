@@ -1009,6 +1009,7 @@ struct PaneSessionView: View {
     @State private var isTimelineSending = false
     @State private var shouldPinToBottom = true
     @State private var bottomDockHeight: CGFloat = 58
+    @State private var outputTextSelectionActive = false
     @State private var draftSaveTask: Task<Void, Never>?
     /// True while the Compose bubble's text field holds keyboard focus.
     @FocusState private var composeFieldFocused: Bool
@@ -1121,6 +1122,10 @@ struct PaneSessionView: View {
         _draft = State(initialValue: policy.loadDraft(key: draftKey))
 #if DEBUG && targetEnvironment(simulator)
         if ScreenshotFixtures.enabled {
+            if ProcessInfo.processInfo.arguments.contains("-hc.long-terminal-selection") {
+                _draft = State(initialValue: ProcessInfo.processInfo.arguments.contains("-hc.selection-draft")
+                    ? "Selection draft" : "")
+            }
             let surface = PaneInputSurfaceModel()
             if ["compose", "timeline-helper-missing", "timeline-unavailable", "timeline-pending", "timeline-disconnected", "optional-upgrade-menu", "turn-interrupted", "timeline-codex-no-session"].contains(ScreenshotFixtures.screen) {
                 surface.requestComposeDraft()
@@ -1232,6 +1237,15 @@ struct PaneSessionView: View {
                     }
                 } else {
                     liveInputFocused = true
+                }
+            },
+            onSelectionChange: { selecting in
+                if outputTextSelectionActive != selecting { outputTextSelectionActive = selecting }
+                if selecting {
+                    // UIKit selection owns focus; keep SwiftUI from restoring
+                    // the old input field during the keyboard handoff.
+                    if composeFieldFocused { composeFieldFocused = false }
+                    if liveInputFocused { liveInputFocused = false }
                 }
             },
             onDismissKeyboardDrag: dismissLiveKeyboard
@@ -1600,18 +1614,12 @@ struct PaneSessionView: View {
         .onChange(of: composeFieldFocused) { _, focused in
             if focused {
                 onOutputInteraction?()
-            } else if surfaceModel.isComposeSurface,
-                      !showComposeByDefault,
-                      trimmedDraft.isEmpty,
-                      !isPhotoPickerPresented,
-                      !isLoadingPhoto,
-                      attachment == nil {
-                // Blank-bubble exit: the same gesture that dismisses the
-                // keyboard (swipe down on the bubble, interactive output
-                // drag) collapses an empty Compose bubble back to the Live
-                // toolbar. A draft with text or an attachment never collapses.
-                surfaceModel.collapseToLiveToolbar()
+            } else {
+                collapseEmptyComposerIfUnfocused()
             }
+        }
+        .onChange(of: outputTextSelectionActive) { _, selecting in
+            if !selecting { collapseEmptyComposerIfUnfocused() }
         }
         .onChange(of: liveInputFocused) { _, focused in
             if focused {
@@ -1622,6 +1630,14 @@ struct PaneSessionView: View {
             guard !busy else { return }
             completeDictationSurface()
         }
+    }
+
+    private func collapseEmptyComposerIfUnfocused() {
+        guard !composeFieldFocused, !outputTextSelectionActive,
+              surfaceModel.isComposeSurface, !showComposeByDefault,
+              trimmedDraft.isEmpty, !isPhotoPickerPresented,
+              !isLoadingPhoto, attachment == nil else { return }
+        surfaceModel.collapseToLiveToolbar()
     }
 
     // MARK: Live input
@@ -2255,11 +2271,24 @@ private struct PaneOutputScrollView: View, Equatable {
     @Binding var shouldPinToBottom: Bool
     let onUserScroll: () -> Void
     let onTapOutput: () -> Void
+    let onSelectionChange: (Bool) -> Void
     /// Deliberate downward-drag dismissal for the Live keyboard capture
     /// field — a UIKit `UITextField` outside this scroll view that neither
     /// SwiftUI's `.scrollDismissesKeyboard` nor scroll-phase callbacks can
     /// reliably reach. Fired from a content-level simultaneous drag.
     var onDismissKeyboardDrag: (() -> Void)?
+
+    @State private var selectionActive = false
+    @State private var keyboardHeight: CGFloat = 0
+    @State private var retainedKeyboardSpace: CGFloat = 0
+    @State private var retainedDockSpace: CGFloat = 0
+    @State private var pendingKeyboardSpace: CGFloat = 0
+
+    private var selectionBottomInset: CGFloat {
+        guard selectionActive else { return pendingKeyboardSpace }
+        let dockSpace = bottomOverlayInset + (reservesMarkAsReadSpace ? 68 : 0)
+        return retainedKeyboardSpace + max(0, retainedDockSpace - dockSpace)
+    }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.outputRevision == rhs.outputRevision
@@ -2309,8 +2338,22 @@ private struct PaneOutputScrollView: View, Equatable {
                             .foregroundStyle(Color.secondary)
                             .padding(.bottom, 4)
                     }
-                    SelectablePaneOutput(text: selectableOutput, pointSize: outputPointSize)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    SelectablePaneOutput(
+                        text: selectableOutput, pointSize: outputPointSize,
+                        selectionActive: selectionActive
+                    ) { active, safeAreaBottom in
+                        if active {
+                            let keyboardSpace = max(pendingKeyboardSpace, max(0, keyboardHeight - safeAreaBottom))
+                            let dockSpace = bottomOverlayInset + (reservesMarkAsReadSpace ? 68 : 0)
+                            retainedKeyboardSpace = selectionActive ? max(retainedKeyboardSpace, keyboardSpace) : keyboardSpace
+                            retainedDockSpace = selectionActive ? max(retainedDockSpace, dockSpace) : dockSpace
+                        }
+                        if selectionActive != active {
+                            selectionActive = active
+                            onSelectionChange(active)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .padding(14)
                 .padding(.top, topOverlayInset)
@@ -2320,7 +2363,7 @@ private struct PaneOutputScrollView: View, Equatable {
                 // The scroll view spans behind the floating dock. Its bottom
                 // marker stays above the dock at every keyboard and bar height.
                 Color.clear
-                    .frame(height: bottomOverlayInset + (reservesMarkAsReadSpace ? 68 : 0))
+                    .frame(height: bottomOverlayInset + (reservesMarkAsReadSpace ? 68 : 0) + selectionBottomInset)
                     .id("pane-output-bottom")
             }
             // Content-level simultaneous drag: unlike gestures attached to
@@ -2329,7 +2372,11 @@ private struct PaneOutputScrollView: View, Equatable {
             // reliably during scrolling, including over selectable text.
             .contentShape(Rectangle())
             .simultaneousGesture(
-                TapGesture().onEnded { onTapOutput() }
+                TapGesture().onEnded {
+                    selectionActive = false
+                    onSelectionChange(false)
+                    onTapOutput()
+                }
             )
             .simultaneousGesture(
                 DragGesture(minimumDistance: 20)
@@ -2358,7 +2405,7 @@ private struct PaneOutputScrollView: View, Equatable {
             // refreshes the reader is only moved when they opted into
             // `.followOutput`; otherwise their position is held.
             .onChange(of: output) { _, newOutput in
-                guard !newOutput.isEmpty else { return }
+                guard !selectionActive, pendingKeyboardSpace == 0, !newOutput.isEmpty else { return }
                 guard shouldPinToBottom || paneScrollBehavior == .followOutput else { return }
                 withAnimation(.easeOut(duration: 0.25)) {
                     proxy.scrollTo("pane-output-bottom", anchor: .bottom)
@@ -2370,6 +2417,11 @@ private struct PaneOutputScrollView: View, Equatable {
             // re-pin so the newest output stays visible above the keyboard
             // instead of hidden behind it.
             .onChange(of: keyboardFocused) { _, focused in
+                if focused {
+                    selectionActive = false
+                    pendingKeyboardSpace = 0
+                    onSelectionChange(false)
+                }
                 guard focused, !output.isEmpty else { return }
                 withAnimation(.easeOut(duration: 0.25)) {
                     proxy.scrollTo("pane-output-bottom", anchor: .bottom)
@@ -2378,7 +2430,7 @@ private struct PaneOutputScrollView: View, Equatable {
             // A growing Compose field moves the dock upward. Keep the newest
             // line in the same place above its new edge.
             .onChange(of: bottomOverlayInset) { _, _ in
-                guard !output.isEmpty else { return }
+                guard !selectionActive, pendingKeyboardSpace == 0, !output.isEmpty else { return }
                 withAnimation(.easeOut(duration: 0.25)) {
                     proxy.scrollTo("pane-output-bottom", anchor: .bottom)
                 }
@@ -2392,14 +2444,33 @@ private struct PaneOutputScrollView: View, Equatable {
                     for: UIResponder.keyboardWillChangeFrameNotification
                 )
             ) { note in
-                guard keyboardFocused, !output.isEmpty,
-                      let endFrame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
+                guard let endFrame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+                keyboardHeight = max(0, UIScreen.main.bounds.maxY - endFrame.minY)
+                guard !selectionActive, pendingKeyboardSpace == 0, keyboardFocused, !output.isEmpty,
                       endFrame.minY < UIScreen.main.bounds.height
                 else { return }
                 withAnimation(.easeOut(duration: 0.25)) {
                     proxy.scrollTo("pane-output-bottom", anchor: .bottom)
                 }
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { note in
+            // An empty field can resign before the terminal's touch recognizer
+            // fires. Reserve the old keyboard inset before UIKit clamps scroll.
+            let begin = note.userInfo?[UIResponder.keyboardFrameBeginUserInfoKey] as? CGRect
+            let space = max(keyboardHeight, begin.map { max(0, UIScreen.main.bounds.maxY - $0.minY) } ?? 0)
+            pendingKeyboardSpace = max(pendingKeyboardSpace, space)
+            if selectionActive { retainedKeyboardSpace = max(retainedKeyboardSpace, space) }
+            onSelectionChange(true)
+            keyboardHeight = 0
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidHideNotification)) { _ in
+            if selectionActive {
+                retainedKeyboardSpace = max(retainedKeyboardSpace, pendingKeyboardSpace)
+            } else {
+                onSelectionChange(false)
+            }
+            pendingKeyboardSpace = 0
         }
         .overlay {
             if output.isEmpty {
@@ -2428,9 +2499,22 @@ private struct PaneOutputScrollView: View, Equatable {
 private struct SelectablePaneOutput: UIViewRepresentable {
     let text: AttributedString
     let pointSize: CGFloat
+    let selectionActive: Bool
+    var onSelectionFocusChange: (Bool, CGFloat) -> Void
 
-    func makeUIView(context: Context) -> UITextView {
-        let view = UITextView()
+    func makeUIView(context: Context) -> PaneOutputTextView {
+        let view: PaneOutputTextView
+        #if DEBUG && targetEnvironment(simulator)
+        if ProcessInfo.processInfo.arguments.contains("-hc.long-terminal-selection") {
+            view = PaneSelectionProbeTextView()
+        } else {
+            view = PaneOutputTextView()
+        }
+        #else
+        view = PaneOutputTextView()
+        #endif
+        view.onSelectionFocusChange = onSelectionFocusChange
+        view.observeSelectionTouches()
         view.isEditable = false
         view.isSelectable = true
         view.isScrollEnabled = false
@@ -2442,7 +2526,10 @@ private struct SelectablePaneOutput: UIViewRepresentable {
         return view
     }
 
-    func updateUIView(_ view: UITextView, context: Context) {
+    func updateUIView(_ view: PaneOutputTextView, context: Context) {
+        view.onSelectionFocusChange = onSelectionFocusChange
+        // Keep the selected snapshot stable until the reader leaves selection.
+        guard !selectionActive || view.selectedRange.length == 0 else { return }
         let rendered = NSMutableAttributedString(string: "")
         for run in text.runs {
             let bold = run.inlinePresentationIntent?.contains(.stronglyEmphasized) == true
@@ -2469,11 +2556,119 @@ private struct SelectablePaneOutput: UIViewRepresentable {
         }
     }
 
-    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
+    static func dismantleUIView(_ uiView: PaneOutputTextView, coordinator: ()) {
+        uiView.onSelectionFocusChange = nil
+        uiView.stopObservingSelection()
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: PaneOutputTextView, context: Context) -> CGSize? {
         guard let width = proposal.width, width > 0 else { return nil }
         return uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
     }
 }
+
+/// Capture the viewport at touch-down, before read-only selection dismisses
+/// another field's keyboard and changes the outer scroll view's bottom inset.
+private class PaneOutputTextView: UITextView, UIGestureRecognizerDelegate {
+    var onSelectionFocusChange: ((Bool, CGFloat) -> Void)?
+    private weak var anchorScrollView: UIScrollView?
+    private weak var anchorTouch: UITouch?
+    private var anchorOffset: CGPoint?
+    private var keyboardObserver: NSObjectProtocol?
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        if bounds.contains(point),
+           let touch = event?.allTouches?.first(where: { $0.phase == .began }),
+           touch !== anchorTouch {
+            anchorTouch = touch
+            anchorOffset = nil
+            var ancestor = superview
+            while let view = ancestor {
+                if let scroll = view as? UIScrollView {
+                    if scroll.adjustedContentInset.bottom > (window?.safeAreaInsets.bottom ?? 0) + 1 {
+                        anchorScrollView = scroll
+                        anchorOffset = scroll.contentOffset
+                    }
+                    break
+                }
+                ancestor = view.superview
+            }
+        }
+        return super.hitTest(point, with: event)
+    }
+
+    func observeSelectionTouches() {
+        keyboardObserver = NotificationCenter.default.addObserver(
+            forName: UIResponder.keyboardDidHideNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.restoreSelectionScrollPosition() }
+        }
+
+        let observer = UILongPressGestureRecognizer(target: self, action: #selector(selectionTouch(_:)))
+        observer.minimumPressDuration = 0
+        observer.cancelsTouchesInView = false
+        observer.delegate = self
+        addGestureRecognizer(observer)
+    }
+
+    func stopObservingSelection() {
+        if let keyboardObserver { NotificationCenter.default.removeObserver(keyboardObserver) }
+        keyboardObserver = nil
+    }
+
+    private func restoreSelectionScrollPosition() {
+        defer { anchorOffset = nil }
+        guard let scroll = anchorScrollView, let offset = anchorOffset,
+              scroll.panGestureRecognizer.state != .began,
+              scroll.panGestureRecognizer.state != .changed else { return }
+        // SwiftUI has now reserved the dismissed keyboard's space, so restoring
+        // the pre-touch offset cannot be clamped back to the old content end.
+        scroll.layoutIfNeeded()
+        scroll.setContentOffset(offset, animated: false)
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        true
+    }
+
+    @objc private func selectionTouch(_ gesture: UILongPressGestureRecognizer) {
+        if gesture.state == .began {
+            onSelectionFocusChange?(true, window?.safeAreaInsets.bottom ?? 0)
+        } else if gesture.state == .ended || gesture.state == .cancelled {
+            // UIKit may finish establishing its selection on touch-up.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !isFirstResponder, selectedRange.length == 0 else { return }
+                onSelectionFocusChange?(false, 0)
+            }
+        }
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        onSelectionFocusChange?(true, window?.safeAreaInsets.bottom ?? 0)
+        return super.becomeFirstResponder()
+    }
+}
+
+#if DEBUG && targetEnvironment(simulator)
+/// Fixture-only geometry and selection for exact touch-position UI tests.
+/// UITextView's accessibility frame can be clipped to its visible viewport.
+private final class PaneSelectionProbeTextView: PaneOutputTextView {
+    override var accessibilityValue: String? {
+        get {
+            let origin = convert(CGPoint.zero, to: nil)
+            let selected = selectedTextRange.flatMap { text(in: $0) } ?? ""
+            let values: [String: Any] = [
+                "x": origin.x, "y": origin.y, "width": bounds.width, "height": bounds.height,
+                "selected": selected
+            ]
+            return (try? JSONSerialization.data(withJSONObject: values))
+                .flatMap { String(data: $0, encoding: .utf8) }
+        }
+        set { super.accessibilityValue = newValue }
+    }
+}
+#endif
 
 /// UIKit bridge that forces the terminal output's underlying `UIScrollView`
 /// into native interactive keyboard dismissal. SwiftUI's
