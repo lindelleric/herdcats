@@ -1743,17 +1743,16 @@ enum TimelineMarkdown {
         var attributed = (try? AttributedString(
             markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
             ?? AttributedString(text)
-        // Bidi controls and other invisible scalars are removed from the rendered
-        // text of linked runs too: validating a normalized label while displaying
-        // the original would let a bidi override (U+202E, ...) show a host that
-        // differs from the one the check approved. Ranges are captured up front
-        // and replaced last-to-first so earlier ranges stay valid.
-        let linkedRuns = attributed.runs
-            .filter { $0.link != nil }
-            .map { (range: $0.range, attributes: $0.attributes) }
-        for run in linkedRuns.reversed() {
+        // Bidi controls in unlinked text can reorder a neighboring link too.
+        // Remove them across the rendered string; preserve ordinary whitespace
+        // and joiners outside links. Capture ranges before replacing in reverse.
+        let runs = attributed.runs.map {
+            (range: $0.range, attributes: $0.attributes, linked: $0.link != nil)
+        }
+        for run in runs.reversed() {
             let original = String(attributed[run.range].characters)
-            let cleaned = droppingInvisibleCharacters(original)
+            let cleaned = run.linked ? droppingInvisibleCharacters(original)
+                : String(original.unicodeScalars.filter { !$0.properties.isBidiControl })
             guard cleaned != original else { continue }
             attributed.replaceSubrange(
                 run.range, with: AttributedString(cleaned, attributes: run.attributes))
@@ -1811,7 +1810,9 @@ enum TimelineMarkdown {
     private static func droppingInvisibleCharacters(_ text: String) -> String {
         var scalars = String.UnicodeScalarView()
         for scalar in text.unicodeScalars {
-            if scalar.properties.isDefaultIgnorableCodePoint { continue }
+            // Braille blank renders as empty space but is neither whitespace
+            // nor default-ignorable, and can conceal a URL prefix.
+            if scalar.value == 0x2800 || scalar.properties.isDefaultIgnorableCodePoint { continue }
             switch scalar.properties.generalCategory {
             case .format, .control: continue
             default: scalars.append(scalar)

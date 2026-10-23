@@ -445,9 +445,33 @@ struct TimelineMarkdownTests {
         #expect(String(styled.characters) == "https://moc.live")
         #expect(styled.runs.compactMap(\.link).count == styled.runs.count)
 
-        // Text outside links keeps its original characters.
+        // Bidi controls outside links are removed too.
         let mixed = TimelineMarkdown.sanitized("plain \u{202E}text and [x](https://example.com)")
-        #expect(String(mixed.characters) == "plain \u{202E}text and x")
+        #expect(String(mixed.characters) == "plain text and x")
+    }
+
+    @Test func surroundingBidiControlsCannotDisguiseLinkLabels() {
+        for (open, close) in [("\u{202E}", "\u{202C}"), ("\u{202D}", "\u{202C}"),
+                              ("\u{2066}", "\u{2069}"), ("\u{2067}", "\u{2069}"),
+                              ("\u{2068}", "\u{2069}")] {
+            let result = TimelineMarkdown.sanitized("\(open)[moc.knab//:sptth](https://evil.example)\(close)")
+            #expect(String(result.characters) == "moc.knab//:sptth")
+            let styled = TimelineMarkdown.sanitized("\(open)[https://**bank.com**](https://bank.com)\(close)")
+            #expect(String(styled.characters) == "https://bank.com")
+            #expect(!styled.runs.compactMap(\.link).isEmpty)
+        }
+        // Ordinary unlinked whitespace and joiners retain their text semantics.
+        let plain = TimelineMarkdown.sanitized("a\n b\u{200D}c")
+        #expect(String(plain.characters) == "a\n b\u{200D}c")
+    }
+
+    @Test func brailleBlanksCannotHideDeceptiveLabels() {
+        #expect(links("[\u{2800}https://bank.com](https://evil.example)").isEmpty)
+        #expect(links("[ \u{2800}**https://bank.com**](https://evil.example)").isEmpty)
+        #expect(links("[https:\u{2800}//bank.com](https://evil.example)").isEmpty)
+        let matching = TimelineMarkdown.sanitized("[\u{2800}https://bank.com](https://bank.com)")
+        #expect(String(matching.characters) == "https://bank.com")
+        #expect(matching.runs.compactMap(\.link).count == 1)
     }
 
     @Test func defaultIgnorableNonFormatScalarsCannotHideADeceptiveLabel() {
