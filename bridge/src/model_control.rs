@@ -150,6 +150,11 @@ pub fn claude_scan(records: &[Value]) -> Option<(String, Option<String>)> {
     let mut assistant_effort = None;
     let mut request_effort = None;
     for record in records {
+        // Subagent (sidechain) and meta records carry their own model and
+        // effort; like the timeline parser, only main-session records count.
+        if record["isSidechain"] == true || record["isMeta"] == true {
+            continue;
+        }
         match record["type"].as_str() {
             Some("assistant") => {
                 if let Some(id) = record["message"]["model"]
@@ -1268,6 +1273,20 @@ mod tests {
             serde_json::json!({"type":"assistant","message":{"model":"claude-opus-5-5"}}),
             serde_json::json!({"type":"api-request","params":{"output_config":{"effort":"high"}}}),
             serde_json::json!({"type":"assistant","message":{"model":"claude-opus-5-5"}}),
+        ];
+        assert_eq!(
+            claude_scan(&records),
+            Some(("claude-opus-5-5".into(), Some("high".into())))
+        );
+    }
+
+    #[test]
+    fn claude_scan_ignores_sidechain_and_meta_records() {
+        let records = vec![
+            serde_json::json!({"type":"assistant","message":{"model":"claude-opus-5-5"},"effort":"high"}),
+            serde_json::json!({"type":"assistant","isSidechain":true,"message":{"model":"claude-haiku-5-5"},"effort":"low"}),
+            serde_json::json!({"type":"api-request","isSidechain":true,"params":{"output_config":{"effort":"low"}}}),
+            serde_json::json!({"type":"assistant","isMeta":true,"message":{"model":"claude-sonnet-5-5"}}),
         ];
         assert_eq!(
             claude_scan(&records),
