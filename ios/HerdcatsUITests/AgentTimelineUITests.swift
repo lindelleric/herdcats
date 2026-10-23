@@ -750,12 +750,16 @@ final class AgentTimelineUITests: XCTestCase {
         let control = app.buttons["timeline-model-control"]
         XCTAssertTrue(control.waitForExistence(timeout: 5))
         XCTAssertEqual(control.label, "Model Opus 5.5, effort high")
-        let send = app.buttons["timeline-compose-send"]
-        XCTAssertTrue(send.exists, "Send stays visible next to the model control")
-        XCTAssertFalse(send.isEnabled, "Send is disabled while the draft is blank")
         let field = app.textFields["timeline-compose-field"].exists
             ? app.textFields["timeline-compose-field"] : app.textViews["timeline-compose-field"]
         field.tap()
+        // Drafts persist across launches; clear one restored from an earlier run.
+        if let draft = field.value as? String, !draft.isEmpty, draft != field.placeholderValue {
+            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: draft.count))
+        }
+        let send = app.buttons["timeline-compose-send"]
+        XCTAssertTrue(send.waitForExistence(timeout: 3), "Send stays visible next to the model control")
+        XCTAssertFalse(send.isEnabled, "Send is disabled while the draft is blank")
         field.typeText("Hi")
         XCTAssertTrue(app.buttons["timeline-compose-send"].waitForExistence(timeout: 3))
         let composer = XCTAttachment(screenshot: app.screenshot())
