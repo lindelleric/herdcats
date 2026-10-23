@@ -1743,12 +1743,27 @@ enum TimelineMarkdown {
         var attributed = (try? AttributedString(
             markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
             ?? AttributedString(text)
+        // Inline styling (`**bold**`, `_em_`, `code`) splits one link into several runs
+        // that share the same URL. Coalesce adjacent runs so the complete visible label
+        // is validated, not each styled fragment on its own.
         var unsafeRanges: [Range<AttributedString.Index>] = []
-        for run in attributed.runs {
-            guard let url = run.link else { continue }
-            let label = String(attributed[run.range].characters)
-            if !isSafe(url, label: label) { unsafeRanges.append(run.range) }
+        var group: (url: URL, range: Range<AttributedString.Index>)?
+        func flush() {
+            guard let current = group else { return }
+            let label = String(attributed[current.range].characters)
+            if !isSafe(current.url, label: label) { unsafeRanges.append(current.range) }
+            group = nil
         }
+        for run in attributed.runs {
+            guard let url = run.link else { flush(); continue }
+            if let current = group, current.url == url {
+                group = (url, current.range.lowerBound..<run.range.upperBound)
+            } else {
+                flush()
+                group = (url, run.range)
+            }
+        }
+        flush()
         for range in unsafeRanges { attributed[range].link = nil }
         return attributed
     }

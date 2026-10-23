@@ -395,6 +395,20 @@ struct TimelineMarkdownTests {
         #expect(links("[https://good.com](https://good.com@evil.example/)").isEmpty)
     }
 
+    @Test func styledFragmentsOfOneLinkAreValidatedAsAWholeLabel() {
+        // Styling splits the label into several runs; each must not be judged alone.
+        #expect(links("[https://**bank.com**](https://evil.example)").isEmpty)
+        #expect(links("[**https://bank.com**](https://evil.example)").isEmpty)
+        #expect(links("[https://_bank_.com](https://evil.example)").isEmpty)
+        #expect(links("[https://`bank.com`](https://evil.example)").isEmpty)
+        let result = TimelineMarkdown.sanitized("[https://**bank.com**](https://evil.example)")
+        #expect(String(result.characters) == "https://bank.com")
+        // A matching host stays linked across all of its styled fragments.
+        let kept = TimelineMarkdown.sanitized("[https://**bank.com**/login](https://bank.com/login)")
+        #expect(kept.runs.compactMap(\.link).count == kept.runs.count)
+        #expect(!kept.runs.isEmpty)
+    }
+
     @Test func onlyUnsafeLinksAreStrippedFromMixedText() {
         let result = TimelineMarkdown.sanitized(
             "ok [a](https://example.com) bad [b](tel:123) also [c](https://example.org)")
