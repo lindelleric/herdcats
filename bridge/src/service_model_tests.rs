@@ -1319,6 +1319,27 @@ fn model_set_rechecks_the_occupant_right_before_the_first_prompt() {
 }
 
 #[test]
+fn model_set_codex_reselecting_the_current_model_sends_nothing() {
+    let (mut service, root, herdr, path) = model_fixture_codex();
+    // An effort the picker has no row for (minimal) must survive a reselect.
+    let text = fs::read_to_string(&path)
+        .unwrap()
+        .replace(r#""effort":"low""#, r#""effort":"minimal""#);
+    fs::write(&path, text).unwrap();
+    herdr.lock().unwrap().screen = "› Ask Codex to do anything".into();
+    let reply = model_request(
+        &mut service,
+        "model.set",
+        json!({"model":"gpt-6.1-sol","expect":expect_pair("gpt-6.1-sol", Some("minimal"))}),
+    );
+    let result = &result_frame(&reply)["result"];
+    assert_eq!(result["confirmed"], true, "{reply:?}");
+    assert_eq!(result["applied"]["effort"], "minimal");
+    assert!(herdr.lock().unwrap().inputs.is_empty());
+    cleanup(&service, root);
+}
+
+#[test]
 fn model_set_claude_treats_the_active_alias_as_unchanged() {
     // The session runs claude-opus-5-5; the checked "opus" row plus a new
     // effort sends only /effort, never /model.
@@ -1385,7 +1406,7 @@ fn codex_dismissal_never_sends_escape_into_a_replacement_occupant() {
 }
 
 #[test]
-fn model_set_claude_rejects_a_newer_desk_confirmation_for_another_model() {
+fn model_set_claude_uses_its_own_confirmation_not_a_newer_desk_one() {
     let (mut service, root, herdr, _) = model_fixture_claude();
     // Our /model haiku is followed on screen by a desk-side /model sonnet.
     let screen = "  Claude Code                         v2.1.309\n\
@@ -1401,10 +1422,11 @@ fn model_set_claude_rejects_a_newer_desk_confirmation_for_another_model() {
         "model.set",
         json!({"model":"haiku", "expect":expect_pair("claude-opus-5-5", Some("medium"))}),
     );
+    // Our confirmation comes first after our echo; the desk's later
+    // /model sonnet line is ignored.
     let result = &result_frame(&reply)["result"];
-    assert_eq!(result["confirmed"], false, "{reply:?}");
-    assert_eq!(result["error"], "stale");
-    assert_eq!(result["applied"]["model"]["id"], "claude-opus-5-5");
+    assert_eq!(result["confirmed"], true, "{reply:?}");
+    assert_eq!(result["applied"]["model"], json!({"id":"haiku","label":"Haiku 5.5"}));
     cleanup(&service, root);
 }
 

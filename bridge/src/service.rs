@@ -1574,11 +1574,27 @@ impl Service {
         let current_slug = current.as_ref().map(|(id, _)| id.as_str());
         let target_slug = target_model.or(current_slug).ok_or("invalid_request")?;
         let catalog = self.codex_catalog();
-        let target_label = catalog
-            .iter()
-            .find(|model| model.slug == target_slug)
-            .map(|model| model.label.clone())
-            .unwrap_or_else(|| model_control::codex_slug_label(target_slug));
+        let label_for = |slug: &str| {
+            catalog
+                .iter()
+                .find(|model| model.slug == slug)
+                .map(|model| model.label.clone())
+                .unwrap_or_else(|| model_control::codex_slug_label(slug))
+        };
+        // Reselecting the current model without an effort is a no-op: walking
+        // the picker would apply its default row, and an effort it can't show
+        // (minimal) would be silently replaced.
+        if target_effort.is_none() && Some(target_slug) == current_slug {
+            return Ok(json!({
+                "identity":identity, "generation":self.generation,
+                "applied":{
+                    "model":{"id":target_slug,"label":label_for(target_slug)},
+                    "effort": current.as_ref().and_then(|(_, effort)| effort.clone()),
+                },
+                "confirmed": true, "error": null,
+            }));
+        }
+        let target_label = label_for(target_slug);
         let mismatch = || -> &'static str {
             self.dismiss_codex_picker(identity);
             "picker_mismatch"

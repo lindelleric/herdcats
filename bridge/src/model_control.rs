@@ -757,8 +757,15 @@ pub enum ClaudeConfirmation {
     Kept,
 }
 
-pub fn claude_confirmation(screen: &str) -> Option<ClaudeConfirmation> {
-    for line in screen.lines().rev() {
+/// The first result line in `outcome` (the screen after the bridge's own
+/// command echo). Reading forward means a desk-side command typed after ours
+/// can never stand in for our confirmation.
+pub fn claude_confirmation(outcome: &str) -> Option<ClaudeConfirmation> {
+    outcome.lines().find_map(claude_result_line)
+}
+
+fn claude_result_line(line: &str) -> Option<ClaudeConfirmation> {
+    {
         let line = line.trim().trim_start_matches('⎿').trim();
         if line.starts_with("Kept effort level as ") || line.starts_with("Kept model as ") {
             return Some(ClaudeConfirmation::Kept);
