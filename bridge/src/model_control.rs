@@ -458,27 +458,43 @@ pub fn codex_effort_row_label(effort: &str) -> Option<&'static str> {
     }
 }
 
-/// A confirmed `• Model changed to <slug> <effort> [for this session only]`
-/// toast; returns the applied pair.
-pub fn codex_change_toast(screen: &str) -> Option<(String, String)> {
-    for line in screen.lines() {
-        let Some(rest) = line
-            .trim()
+fn codex_toast_lines(screen: &str) -> impl DoubleEndedIterator<Item = &str> {
+    screen.lines().filter_map(|line| {
+        line.trim()
             .trim_start_matches('•')
             .trim()
             .strip_prefix("Model changed to ")
-        else {
-            continue;
-        };
-        let mut parts = rest.split_whitespace();
-        let slug = parts.next()?.to_owned();
-        let effort = parts.next()?.to_owned();
-        if slug.is_empty() || effort.is_empty() {
-            return None;
-        }
-        return Some((slug, effort));
+    })
+}
+
+pub fn codex_change_toast_count(screen: &str) -> usize {
+    codex_toast_lines(screen).count()
+}
+
+/// Only the bottom-most toast can confirm a change, and only the session-only path.
+pub fn codex_change_toast(screen: &str) -> Option<(String, String)> {
+    let line = codex_toast_lines(screen).next_back()?;
+    let rest = line.strip_suffix(" for this session only")?;
+    let mut parts = rest.split_whitespace();
+    let slug = parts.next()?;
+    let effort = parts.next()?;
+    if parts.next().is_some() {
+        return None;
     }
-    None
+    Some((slug.to_owned(), effort.to_owned()))
+}
+
+pub fn codex_fresh_change(
+    screen: &str,
+    baseline_count: usize,
+    slug: &str,
+    effort: Option<&str>,
+) -> Option<(String, String)> {
+    if codex_change_toast_count(screen) <= baseline_count {
+        return None;
+    }
+    let applied = codex_change_toast(screen)?;
+    (applied.0 == slug && effort.is_none_or(|wanted| applied.1 == wanted)).then_some(applied)
 }
 
 /// Claude's confirmation lines after `/model` and `/effort`. Returns the
@@ -845,6 +861,35 @@ mod tests {
     }
 
     #[test]
+    fn codex_confirmation_requires_a_new_bottommost_session_only_toast() {
+        let old = "• Model changed to gpt-6.1-sol medium for this session only";
+        let new = "• Model changed to gpt-6-luna medium for this session only";
+        let both = format!("{old}\n{new}");
+        assert_eq!(codex_change_toast_count(&both), 2);
+        assert_eq!(
+            codex_fresh_change(&both, 1, "gpt-6-luna", Some("medium")),
+            Some(("gpt-6-luna".into(), "medium".into()))
+        );
+        assert_eq!(
+            codex_fresh_change(new, 1, "gpt-6-luna", Some("medium")),
+            None
+        );
+        assert_eq!(codex_fresh_change(&both, 1, "gpt-6.1-sol", None), None);
+        assert_eq!(
+            codex_fresh_change(&both, 1, "gpt-6-luna", Some("high")),
+            None
+        );
+        assert_eq!(
+            codex_change_toast("• Model changed to gpt-6-luna medium"),
+            None
+        );
+        assert_eq!(
+            codex_change_toast(&format!("{new}\n• Model changed to gpt-6-luna medium")),
+            None
+        );
+    }
+
+    #[test]
     fn change_toast_and_claude_confirmations_parse() {
         assert_eq!(
             codex_change_toast("• Model changed to gpt-6-luna high for this session only"),
@@ -852,7 +897,7 @@ mod tests {
         );
         assert_eq!(
             codex_change_toast("• Model changed to gpt-6-luna high"),
-            Some(("gpt-6-luna".into(), "high".into()))
+            None
         );
         assert_eq!(codex_change_toast("nothing happened"), None);
 

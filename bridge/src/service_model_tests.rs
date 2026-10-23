@@ -631,7 +631,6 @@ fn model_set_codex_aborts_when_cursor_misses_the_target_row() {
             model_keys_input(&["down"]),
             model_keys_input(&["down"]),
             model_keys_input(&["esc"]),
-            model_keys_input(&["esc"]),
         ]
     );
     assert!(
@@ -666,7 +665,7 @@ fn model_set_refuses_busy_stale_and_mismatched_pickers() {
     assert!(herdr.lock().unwrap().inputs.is_empty());
     cleanup(&service, root);
 
-    // Codex picker never opens: agent prompt sent, then escape recovery.
+    // Codex picker never opens: never send Escape into the composer.
     let (mut service, root2, herdr2, _) = model_fixture_codex();
     herdr2.lock().unwrap().status = Some("idle".into());
     script_model(&herdr2, vec!["› Ask Codex to do anything".to_owned()]);
@@ -676,14 +675,7 @@ fn model_set_refuses_busy_stale_and_mismatched_pickers() {
         json!({"model":"gpt-6-luna","expect":expect_pair("gpt-6.1-sol", Some("low"))}),
     );
     assert_eq!(result_frame(&reply)["error"]["code"], "picker_mismatch");
-    assert_eq!(
-        herdr2.lock().unwrap().inputs,
-        vec![
-            prompt_input("/model"),
-            model_keys_input(&["esc"]),
-            model_keys_input(&["esc"])
-        ]
-    );
+    assert_eq!(herdr2.lock().unwrap().inputs, vec![prompt_input("/model")]);
     cleanup(&service, root2);
 }
 
@@ -702,11 +694,7 @@ fn model_set_codex_midflow_busy_pane_dismisses_and_stales() {
     assert_eq!(result_frame(&reply)["error"]["code"], "stale");
     assert_eq!(
         herdr.lock().unwrap().inputs,
-        vec![
-            prompt_input("/model"),
-            model_keys_input(&["esc"]),
-            model_keys_input(&["esc"])
-        ]
+        vec![prompt_input("/model"), model_keys_input(&["esc"])]
     );
     cleanup(&service, root);
 }
@@ -781,7 +769,6 @@ fn model_set_codex_rechecks_between_arrow_sends() {
         vec![
             prompt_input("/model"),
             model_keys_input(&["down"]),
-            model_keys_input(&["esc"]),
             model_keys_input(&["esc"])
         ]
     );
@@ -1083,5 +1070,139 @@ fn model_cursor_verification_ignores_changed_status_suffix_order() {
     let expected = model_control::parse_codex_screen(before);
     herdr.lock().unwrap().screen = before.replace("(default) (current)", "(current) (default)");
     assert!(service.verify_cursor("w1:p1", &expected, Some(0)));
+    cleanup(&service, root);
+}
+
+#[test]
+fn model_set_codex_confirms_last_toast_after_an_older_change() {
+    let (mut service, root, herdr, _) = model_fixture_codex();
+    let old = "• Model changed to gpt-6.1-sol medium for this session only\n";
+    let mut screens = vec![
+        codex_model_list_screen(1),
+        codex_model_list_screen(2),
+        codex_model_list_screen(3),
+        codex_model_list_screen(4),
+        codex_effort_list_screen(1),
+        codex_effort_list_screen(2),
+    ]
+    .into_iter()
+    .map(|screen| format!("{old}{screen}"))
+    .collect::<Vec<_>>();
+    screens.push(format!(
+        "{old}{}",
+        codex_composer_toast("gpt-6-luna", "medium")
+    ));
+    script_model(&herdr, screens);
+    let reply = model_request(
+        &mut service,
+        "model.set",
+        json!({
+            "model":"gpt-6-luna", "effort":"medium",
+            "expect":expect_pair("gpt-6.1-sol", Some("low"))
+        }),
+    );
+    assert_eq!(result_frame(&reply)["result"]["confirmed"], true);
+    assert_eq!(
+        result_frame(&reply)["result"]["applied"]["model"]["id"],
+        "gpt-6-luna"
+    );
+    assert!(
+        !herdr
+            .lock()
+            .unwrap()
+            .inputs
+            .iter()
+            .any(|input| input["params"]["keys"] == json!(["esc"]))
+    );
+    cleanup(&service, root);
+}
+
+#[test]
+fn model_set_codex_leftover_identical_toast_times_out_without_escape_into_composer() {
+    let (mut service, root, herdr, _) = model_fixture_codex();
+    let toast = codex_composer_toast("gpt-6.1-sol", "medium");
+    let models = include_str!("fixtures/codex-model-list.txt");
+    let effort = include_str!("fixtures/codex-effort-list.txt");
+    let moved = effort
+        .replacen("› 1.", "  1.", 1)
+        .replacen("  2. Medium", "› 2. Medium", 1);
+    script_model(
+        &herdr,
+        vec![
+            format!("{toast}\n{models}"),
+            format!("{toast}\n{effort}"),
+            format!("{toast}\n{moved}"),
+            toast,
+        ],
+    );
+    let reply = model_request(
+        &mut service,
+        "model.set",
+        json!({
+            "effort":"medium", "expect":expect_pair("gpt-6.1-sol", Some("low"))
+        }),
+    );
+    assert_eq!(result_frame(&reply)["error"]["code"], "confirm_timeout");
+    assert_eq!(
+        herdr.lock().unwrap().inputs,
+        vec![
+            prompt_input("/model"),
+            model_keys_input(&["enter"]),
+            model_keys_input(&["down"]),
+            model_keys_input(&["s"])
+        ]
+    );
+    cleanup(&service, root);
+}
+
+#[test]
+fn codex_dismissal_waits_for_nested_picker_transitions_and_stops_at_composer() {
+    let (service, root, herdr, _) = model_fixture_codex();
+    let advanced = codex_advanced_screen();
+    let effort = codex_effort_list_screen(5);
+    script_model(
+        &herdr,
+        vec![effort.clone(), "› Ask Codex to do anything".into()],
+    );
+    {
+        let mut state = herdr.lock().unwrap();
+        state.screen = advanced.clone();
+        // First Escape initially returns the stale Advanced screen.
+        state.screens_after_input[0] = [advanced, effort].into();
+    }
+    service.dismiss_codex_picker("w1:p1");
+    assert_eq!(
+        herdr.lock().unwrap().inputs,
+        vec![model_keys_input(&["esc"]), model_keys_input(&["esc"])]
+    );
+    assert_eq!(herdr.lock().unwrap().screen, "› Ask Codex to do anything");
+    cleanup(&service, root);
+}
+
+#[test]
+fn codex_dismissal_never_sends_escape_to_unknown_or_composer_screens() {
+    let (service, root, herdr, _) = model_fixture_codex();
+    for screen in [
+        "Browsing transcript · ↵ rewind",
+        "unrecognized screen",
+        "› Ask Codex to do anything",
+    ] {
+        herdr.lock().unwrap().screen = screen.into();
+        service.dismiss_codex_picker("w1:p1");
+    }
+    assert!(herdr.lock().unwrap().inputs.is_empty());
+    cleanup(&service, root);
+}
+
+#[test]
+fn codex_dismissal_does_not_repeat_escape_on_an_unchanged_picker() {
+    let (service, root, herdr, _) = model_fixture_codex();
+    script_model(&herdr, vec![]);
+    herdr.lock().unwrap().screen = codex_effort_list_screen(1);
+    service.dismiss_codex_picker("w1:p1");
+    assert_eq!(
+        herdr.lock().unwrap().inputs,
+        vec![model_keys_input(&["esc"])]
+    );
     cleanup(&service, root);
 }

@@ -1293,11 +1293,37 @@ impl Service {
             "confirmed": error.is_none(), "error": error,
         }))
     }
-    /// Best-effort picker dismissal for abort paths.
+    /// Never send Escape into the composer: Esc-Esc opens Codex's rewind UI.
+    /// An unchanged render cannot authorize another key after the first Escape.
     fn dismiss_codex_picker(&self, pane_id: &str) {
-        for _ in 0..2 {
-            let _ = self.client.send_keys(pane_id, &["esc"]);
-            thread::sleep(Duration::from_millis(150));
+        for _ in 0..3 {
+            let Ok(screen) = self.client.read_visible(pane_id) else {
+                return;
+            };
+            let before = model_control::parse_codex_screen(&screen);
+            if before.is_composer() || before.rows().is_empty() {
+                return;
+            }
+            if self.client.send_keys(pane_id, &["esc"]).is_err() {
+                return;
+            }
+            let deadline = Instant::now() + Duration::from_millis(1500);
+            loop {
+                thread::sleep(Duration::from_millis(150));
+                let Ok(screen) = self.client.read_visible(pane_id) else {
+                    return;
+                };
+                let after = model_control::parse_codex_screen(&screen);
+                if after.is_composer() || after.rows().is_empty() {
+                    return;
+                }
+                if std::mem::discriminant(&after) != std::mem::discriminant(&before) {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    return;
+                }
+            }
         }
     }
     fn wait_codex_kind(
@@ -1318,14 +1344,20 @@ impl Service {
             thread::sleep(Duration::from_millis(150));
         }
     }
-    fn wait_codex_toast(&self, pane_id: &str, slug: &str) -> Option<(String, String)> {
+    fn wait_codex_toast(
+        &self,
+        pane_id: &str,
+        baseline_count: usize,
+        slug: &str,
+        effort: Option<&str>,
+    ) -> Option<(String, String)> {
         let deadline = Instant::now() + Duration::from_secs(4);
         loop {
             let screen = self.client.read_visible(pane_id).unwrap_or_default();
-            if let Some((applied_slug, effort)) = model_control::codex_change_toast(&screen)
-                && applied_slug == slug
+            if let Some(applied) =
+                model_control::codex_fresh_change(&screen, baseline_count, slug, effort)
             {
-                return Some((applied_slug, effort));
+                return Some(applied);
             }
             if Instant::now() >= deadline {
                 return None;
@@ -1502,9 +1534,12 @@ impl Service {
         }
         // `s` applies for this session only; digits or enter would persist a
         // new global default in config.toml.
+        let baseline = self.client.read_visible(pane_id).map_err(|_| mismatch())?;
+        let baseline_count = model_control::codex_change_toast_count(&baseline);
         send(&["s"])?;
 
-        let Some((applied_slug, applied_effort)) = self.wait_codex_toast(pane_id, target_slug)
+        let Some((applied_slug, applied_effort)) =
+            self.wait_codex_toast(pane_id, baseline_count, target_slug, target_effort)
         else {
             self.dismiss_codex_picker(pane_id);
             return Err("confirm_timeout");
