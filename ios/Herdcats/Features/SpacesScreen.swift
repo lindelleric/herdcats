@@ -54,6 +54,12 @@ final class SpacesModel {
         machineSources.first { $0.id == space.machine?.id }?.model ?? self
     }
 
+    /// Latest pane activity among the space's agents — the list row's timestamp.
+    func lastActivity(in space: Space) -> Date? {
+        let dates = model(for: space).lastUpdatedByPaneID
+        return space.agents.compactMap { dates[$0.paneId] }.max()
+    }
+
     func connection(for space: Space?, fallback: HerdrConnection) throws -> HerdrConnection {
         guard let machine = space?.machine else { return fallback }
         guard let source = machineSources.first(where: { $0.id == machine.id }) else {
@@ -724,7 +730,11 @@ struct SpacesScreen: View {
     @State private var isShowingRenameAlert = false
     @State private var closeTarget: Space?
     @State private var isShowingCloseConfirmation = false
-    @State private var raisedCardID: String?
+    /// Space whose swipe "More" drawer is open.
+    @State private var actionsTarget: Space?
+    /// Chosen in the drawer; performed in `onDismiss` so the next sheet or
+    /// alert is not presented while the drawer is still on screen.
+    @State private var pendingSpaceAction: (action: SpaceAction, space: Space)?
 
     private var sort: SpaceSortPreference {
         SpaceSortPreference(rawValue: sortRaw) ?? .default
@@ -772,53 +782,51 @@ struct SpacesScreen: View {
                     }
                 } else {
                     ScrollViewReader { proxy in
-                        ScrollView {
-                            LazyVStack(spacing: 8) {
-                                if let title = model.pendingSpaceCreationTitle {
-                                    PendingSpaceCard(title: title)
-                                        .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                        List {
+                            if let title = model.pendingSpaceCreationTitle {
+                                PendingSpaceRow(title: title)
+                                    .quietListRow()
+                                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                            }
+                            let groups = displayedGroups
+                            ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
+                                if model.showsAllMachines, sort == .workspaceOrder,
+                                   index == 0 || groups[index - 1].root.machine?.id != group.root.machine?.id {
+                                    MachineSectionHeader(name: group.root.machine?.label ?? "Machine")
+                                        .quietListRow()
                                 }
-                                let groups = displayedGroups
-                                ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
-                                    if model.showsAllMachines, sort == .workspaceOrder,
-                                       index == 0 || groups[index - 1].root.machine?.id != group.root.machine?.id {
-                                        MachineSectionHeader(name: group.root.machine?.label ?? "Machine")
-                                    }
-                                    SpaceCard(
+                                spaceLink(group.root) {
+                                    SpaceRow(
                                         group: group,
                                         machineLabel: model.showsAllMachines && sort == .priority ? group.root.machine?.label : nil,
-                                        pendingWorktreeAction: model.pendingWorktreeAction,
-                                        highlightedWorktreeID: model.highlightedWorktreeID,
-                                        isWorktreeActionDisabled: model.isPerformingWorktreeAction,
-                                        onOpenWorktree: { space in
-                                            openWorktreeTarget = model.defaultSpace(for: space)
-                                        },
-                                        onCreateWorktree: { space in
-                                            createWorktreeTarget = model.defaultSpace(for: space)
-                                        },
-                                        onRename: { space in
-                                            renameTarget = space
-                                            renameText = space.label
-                                            isShowingRenameAlert = true
-                                        },
-                                        onClose: { space in
-                                            closeTarget = space
-                                            isShowingCloseConfirmation = true
-                                        }
+                                        isHighlighted: model.highlightedWorktreeID == group.root.id,
+                                        lastUpdated: model.lastActivity(in: group.root)
                                     )
-                                    .zIndex(raisedCardID == group.id ? 1 : 0)
-                                    .transition(.opacity)
-                                    .id(group.id)
+                                }
+                                .accessibilityIdentifier("space-row-\(group.root.workspace.number)")
+                                .id(group.id)
+                                ForEach(group.worktrees) { space in
+                                    spaceLink(space) {
+                                        WorktreeRow(
+                                            space: space,
+                                            isHighlighted: model.highlightedWorktreeID == space.id,
+                                            lastUpdated: model.lastActivity(in: space)
+                                        )
+                                    }
+                                }
+                                if let pending = model.pendingWorktreeAction,
+                                   pending.sourceSpaceID == group.root.id {
+                                    PendingWorktreeRow(action: pending)
+                                        .quietListRow()
                                 }
                             }
-                            .animation(reduceMotion ? nil : .spring(duration: 0.5, bounce: 0.12), value: cardOrder.map(\.id))
-                            .onChange(of: cardOrder) { old, new in
-                                raisedCardID = ReorderingCard.movingID(from: old, to: new)
-                            }
-                            .padding(.horizontal, 16)
-                            .padding(.top, 12)
-                            .padding(.bottom, 44)
                         }
+                        .listStyle(.plain)
+                        .scrollContentBackground(.hidden)
+                        .environment(\.defaultMinListRowHeight, 0)
+                        .contentMargins(.top, 4, for: .scrollContent)
+                        .contentMargins(.bottom, 44, for: .scrollContent)
+                        .animation(reduceMotion ? nil : .spring(duration: 0.5, bounce: 0.12), value: cardOrder.map(\.id))
                         .onChange(of: model.lastPresentedSpaceID) { _, spaceID in
                             guard let spaceID,
                                   let group = displayedGroups.first(where: {
@@ -893,6 +901,27 @@ struct SpacesScreen: View {
                 } else {
                     ContentUnavailableView("Machine Unavailable", systemImage: "desktopcomputer.trianglebadge.exclamationmark")
                 }
+            }
+            .sheet(item: $actionsTarget, onDismiss: {
+                guard let pending = pendingSpaceAction else { return }
+                pendingSpaceAction = nil
+                perform(pending.action, on: pending.space)
+            }) { space in
+                SpaceActionsDrawer(
+                    space: space,
+                    isWorktreeActionDisabled: model.isPerformingWorktreeAction,
+                    onSelect: { action in
+                        pendingSpaceAction = (action, space)
+                        actionsTarget = nil
+                    },
+                    onCancel: {
+                        pendingSpaceAction = nil
+                        actionsTarget = nil
+                    }
+                )
+                .presentationDetents([.medium])
+                .presentationDragIndicator(.visible)
+                .presentationCornerRadius(20)
             }
             .sheet(isPresented: $isShowingCreateSpace, onDismiss: {
                 guard let request = pendingCreateSpace else { return }
@@ -1046,6 +1075,64 @@ struct SpacesScreen: View {
     }
 
     // MARK: Pieces
+
+    /// Makes a space row open the space and adds the trailing swipe
+    /// actions: More (the actions drawer) and Close.
+    private func spaceLink<Row: View>(_ space: Space, @ViewBuilder row: () -> Row) -> some View {
+        // A direct NavigationLink keeps the tap on UIKit's cell selection.
+        // Any SwiftUI gesture on the row content (tap, Button, drag) can win
+        // over the List's swipe recognizer on device and open the space.
+        NavigationLink(value: space) {
+            row()
+        }
+        .hidesNavigationIndicator()
+        .quietListRow()
+        // WhatsApp-style: drag right to left; Close sits at the screen edge.
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            swipeCloseButton(space)
+            swipeMoreButton(space)
+        }
+    }
+
+    private func swipeMoreButton(_ space: Space) -> some View {
+        Button {
+            actionsTarget = space
+        } label: {
+            Label("More", systemImage: "ellipsis")
+                .labelStyle(.iconOnly)
+        }
+        .tint(Theme.subtleFill)
+        .buttonStyle(.automatic)
+        .accessibilityIdentifier("space-swipe-more-\(space.id)")
+    }
+
+    private func swipeCloseButton(_ space: Space) -> some View {
+        Button {
+            perform(.close, on: space)
+        } label: {
+            Label("Close", systemImage: "xmark")
+                .labelStyle(.iconOnly)
+        }
+        .tint(Theme.destructive)
+        .buttonStyle(.automatic)
+        .accessibilityIdentifier("space-swipe-close-\(space.id)")
+    }
+
+    private func perform(_ action: SpaceAction, on space: Space) {
+        switch action {
+        case .openWorktree:
+            openWorktreeTarget = model.defaultSpace(for: space)
+        case .createWorktree:
+            createWorktreeTarget = model.defaultSpace(for: space)
+        case .rename:
+            renameTarget = space
+            renameText = space.label
+            isShowingRenameAlert = true
+        case .close:
+            closeTarget = space
+            isShowingCloseConfirmation = true
+        }
+    }
 
     private var emptyState: some View {
         VStack(spacing: 14) {
@@ -1506,10 +1593,8 @@ private struct CreateWorktreeDrawer: View {
     }
 }
 
-// MARK: - Space card
+// MARK: - Space row
 
-/// Full-width card for one space group: the root workspace on top, its linked
-/// worktrees folded into a sub-list with individual statuses.
 struct MachineSectionHeader: View {
     let name: String
 
@@ -1524,247 +1609,245 @@ struct MachineSectionHeader: View {
     }
 }
 
-private struct PendingSpaceCard: View {
+private struct PendingSpaceRow: View {
     let title: String
 
     var body: some View {
-        HStack(spacing: 10) {
-            CircularArcSpinner(size: 14)
+        HStack(alignment: .center, spacing: QuietListMetrics.columnSpacing) {
+            CircularArcSpinner(size: QuietListMetrics.statusColumn)
             Text(title)
-                .font(.appHeadlineMd)
+                .font(.appHeadlineSm)
                 .foregroundStyle(.secondary)
-                .lineLimit(2)
+                .lineLimit(1)
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, minHeight: 78, alignment: .leading)
-        .herdrCard(showsBorder: false)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(alignment: .bottom) { QuietListDivider() }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
         .accessibilityIdentifier("space-pending-card")
     }
 }
 
-struct SpaceCard: View {
+/// A space group's root as a chat-style row: status column, title with the
+/// last-activity time pinned top-right, and a line of tab/pane/agent counts.
+struct SpaceRow: View {
     let group: SpaceGroup
     var machineLabel: String? = nil
-    var pendingWorktreeAction: PendingWorktreeAction? = nil
-    var highlightedWorktreeID: String? = nil
-    var isWorktreeActionDisabled = false
-    var onOpenWorktree: ((Space) -> Void)? = nil
-    var onCreateWorktree: ((Space) -> Void)? = nil
-    var onRename: ((Space) -> Void)? = nil
-    var onClose: ((Space) -> Void)? = nil
+    var isHighlighted = false
+    var lastUpdated: Date? = nil
 
     private var workspace: Workspace { group.root.workspace }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .center, spacing: 8) {
-                NavigationLink(value: group.root) {
-                    HStack(alignment: .center, spacing: 8) {
-                        Text("#\(workspace.number)")
-                            .font(.appLabelSm.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .fixedSize()
-                        Text(group.root.label)
-                            .font(.appHeadlineMd)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.6)
-                        Spacer(minLength: 4)
-                        if workspace.focused {
-                            Image(systemName: "scope")
-                                .font(.jost(11, weight: .semibold))
-                                .foregroundStyle(Theme.accent)
-                        }
+        HStack(alignment: .top, spacing: QuietListMetrics.columnSpacing) {
+            StatusDot(status: group.root.status)
+                .padding(.top, 3)
+                .accessibilityLabel(group.root.status.label)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(group.root.label)
+                        .font(.appHeadlineSm)
+                        .lineLimit(1)
+                    if workspace.focused {
+                        FocusedMark()
                     }
-                    .contentShape(Rectangle())
+                    Spacer(minLength: 8)
+                    RowTimestamp(date: lastUpdated)
                 }
-                .buttonStyle(.plain)
-
-                Menu {
-                    Button {
-                        onOpenWorktree?(group.root)
-                    } label: {
-                        Label("Open Worktree", systemImage: "arrow.triangle.branch")
-                    }
-                    .disabled(isWorktreeActionDisabled)
-                    .accessibilityIdentifier("space-open-worktree-button-\(group.root.id)")
-
-                    Button {
-                        onCreateWorktree?(group.root)
-                    } label: {
-                        Label("Create Worktree", systemImage: "plus")
-                    }
-                    .disabled(isWorktreeActionDisabled)
-                    .accessibilityIdentifier("space-create-worktree-button-\(group.root.id)")
-
-                    Divider()
-
-                    Button {
-                        onRename?(group.root)
-                    } label: {
-                        Label("Rename Space", systemImage: "pencil")
-                    }
-                    .accessibilityIdentifier("space-rename-button-\(group.root.id)")
-
-                    Button(role: .destructive) {
-                        onClose?(group.root)
-                    } label: {
-                        Label("Close Space", systemImage: "xmark.circle")
-                    }
-                    .accessibilityIdentifier("space-close-button-\(group.root.id)")
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.jost(14, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 28, height: 28)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Options for \(group.root.label)")
-                .accessibilityIdentifier("space-card-menu-\(group.root.id)")
-            }
-
-            if machineLabel != nil || workspace.worktree != nil {
-                HStack(spacing: 8) {
-                    if let worktree = workspace.worktree {
-                        RepoPill(worktree: worktree)
-                    }
+                HStack(spacing: 12) {
+                    StatChip(icon: "rectangle.split.3x1", value: "\(workspace.tabCount)", caption: "tabs")
+                    StatChip(icon: "rectangle.split.2x2", value: "\(workspace.paneCount)", caption: "panes")
+                    StatChip(icon: "sparkles", value: "\(group.root.agents.count)", caption: "agents")
                     if let machineLabel {
                         Label(machineLabel, systemImage: "desktopcomputer")
-                            .font(.jost(.caption2))
+                            .font(.jost(.caption))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
                 }
             }
-            NavigationLink(value: group.root) {
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 12) {
-                        counts
-                        Spacer(minLength: 4)
-                        rootStatus
-                    }
-                    VStack(alignment: .leading, spacing: 6) {
-                        counts
-                        rootStatus
-                    }
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if !group.worktrees.isEmpty || pendingWorktreeAction?.sourceSpaceID == group.root.id {
-                worktreeSection
-            }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.vertical, 11)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            highlightedWorktreeID == group.root.id ? Theme.selectedFill : Theme.cardBackground,
-            in: RoundedRectangle.continuous(DesignSystem.CornerRadius.xl)
-        )
-        .contentShape(RoundedRectangle.continuous(DesignSystem.CornerRadius.xl))
-    }
-
-    private var counts: some View {
-        HStack(spacing: 12) {
-            StatChip(icon: "rectangle.split.3x1", value: "\(workspace.tabCount)", caption: "tabs")
-            StatChip(icon: "rectangle.split.2x2", value: "\(workspace.paneCount)", caption: "panes")
-            StatChip(icon: "sparkles", value: "\(group.root.agents.count)", caption: "agents")
-        }
-        .fixedSize(horizontal: true, vertical: false)
-    }
-
-    @ViewBuilder
-    private var rootStatus: some View {
-        if !group.root.agents.isEmpty {
-            StatusPill(status: group.root.status)
-                .fixedSize()
-        }
-    }
-
-    // MARK: Worktree sub-list
-
-    private var worktreeSection: some View {
-        VStack(spacing: 0) {
-            ForEach(Array(group.worktrees.enumerated()), id: \.element.id) { index, space in
-                if index > 0 {
-                    Rectangle()
-                        .fill(Theme.subtleFill)
-                        .frame(height: 0.5)
-                        .padding(.leading, 10)
-                }
-                NavigationLink(value: space) {
-                    worktreeRow(space)
-                }
-                .buttonStyle(.plain)
-                .background(highlightedWorktreeID == space.id ? Theme.accent.opacity(0.15) : .clear)
-            }
-            if let pendingWorktreeAction,
-               pendingWorktreeAction.sourceSpaceID == group.root.id {
-                if !group.worktrees.isEmpty {
-                    Rectangle()
-                        .fill(Theme.subtleFill)
-                        .frame(height: 0.5)
-                        .padding(.leading, 10)
-                }
-                HStack(spacing: 8) {
-                    CircularArcSpinner(size: 11)
-                    Text(pendingWorktreeAction.title)
-                        .font(.jost(13, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(pendingWorktreeAction.title)
-                .accessibilityIdentifier("worktree-pending-row")
-                .id(PendingWorktreeAction.viewID)
-                .transition(.opacity.combined(with: .scale(scale: 0.95)))
-            }
-        }
-        .background(
-            RoundedRectangle.continuous(DesignSystem.CornerRadius.md)
-                .fill(Theme.subtleFill)
-        )
-    }
-
-    private func worktreeRow(_ space: Space) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "arrow.triangle.branch")
-                .font(.jost(10, weight: .semibold))
-                .foregroundStyle(.secondary)
-            Text("#\(space.workspace.number)")
-                .font(.jost(10, weight: .bold).monospacedDigit())
-                .foregroundStyle(.secondary)
-            Text(space.label)
-                .font(.jost(13, weight: .medium))
-                .lineLimit(1)
-            if !space.agents.isEmpty {
-                Text("\(space.agents.count) agent\(space.agents.count == 1 ? "" : "s")")
-                    .font(.jost(10))
-                    .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 6)
-            if space.workspace.focused {
-                Image(systemName: "scope")
-                    .font(.jost(11, weight: .semibold))
-                    .foregroundStyle(Theme.accent)
-            }
-            if !space.agents.isEmpty {
-                StatusPill(status: space.status)
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
         .contentShape(Rectangle())
+        .background { RowHighlight(isActive: isHighlighted) }
+        .overlay(alignment: .bottom) { QuietListDivider() }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// A linked worktree, indented under its space's row.
+struct WorktreeRow: View {
+    let space: Space
+    var isHighlighted = false
+    var lastUpdated: Date? = nil
+
+    var body: some View {
+        HStack(alignment: .center, spacing: QuietListMetrics.columnSpacing) {
+            StatusDot(status: space.status)
+                .accessibilityLabel(space.status.label)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.jost(11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text(space.label)
+                    .font(.jost(15, weight: .medium))
+                    .lineLimit(1)
+                if space.workspace.focused {
+                    FocusedMark()
+                }
+                Spacer(minLength: 8)
+                RowTimestamp(date: lastUpdated)
+            }
+        }
+        .padding(.leading, QuietListMetrics.titleInset)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .background { RowHighlight(isActive: isHighlighted) }
+        .overlay(alignment: .bottom) { QuietListDivider(leadingInset: QuietListMetrics.titleInset * 2) }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct PendingWorktreeRow: View {
+    let action: PendingWorktreeAction
+
+    var body: some View {
+        HStack(spacing: QuietListMetrics.columnSpacing) {
+            CircularArcSpinner(size: 11)
+                .frame(width: QuietListMetrics.statusColumn)
+            Text(action.title)
+                .font(.jost(14, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, QuietListMetrics.titleInset)
+        .padding(.vertical, 9)
+        .overlay(alignment: .bottom) { QuietListDivider(leadingInset: QuietListMetrics.titleInset * 2) }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(action.title)
+        .accessibilityIdentifier("worktree-pending-row")
+        .id(PendingWorktreeAction.viewID)
+        .transition(.opacity.combined(with: .scale(scale: 0.95)))
+    }
+}
+
+private struct FocusedMark: View {
+    var body: some View {
+        Image(systemName: "scope")
+            .font(.jost(11, weight: .semibold))
+            .foregroundStyle(Theme.accent)
+            .accessibilityLabel("Focused")
+    }
+}
+
+private struct RowHighlight: View {
+    let isActive: Bool
+
+    var body: some View {
+        if isActive {
+            RoundedRectangle.continuous(DesignSystem.CornerRadius.md)
+                .fill(Theme.selectedFill)
+                .padding(.horizontal, -8)
+        }
+    }
+}
+
+private extension View {
+    /// Hides the List row chevron where SwiftUI supports it (iOS 26+).
+    @ViewBuilder
+    func hidesNavigationIndicator() -> some View {
+        if #available(iOS 26.0, *) {
+            navigationLinkIndicatorVisibility(.hidden)
+        } else {
+            self
+        }
+    }
+
+    /// Strips List chrome so a row sits on the canvas like the Agents list.
+    func quietListRow() -> some View {
+        listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+    }
+}
+
+enum SpaceAction: Identifiable {
+    case openWorktree, createWorktree, rename, close
+
+    var id: Self { self }
+}
+
+/// The swipe's "More" drawer: every action for one space.
+private struct SpaceActionsDrawer: View {
+    let space: Space
+    let isWorktreeActionDisabled: Bool
+    let onSelect: (SpaceAction) -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(space.label)
+                .font(.jost(.title3, weight: .semibold))
+                .lineLimit(1)
+
+            VStack(spacing: 8) {
+                row(.openWorktree, title: "Open Worktree", icon: "arrow.triangle.branch",
+                    identifier: "space-open-worktree-button-\(space.id)")
+                    .disabled(isWorktreeActionDisabled)
+                row(.createWorktree, title: "Create Worktree", icon: "plus",
+                    identifier: "space-create-worktree-button-\(space.id)")
+                    .disabled(isWorktreeActionDisabled)
+                row(.rename, title: "Rename Space", icon: "pencil",
+                    identifier: "space-rename-button-\(space.id)")
+                row(.close, title: "Close Space", icon: "xmark.circle",
+                    identifier: "space-close-button-\(space.id)", tint: Theme.destructive)
+            }
+
+            Spacer(minLength: 0)
+
+            Button("Cancel", action: onCancel)
+                .buttonStyle(.herdrGhost())
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 24)
+        .padding(.bottom, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Theme.backgroundGradient.ignoresSafeArea())
+    }
+
+    private func row(
+        _ action: SpaceAction,
+        title: String,
+        icon: String,
+        identifier: String,
+        tint: Color = Theme.accent
+    ) -> some View {
+        Button {
+            onSelect(action)
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: icon)
+                    .font(.jost(14, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 20)
+                Text(title)
+                    .font(.jost(15, weight: .semibold))
+                    .foregroundStyle(action == .close ? tint : Theme.text)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .herdrField()
+        }
+        .buttonStyle(.herdrCard)
+        .accessibilityIdentifier(identifier)
     }
 }
 

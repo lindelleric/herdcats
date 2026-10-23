@@ -189,12 +189,12 @@ struct AgentsScreen: View {
                     emptyState
                 } else {
                     ScrollView {
-                        LazyVStack(spacing: 8) {
+                        LazyVStack(spacing: 0) {
                             switch sort {
                             case .priority:
                                 let currentItems = items
                                 ForEach(currentItems) { item in
-                                    agentRow(item, showsSpace: true)
+                                    agentRow(item)
                                 }
                             case .spaces:
                                 let currentSections = sections
@@ -205,7 +205,7 @@ struct AgentsScreen: View {
                                     }
                                     spaceHeader(section.space)
                                     ForEach(section.items) { item in
-                                        agentRow(item, showsSpace: false)
+                                        agentRow(item)
                                     }
                                 }
                             }
@@ -214,7 +214,7 @@ struct AgentsScreen: View {
                         .onChange(of: cardOrder) { old, new in
                             raisedCardID = ReorderingCard.movingID(from: old, to: new)
                         }
-                        .padding(.horizontal, 16)
+                        .padding(.horizontal, 20)
                         .padding(.top, 4)
                         .padding(.bottom, 28)
                     }
@@ -279,29 +279,28 @@ struct AgentsScreen: View {
 
     private var loadingSkeleton: some View {
         ScrollView {
-            VStack(spacing: 8) {
-                ForEach(0..<4) { index in
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack(alignment: .top, spacing: 8) {
-                            VStack(alignment: .leading, spacing: 6) {
-                                skeletonBar(width: 100, height: 12)
-                                skeletonBar(width: index.isMultiple(of: 2) ? 170 : 140, height: 18)
+            VStack(spacing: 0) {
+                ForEach(0..<6) { index in
+                    HStack(alignment: .top, spacing: QuietListMetrics.columnSpacing) {
+                        Circle()
+                            .fill(Theme.subtleFill)
+                            .frame(width: 9, height: 9)
+                            .frame(width: QuietListMetrics.statusColumn, height: 14)
+                            .padding(.top, 3)
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                skeletonBar(width: index.isMultiple(of: 2) ? 170 : 140, height: 14)
+                                Spacer(minLength: 4)
+                                skeletonBar(width: 48, height: 10)
                             }
-                            Spacer(minLength: 4)
-                            skeletonBar(width: 58, height: 22)
-                        }
-                        HStack(spacing: 8) {
-                            skeletonBar(width: 64, height: 22)
-                            skeletonBar(width: 90, height: 22)
-                            Spacer(minLength: 0)
+                            skeletonBar(width: 120, height: 10)
                         }
                     }
-                    .padding(14)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .herdrCard(showsBorder: false)
+                    .padding(.vertical, 13)
+                    .overlay(alignment: .bottom) { QuietListDivider() }
                 }
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 20)
             .padding(.top, 4)
             .padding(.bottom, 28)
         }
@@ -317,12 +316,11 @@ struct AgentsScreen: View {
             .frame(width: width, height: height)
     }
 
-    private func agentRow(_ item: AgentListItem, showsSpace: Bool) -> some View {
+    private func agentRow(_ item: AgentListItem) -> some View {
         NavigationLink(value: item) {
             AgentListRow(
                 item: item,
                 lastUpdated: model.model(for: item.space).lastUpdatedByPaneID[item.agent.paneId],
-                showsSpace: showsSpace,
                 machineLabel: model.showsAllMachines && sort == .priority ? item.space.machine?.label : nil
             )
         }
@@ -340,7 +338,8 @@ struct AgentsScreen: View {
             StatusPill(status: space.status)
             Spacer(minLength: 0)
         }
-        .padding(.top, 10)
+        .padding(.top, 18)
+        .padding(.bottom, 2)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Space \(space.label), \(space.status.label)")
     }
@@ -422,73 +421,53 @@ struct AgentListItem: Identifiable, Hashable {
 struct AgentListRow: View {
     let item: AgentListItem
     var lastUpdated: Date?
-    /// Grouped-by-space sections already name the space in their header.
-    var showsSpace = true
     var machineLabel: String? = nil
 
     private var agent: AgentEntry { item.agent }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 3) {
-                    if showsSpace {
-                        Text("#\(item.space.workspace.number) · \(item.space.label)")
-                            .font(.appLabelSm.monospacedDigit())
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                    }
+        HStack(alignment: .top, spacing: QuietListMetrics.columnSpacing) {
+            StatusDot(status: item.status)
+                .padding(.top, 3)
+                .accessibilityLabel(item.status.label)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(item.title)
                         .font(.appHeadlineSm)
-                        .lineLimit(2)
-                }
-                Spacer(minLength: 4)
-                if agent.focused {
-                    Image(systemName: "scope")
-                        .font(.jost(11, weight: .semibold))
-                        .foregroundStyle(Theme.accent)
-                        .padding(.top, 2)
-                }
-                StatusPill(status: item.status)
-            }
-
-            HStack(spacing: 8) {
-                AgentBadge(kind: agent.agent)
-                if let machineLabel {
-                    Label(machineLabel, systemImage: "desktopcomputer")
-                        .font(.jost(.caption2))
-                        .foregroundStyle(.secondary)
                         .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-
-                if machineLabel == nil, !agent.shortCwd.isEmpty {
-                    HStack(spacing: 5) {
-                        Image(systemName: "folder")
-                            .font(.jost(9, weight: .semibold))
-                        Text(agent.shortCwd)
-                            .font(.jost(11, weight: .medium))
-                            .lineLimit(1)
+                    if agent.focused {
+                        Image(systemName: "scope")
+                            .font(.jost(11, weight: .semibold))
+                            .foregroundStyle(Theme.accent)
+                            .accessibilityLabel("Focused")
                     }
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Capsule().fill(Theme.subtleFill))
+                    Spacer(minLength: 8)
+                    RowTimestamp(date: lastUpdated)
                 }
-
-                Spacer(minLength: 0)
-
-                if let lastUpdated {
-                    Text(PaneUpdatedFormat.label(for: lastUpdated))
-                        .font(.jost(.caption2))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                HStack(spacing: 6) {
+                    AgentKindIcon(kind: agent.agent, size: 13)
+                        .accessibilityElement()
+                        .accessibilityLabel(AgentKindVisual.displayName(for: agent.agent))
+                    if let machineLabel {
+                        Label(machineLabel, systemImage: "desktopcomputer")
+                            .font(.jost(.caption))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    } else if !agent.shortCwd.isEmpty {
+                        Text(agent.shortCwd)
+                            .font(.caption.monospaced())
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
+                .foregroundStyle(.secondary)
             }
         }
-        .padding(14)
+        .padding(.vertical, 11)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .herdrCard(showsBorder: false)
+        .contentShape(Rectangle())
+        .overlay(alignment: .bottom) { QuietListDivider() }
+        .accessibilityElement(children: .combine)
     }
 }
 
