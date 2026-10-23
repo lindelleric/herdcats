@@ -142,7 +142,7 @@ final class HerdcatsUITests: XCTestCase {
     }
 
     /// Launches the app auto-connected to the configured SSH target.
-    func launchConnectedApp() throws -> XCUIApplication {
+    func launchConnectedApp(terminalGeometry: Bool = false) throws -> XCUIApplication {
         guard let keyPath = fixtureEnvironment("KEY_PATH"),
               FileManager.default.isReadableFile(atPath: keyPath) else {
             throw XCTSkip("Set TEST_RUNNER_HC_KEY_PATH to a local private test key")
@@ -168,6 +168,7 @@ final class HerdcatsUITests: XCTestCase {
             // These terminal-input tests explicitly start with the Live toolbar.
             "-paneShowComposeByDefault", "NO"
         ]
+        if terminalGeometry { app.launchArguments.append("-hc.terminal-geometry") }
         app.launch()
         return app
     }

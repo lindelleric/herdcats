@@ -347,8 +347,8 @@ extension HerdcatsUITests {
 
     /// True when the mock-herdr fixture's known output is visible.
     func isMockHerdrFixtureVisible(_ app: XCUIApplication, timeout: TimeInterval = 10) -> Bool {
-        app.staticTexts.matching(
-            NSPredicate(format: "label CONTAINS %@", "mock terminal line one")
+        app.textViews.matching(
+            NSPredicate(format: "value CONTAINS %@", "mock terminal line one")
         ).firstMatch.waitForExistence(timeout: timeout)
     }
 
