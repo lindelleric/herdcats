@@ -164,6 +164,7 @@ struct ConnectView: View {
     }
 
     private func forget(_ connection: RecentConnection) {
+        guard !replay else { return }
         do {
             recentConnections = try RecentConnectionStore.remove(connection)
         } catch {
@@ -207,8 +208,10 @@ struct ConnectView: View {
                     .accessibilityLabel("\(connection.username) at \(connection.host), port \(connection.port)")
                     .accessibilityHint("Opens connection settings")
                     .contextMenu {
-                        Button("Forget Connection", systemImage: "trash", role: .destructive) {
-                            forget(connection)
+                        if !replay {
+                            Button("Forget Connection", systemImage: "trash", role: .destructive) {
+                                forget(connection)
+                            }
                         }
                     }
                 }
