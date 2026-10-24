@@ -474,6 +474,19 @@ struct TimelineMarkdownTests {
         #expect(matching.runs.compactMap(\.link).count == 1)
     }
 
+    @Test func hangulFillersCannotHideDeceptiveLabels() {
+        for filler in ["\u{115F}", "\u{1160}", "\u{3164}", "\u{FFA0}"] {
+            #expect(links("[\(filler)https://bank.com](https://evil.example)").isEmpty)
+            #expect(links("[ \(filler)**https://bank.com**](https://evil.example)").isEmpty)
+            #expect(links("[https:\(filler)//bank.com](https://evil.example)").isEmpty)
+            let matching = TimelineMarkdown.sanitized("[\(filler)https://bank.com](https://bank.com)")
+            #expect(String(matching.characters) == "https://bank.com")
+            #expect(matching.runs.compactMap(\.link).count == 1)
+            let plain = TimelineMarkdown.sanitized("plain \(filler) text")
+            #expect(String(plain.characters) == "plain \(filler) text")
+        }
+    }
+
     @Test func defaultIgnorableNonFormatScalarsCannotHideADeceptiveLabel() {
         // Variation selectors and the combining grapheme joiner are default-ignorable
         // without being format/control characters; they must be stripped too.
