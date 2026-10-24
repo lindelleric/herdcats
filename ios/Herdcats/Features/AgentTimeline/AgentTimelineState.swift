@@ -9,6 +9,7 @@ import Observation
         case unavailable(String)
         case disconnected
     }
+    let modelControl = AgentModelControlState()
     private(set) var pendingQuestion: AgentPendingQuestion?
     private(set) var pendingApproval: AgentPendingApproval?
     private(set) var entries: [AgentTimelineEntry] = []
@@ -32,6 +33,7 @@ import Observation
     private var evictedIds: Set<String> = []
 
     func begin(owner: UUID, paneId: String) {
+        modelControl.connect(nil, supported: false)
         self.owner = owner
         self.paneId = paneId
         epoch = nil
@@ -65,6 +67,7 @@ import Observation
             clear()
             identity = nextIdentity
             generation = next
+            modelControl.bind(identity: nextIdentity, generation: next)
             entries = rows
             hasMore = data.hasMore ?? false
             before = data.before
@@ -110,6 +113,11 @@ import Observation
             droppedEntries = data.droppedEntries ?? droppedEntries
             delayed = data.delayed ?? delayed
             revision += 1
+        case "model.updated":
+            guard phase == .ready, data.identity == identity, data.generation == generation else {
+                throw AgentBridgeError.identityMismatch
+            }
+            try modelControl.update(data)
         case "interaction.pending":
             guard phase == .ready, data.identity == identity, data.generation == generation else {
                 throw AgentBridgeError.identityMismatch
@@ -157,11 +165,13 @@ import Observation
     }
     func end(owner: UUID, error: AgentBridgeError) {
         guard self.owner == owner else { return }
+        modelControl.connect(nil, supported: false)
         self.owner = nil
         clear()
         phase = error == .closed ? .disconnected : .unavailable(error.code)
     }
     private func clear() {
+        modelControl.reset()
         pendingQuestion = nil
         pendingApproval = nil
         evictedIds.removeAll()
@@ -225,3 +235,175 @@ import Observation
         token = nil
     }
 }
+
+/// Shares the watched bridge with the composer. Every async reply is scoped to
+/// the same occupant and generation; retiring a timeline invalidates pending UI work.
+@MainActor @Observable final class AgentModelControlState {
+    private(set) var supported = false
+    fileprivate(set) var pair = AgentModelPair()
+    fileprivate(set) var models: [AgentModelOption] = []
+    /// `model.status`'s top-level efforts, used when no model row is selected
+    /// (a fresh Claude session can report no model but still offer efforts).
+    private var statusEfforts: [AgentEffortOption] = []
+    private(set) var isChanging = false
+    var errorMessage: String?
+    private var client: AgentBridgeClient?
+    private var identity: AgentTimelineIdentity?
+    private var generation: UInt64?
+    private var revision: UInt64 = 0
+    private var scope = UUID()
+
+    var isVisible: Bool { supported && identity != nil }
+    /// The live model's own label keeps its version ("Opus 5.5"); the catalog
+    /// name is used only when the bridge sent a bare id as the label.
+    var modelName: String {
+        if let model = pair.model, model.label != model.id { return model.label }
+        return selectedModel?.label ?? pair.model?.label ?? "Model"
+    }
+    var effortText: String? { pair.effort?.lowercased() }
+    var label: String { modelName + (effortText.map { " " + $0 } ?? "") }
+    var accessibilityLabel: String {
+        "Model \(pair.model == nil ? "unknown" : modelName)" + (effortText.map { ", effort " + $0 } ?? "")
+    }
+    /// The exact row, else the row the bridge marked current. The bridge marks
+    /// an alias current only when it resolves to exactly the running id, so an
+    /// older `claude-haiku-4-5` never checks the `haiku` (5.5) row.
+    var selectedModel: AgentModelOption? {
+        models.first(where: { $0.id == pair.model?.id })
+            ?? models.first(where: { $0.current == true })
+    }
+    var efforts: [AgentEffortOption] { selectedModel?.efforts ?? statusEfforts }
+    var effortLabel: String {
+        guard let effort = pair.effort else { return "Default" }
+        return efforts.first(where: { $0.id == effort })?.label ?? "Unknown"
+    }
+    var selectedModelID: String? { selectedModel?.id }
+
+    func connect(_ client: AgentBridgeClient?, supported: Bool) {
+        self.client = client
+        self.supported = supported
+    }
+    func reset() {
+        scope = UUID()
+        revision += 1
+        identity = nil
+        generation = nil
+        pair = AgentModelPair()
+        models = []
+        statusEfforts = []
+        errorMessage = nil
+        isChanging = false
+    }
+    func bind(identity: AgentTimelineIdentity, generation: UInt64) {
+        self.identity = identity
+        self.generation = generation
+    }
+    func update(_ payload: AgentBridgePayload, options: Bool = false) throws {
+        guard payload.identity == identity, payload.generation == generation else { throw AgentBridgeError.identityMismatch }
+        if options {
+            guard let models = payload.models else { throw AgentBridgeError.invalidFrame }
+            self.models = models
+            statusEfforts = payload.efforts ?? []
+        }
+        let model = payload.model.map { incoming in
+            if options { return incoming }
+            if pair.model?.id == incoming.id, let known = pair.model { return known }
+            return models.first(where: { $0.id == incoming.id }) ?? incoming
+        }
+        let previous = pair.model?.id
+        pair = AgentModelPair(model: model, effort: payload.effort)
+        if models.contains(where: { $0.id == model?.id }) {
+            for index in models.indices { models[index].current = models[index].id == model?.id }
+        } else if !options, model?.id != previous {
+            // A streamed model outside the list (a desk-side switch to another
+            // version): only the bridge knows which row, if any, it matches,
+            // so drop the stale mark and refetch the catalog.
+            for index in models.indices { models[index].current = false }
+            Task { await refresh() }
+        }
+        revision += 1
+    }
+    func refresh() async {
+        guard supported, let client, let identity, let generation else { return }
+        let revision = revision
+        let scope = scope
+        do {
+            let payload = try await client.modelStatus()
+            guard self.scope == scope, self.identity == identity, self.generation == generation else { return }
+            if self.revision != revision {
+                // An event already supplied a newer pair; the catalog is still useful.
+                guard payload.identity == identity, payload.generation == generation,
+                    let models = payload.models else { throw AgentBridgeError.identityMismatch }
+                self.models = models
+                statusEfforts = payload.efforts ?? []
+                return
+            }
+            try update(payload, options: true)
+            errorMessage = nil
+        } catch {
+            guard self.scope == scope, self.identity == identity, self.generation == generation, self.revision == revision else { return }
+            errorMessage = Self.message(for: (error as? AgentBridgeError)?.code)
+        }
+    }
+    func change(model: String? = nil, effort: String? = nil) async {
+        guard !isChanging, supported, let client, let identity, let generation else { return }
+        isChanging = true
+        errorMessage = nil
+        let scope = scope
+        do {
+            let payload = try await client.setModel(model: model, effort: effort,
+                expect: AgentModelExpectation(model: pair.model?.id, effort: pair.effort))
+            guard self.scope == scope, self.identity == identity, self.generation == generation else { return }
+            try apply(payload)
+        } catch {
+            guard self.scope == scope, self.identity == identity, self.generation == generation else { return }
+            errorMessage = Self.message(for: (error as? AgentBridgeError)?.code)
+            // Refresh the observed pair after a stale expect; never retry a send.
+            if (error as? AgentBridgeError)?.code == "stale" {
+                await refreshKeepingError()
+            }
+        }
+        if self.identity == identity, self.generation == generation, self.scope == scope { isChanging = false }
+    }
+    private func refreshKeepingError() async {
+        let message = errorMessage
+        let scope = scope
+        await refresh()
+        if self.scope == scope { errorMessage = message }
+    }
+    func apply(_ payload: AgentBridgePayload) throws {
+        guard payload.identity == identity, payload.generation == generation else { throw AgentBridgeError.identityMismatch }
+        guard let applied = payload.applied, let confirmed = payload.confirmed else { throw AgentBridgeError.invalidFrame }
+        pair = applied
+        for index in models.indices { models[index].current = models[index].id == applied.model?.id }
+        revision += 1
+        errorMessage = confirmed ? nil : Self.message(for: payload.error)
+    }
+    static func message(for code: String?) -> String {
+        switch code {
+        case "agent_busy": return "The agent is working — try again when it's idle."
+        case "stale": return "Something changed at the desk. Check the current model and try again."
+        case "composer_not_empty": return "Clear the agent's input box at the desk first."
+        default: return "Couldn't change the model. Try again."
+        }
+    }
+}
+
+#if DEBUG && targetEnvironment(simulator)
+extension AgentModelControlState {
+    /// Screenshot-only catalog for `-hc.screen timeline-model*`; requires a bound identity.
+    func loadScreenshotFixture(agent: String) {
+        let efforts = ["low", "medium", "high", "xhigh", "max"].map {
+            AgentEffortOption(id: $0, label: $0 == "xhigh" ? "Extra high" : $0.capitalized)
+        }
+        let models = agent == "codex"
+            ? ["GPT-6.1-Sol", "GPT-6-Astra", "GPT-6-Sol", "GPT-6-Luna", "GPT-5.6-Sol", "GPT-5.6-Terra", "GPT-5.6-Luna"]
+                .map { AgentModelOption(id: $0.lowercased(), label: $0, efforts: efforts) }
+            : ["Fable 5.1", "Opus 5.5", "Sonnet 5.5", "Haiku 5.5"]
+                .map { AgentModelOption(id: $0.split(separator: " ")[0].lowercased(), label: $0, efforts: efforts) }
+        connect(nil, supported: true)
+        self.models = models
+        pair = AgentModelPair(model: models[agent == "codex" ? 0 : 1], effort: "high")
+    }
+}
+#endif

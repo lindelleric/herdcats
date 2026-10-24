@@ -8,6 +8,7 @@ use crate::{
     follower::{Follower, MAX_RECORD},
     herdr::{Client, Pane},
     hooks::Agent,
+    model_control::{self, ClaudeConfirmation, PickerScreen},
     resolver::Resolver,
     question_match::{self, PendingQuestion, QuestionKind},
     question_keys::{self, ExpectedScreen, Input, Step},
@@ -41,6 +42,16 @@ impl InteractionError {
     }
 }
 type InteractionResult<T> = std::result::Result<T, InteractionError>;
+
+/// One successful poll: the verified identity, whether the timeline reset, the
+/// agent status, and descriptor clones for interaction/model tail reads.
+struct PollOutcome {
+    identity: Identity,
+    reset: bool,
+    status: String,
+    approval_file: Option<std::fs::File>,
+    model_file: Option<std::fs::File>,
+}
 
 #[derive(Clone, PartialEq, Serialize)]
 struct Identity {
@@ -176,6 +187,31 @@ struct ApprovalMatchCache {
     stamp: ApprovalInputStamp,
     request: Option<PendingRequest>,
 }
+type ModelPair = Option<(String, Option<String>)>;
+
+struct ModelOverride {
+    applied: ModelPair,
+    applied_label: Option<String>,
+    scanned_at_set: ModelPair,
+}
+
+impl ModelOverride {
+    fn label_for(&self, pair: &ModelPair) -> Option<String> {
+        (self.applied == *pair)
+            .then(|| self.applied_label.clone())
+            .flatten()
+    }
+    fn resolve(slot: &mut Option<Self>, scanned: ModelPair) -> ModelPair {
+        if let Some(current) = slot {
+            if current.scanned_at_set == scanned {
+                return current.applied.clone();
+            }
+            *slot = None;
+        }
+        scanned
+    }
+}
+
 struct Watch {
     pane_id: String,
     identity: Option<Identity>,
@@ -201,6 +237,11 @@ struct Watch {
     approval_cache: Option<ApprovalMatchCache>,
     question_cache: Option<QuestionMatchCache>,
     source_pane: Option<Pane>,
+    // Transcript stamp behind the last model/effort scan (or emission reset),
+    // so unchanged files skip tail reads on every poll.
+    model_stamp: Option<(u64, (i64, i64))>,
+    last_model: Option<(String, Option<String>)>,
+    model_override: Option<ModelOverride>,
 }
 pub struct Service {
     pub client: Client,
@@ -224,6 +265,10 @@ pub struct Service {
     // daemon runs under the configured home.
     codex_home: Option<PathBuf>,
     spool_dir: Option<PathBuf>,
+    include_model_control: bool,
+    // settings.json beside the configured (non-canonicalized) Claude root's
+    // parent; `~/.claude/projects` -> `~/.claude/settings.json`.
+    claude_settings_path: Option<PathBuf>,
 }
 pub fn page(entries: &[Entry], before: usize) -> Value {
     let mut start = before.saturating_sub(100);
@@ -244,6 +289,10 @@ impl Service {
         let codex_resolver = codex_root.and_then(|r| CodexResolver::new(&r).ok());
         let mut service = Self::with_resolvers(socket, resolver, codex_resolver);
         service.codex_home = codex_home;
+        service.claude_settings_path = root
+            .parent()
+            .map(|parent| parent.join("settings.json"))
+            .filter(|path| path.is_absolute());
         service
     }
 
@@ -290,6 +339,8 @@ impl Service {
             codex_daemon_cache: None,
             codex_home: None,
             spool_dir: spool::resolve_spool_dir(),
+            include_model_control: false,
+            claude_settings_path: None,
         }
     }
     pub fn invalidate_codex_daemon_cache(&mut self) {
@@ -329,6 +380,11 @@ impl Service {
         self.invalidate_codex_daemon_cache();
         self
     }
+    #[doc(hidden)]
+    pub fn with_claude_settings(mut self, path: PathBuf) -> Self {
+        self.claude_settings_path = Some(path);
+        self
+    }
     pub fn with_codex_root(mut self, root: PathBuf) -> Self {
         self.codex_resolver = CodexResolver::new(&root).ok();
         self.adapters = vec![
@@ -366,7 +422,7 @@ impl Service {
         &self,
         watch: &mut Watch,
         refresh: &mut impl FnMut(&mut Follower, std::fs::File, &str) -> Result<bool>,
-    ) -> Result<(Identity, bool, String, Option<std::fs::File>)> {
+    ) -> Result<PollOutcome> {
         let snapshot = self.client.snapshot()?;
         let pane = snapshot
             .panes
@@ -394,6 +450,7 @@ impl Service {
             // A transient read of a new occupant cannot authorize serving the
             // previous occupant's cached transcript.
             watch.identity = None;
+            watch.model_override = None;
             watch.approval_cache = None;
             watch.question_cache = None;
         }
@@ -409,11 +466,18 @@ impl Service {
         } else {
             None
         };
+        let model_file = if self.include_model_control { file.try_clone().ok() } else { None };
         refresh(&mut watch.follower, file, &session)?;
         let reset = watch.identity.as_ref() != Some(&identity)
             || watch.unavailable.is_some()
             || watch.follower.generation != watch.generation;
-        Ok((identity, reset, pane.agent_status.clone(), approval_file))
+        Ok(PollOutcome {
+            identity,
+            reset,
+            status: pane.agent_status.clone(),
+            approval_file,
+            model_file,
+        })
     }
     pub fn poll(&mut self, out: &mut impl Write) -> io::Result<()> {
         self.poll_with_refresh(out, |follower, file, session| {
@@ -484,6 +548,7 @@ impl Service {
                 if should_emit {
                     self.generation += 1;
                     watch.identity = None;
+                    watch.model_override = None;
                     watch.previous.clear();
                     watch.follower = if self.include_content {
                         Follower::with_content()
@@ -504,7 +569,13 @@ impl Service {
                     self.event(out, "timeline.unavailable", data)?;
                 }
             }
-            Ok((identity, reset, status, approval_file)) => {
+            Ok(PollOutcome {
+                identity,
+                reset,
+                status,
+                approval_file,
+                model_file,
+            }) => {
                 let was_delayed = watch.delayed;
                 watch.source_changing_count = 0;
                 watch.delayed = false;
@@ -518,6 +589,9 @@ impl Service {
                 if reset {
                     watch.approval_cache = None;
                     watch.question_cache = None;
+                    watch.last_model = None;
+                    watch.model_override = None;
+                    watch.model_stamp = None;
                     self.generation += 1;
                     let mut body = page(&data.entries, data.entries.len());
                     body["identity"] = json!(identity);
@@ -596,6 +670,9 @@ impl Service {
                 watch.unavailable_agent = None;
                 watch.last_daemon_status = None;
                 watch.generation = watch.follower.generation;
+                if self.include_model_control {
+                    self.update_model(out, &mut watch, model_file)?;
+                }
             }
         }
         if (self.include_approvals || self.include_questions) && !preserve_pending {
@@ -795,6 +872,874 @@ impl Service {
             watch.pending = Some(new);
         }
         Ok(())
+    }
+    fn update_model(
+        &mut self,
+        out: &mut impl Write,
+        watch: &mut Watch,
+        file: Option<std::fs::File>,
+    ) -> io::Result<()> {
+        let Some(file) = file else {
+            return Ok(());
+        };
+        let Some(identity) = watch.identity.clone() else {
+            return Ok(());
+        };
+        let stamp = match file.metadata() {
+            Ok(metadata) if metadata.is_file() => {
+                use std::os::unix::fs::MetadataExt;
+                (metadata.len(), (metadata.mtime(), metadata.mtime_nsec()))
+            }
+            _ => return Ok(()),
+        };
+        let live_footer =
+            identity.agent == "codex" && matches!(watch.status.as_str(), "idle" | "done");
+        if watch.model_stamp == Some(stamp) && !live_footer {
+            return Ok(());
+        }
+        // Claude can skip unchanged transcript scans; Codex idle footers must
+        // remain live even when session-only changes leave that stamp unchanged.
+        watch.model_stamp = Some(stamp);
+        let Some(pane) = watch.source_pane.as_ref() else {
+            return Ok(());
+        };
+        let observed = self.model_scan_raw(&identity.agent, pane, file);
+        let observed = ModelOverride::resolve(&mut watch.model_override, observed);
+        let Some(observed) = observed else {
+            return Ok(());
+        };
+        if watch.last_model.as_ref() != Some(&observed) {
+            watch.last_model = Some(observed.clone());
+            let label = watch
+                .model_override
+                .as_ref()
+                .and_then(|value| value.label_for(&Some(observed.clone())));
+            // Always a labeled object, so clients never fall back to raw ids.
+            let label = label.unwrap_or_else(|| match identity.agent.as_str() {
+                "claude" => model_control::claude_display_label(&observed.0),
+                _ => self
+                    .codex_catalog()
+                    .iter()
+                    .find(|model| model.slug == observed.0)
+                    .map(|model| model.label.clone())
+                    .unwrap_or_else(|| model_control::codex_slug_label(&observed.0)),
+            });
+            let model = json!({"id":observed.0,"label":label});
+            self.event(
+                out,
+                "model.updated",
+                json!({"identity":identity,"generation":self.generation,
+                    "model":model,"effort":observed.1}),
+            )?;
+        }
+        Ok(())
+    }
+    /// Fallback pair for a session with no turns yet: Claude's persisted
+    /// default (settings.json), Codex's config.toml defaults.
+    fn model_scan_fallback(&self, agent: &str) -> Option<(String, Option<String>)> {
+        match agent {
+            "claude" => {
+                // A missing settings.json (a fresh install) is empty settings:
+                // Claude still runs its default model.
+                let text = self
+                    .claude_settings_path
+                    .as_ref()
+                    .and_then(|path| std::fs::read_to_string(path).ok())
+                    .unwrap_or_default();
+                let settings = model_control::parse_claude_settings(&text);
+                // No configured model means Claude's default; its effort can
+                // still be set and must not be lost with the model.
+                let model = settings
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| model_control::CLAUDE_DEFAULT_MODEL.to_owned());
+                let effort = settings.effort_for(&model).map(str::to_owned);
+                Some((model, effort))
+            }
+            "codex" => {
+                let home = self
+                    .codex_home
+                    .clone()
+                    .or_else(crate::codex_config::resolve_codex_dir)?;
+                let text = std::fs::read_to_string(home.join("config.toml")).ok()?;
+                let (model, effort) = model_control::parse_codex_config(&text);
+                model.map(|model| (model, effort))
+            }
+            _ => None,
+        }
+    }
+    fn model_scan_raw(&self, agent: &str, pane: &Pane, file: std::fs::File) -> ModelPair {
+        if agent == "codex"
+            && matches!(pane.agent_status.as_str(), "idle" | "done")
+            && let Ok(screen) = self.client.read_visible(&pane.pane_id)
+            && let Some(pair) = model_control::codex_idle_footer(&screen, &self.codex_catalog())
+        {
+            return Some(pair);
+        }
+        let scan = |records: &[Value]| match agent {
+            "claude" => model_control::claude_scan(records),
+            "codex" => model_control::codex_scan(records),
+            _ => None,
+        };
+        let wide = file
+            .try_clone()
+            .ok()
+            .filter(|file| file.metadata().is_ok_and(|meta| meta.len() > 4 * 1024 * 1024));
+        let records = crate::follower::read_tail(file).ok()?;
+        // A latest record larger than the usual tail (a huge assistant reply,
+        // or a turn_context pushed out by one) needs the follower's full
+        // bounded window before falling back to settings.
+        scan(&records)
+            .or_else(|| {
+                let records =
+                    crate::follower::read_tail_within(wide?, crate::follower::MAX_SOURCE).ok()?;
+                scan(&records)
+            })
+            .or_else(|| self.model_scan_fallback(agent))
+    }
+    fn model_scan_current(&mut self, agent: &str, pane: &Pane, file: std::fs::File) -> ModelPair {
+        let scanned = self.model_scan_raw(agent, pane, file);
+        self.resolve_model_scan(scanned)
+    }
+    fn resolve_model_scan(&mut self, scanned: ModelPair) -> ModelPair {
+        match self.watch.as_mut() {
+            Some(watch) => ModelOverride::resolve(&mut watch.model_override, scanned),
+            None => scanned,
+        }
+    }
+    fn codex_catalog(&self) -> Vec<model_control::CodexCatalogModel> {
+        let Some(home) = self
+            .codex_home
+            .clone()
+            .or_else(crate::codex_config::resolve_codex_dir)
+        else {
+            return Vec::new();
+        };
+        std::fs::read_to_string(home.join("models_cache.json"))
+            .ok()
+            .map(|text| model_control::parse_codex_catalog(&text))
+            .unwrap_or_default()
+    }
+    /// Fresh occupant check shared by both model methods: returns the live
+    /// pane and the adapter-verified transcript for the watched identity.
+    fn model_pane_file(&self, identity: &Identity) -> Result<(Pane, std::fs::File)> {
+        let snapshot = self.client.snapshot().map_err(|_| "stale")?;
+        let pane = snapshot
+            .panes
+            .iter()
+            .find(|p| p.pane_id == identity.pane_id)
+            .ok_or("stale")?
+            .clone();
+        if pane.terminal_id != identity.terminal_id
+            || pane.agent.as_deref() != Some(identity.agent.as_str())
+        {
+            return Err("stale");
+        }
+        let adapter = self
+            .adapter_for(&identity.agent)
+            .ok_or("unsupported_agent")?;
+        let (session, file) = adapter.resolve_and_open(&pane).map_err(|_| "stale")?;
+        if session != identity.native_session_id {
+            return Err("stale");
+        }
+        Ok((pane, file))
+    }
+    fn model_status(&mut self) -> Result<Value> {
+        if !self.include_model_control {
+            return Err("unsupported_capability");
+        }
+        let watch = self.watch.as_ref().ok_or("not_watching")?;
+        let identity = watch
+            .identity
+            .clone()
+            .filter(|_| watch.unavailable.is_none())
+            .ok_or("timeline_unavailable")?;
+        let (pane, file) = self.model_pane_file(&identity)?;
+        let agent = identity.agent.as_str();
+        let current = self.model_scan_current(agent, &pane, file);
+        let current_id = current.as_ref().map(|(id, _)| id.as_str());
+        let (models, efforts) = match agent {
+            "claude" => {
+                // Claude's default stays selectable so a session can switch back.
+                let default = model_control::CLAUDE_DEFAULT_MODEL;
+                let mut models: Vec<Value> = std::iter::once(&(default, ""))
+                    .chain(model_control::CLAUDE_MODELS.iter())
+                    .map(|(alias, _)| {
+                        json!({"id":alias,"label":model_control::claude_display_label(alias)})
+                    })
+                    .collect();
+                // An alias row is current only when the session runs exactly
+                // what the alias resolves to; an older or dated id of the same
+                // tier (claude-haiku-4-5-20251001) gets its own checked row, so
+                // picking the alias is a real switch rather than a no-op.
+                let matches_alias = |alias: &str| {
+                    current_id.is_some_and(|id| {
+                        id == alias || model_control::claude_alias_id(alias).as_deref() == Some(id)
+                    })
+                };
+                let mut marked = false;
+                for entry in &mut models {
+                    if entry["id"].as_str().is_some_and(matches_alias) {
+                        entry["current"] = json!(true);
+                        // The transcript's concrete id carries the real version.
+                        if let Some(id) = current_id {
+                            entry["label"] = json!(model_control::claude_display_label(id));
+                        }
+                        marked = true;
+                    }
+                }
+                if !marked && let Some(id) = current_id {
+                    models.push(json!({"id":id,"label":model_control::claude_display_label(id),"current":true}));
+                }
+                let efforts = model_control::CLAUDE_EFFORTS
+                    .iter()
+                    .map(|effort| json!({"id":effort,"label":model_control::effort_label(effort)}))
+                    .collect::<Vec<_>>();
+                // Every Claude tier offers the same static effort set.
+                for entry in &mut models {
+                    entry["efforts"] = json!(efforts);
+                }
+                (models, efforts)
+            }
+            "codex" => {
+                let catalog = self.codex_catalog();
+                let fallback = model_control::CODEX_EFFORTS
+                    .iter()
+                    .map(|effort| json!({"id":effort,"label":model_control::effort_label(effort)}))
+                    .collect::<Vec<_>>();
+                let mut models: Vec<Value> = catalog
+                    .iter()
+                    .map(|model| {
+                        let efforts: Vec<Value> = model
+                            .efforts
+                            .iter()
+                            .map(|effort| {
+                                json!({"id":effort,"label":model_control::effort_label(effort)})
+                            })
+                            .collect();
+                        json!({"id":model.slug,"label":model.label,"efforts":efforts})
+                    })
+                    .collect();
+                let mut marked = false;
+                for entry in &mut models {
+                    if entry["id"].as_str() == current_id {
+                        entry["current"] = json!(true);
+                        marked = true;
+                    }
+                }
+                if !marked && let Some(id) = current_id {
+                    models.push(
+                        json!({"id":id,"label":model_control::codex_slug_label(id),"current":true,"efforts":fallback}),
+                    );
+                }
+                let efforts: Vec<Value> = models
+                    .iter()
+                    .find(|entry| entry["current"] == true)
+                    .and_then(|entry| entry["efforts"].as_array().cloned())
+                    .unwrap_or_else(|| fallback.clone());
+                (models, efforts)
+            }
+            _ => return Err("unsupported_agent"),
+        };
+        let confirmed_label = self
+            .watch
+            .as_ref()
+            .and_then(|watch| watch.model_override.as_ref())
+            .and_then(|value| value.label_for(&current));
+        let current_label = confirmed_label.or_else(|| {
+            current.as_ref().map(|(id, _)| match agent {
+                "claude" => model_control::claude_display_label(id),
+                _ => self
+                    .codex_catalog()
+                    .iter()
+                    .find(|model| model.slug == *id)
+                    .map(|model| model.label.clone())
+                    .unwrap_or_else(|| model_control::codex_slug_label(id)),
+            })
+        });
+        Ok(json!({
+            "identity":identity, "generation":self.generation, "agent":agent,
+            "model": current.as_ref().and_then(|(id, _)| {
+                current_label.clone().map(|label| json!({"id":id, "label":label}))
+            }),
+            "effort": current.as_ref().and_then(|(_, effort)| effort.clone()),
+            "models":models, "efforts":efforts,
+        }))
+    }
+    fn model_set(&mut self, params: &Value) -> Result<Value> {
+        if !self.include_model_control {
+            return Err("unsupported_capability");
+        }
+        let watch = self.watch.as_ref().ok_or("not_watching")?;
+        let identity = watch
+            .identity
+            .clone()
+            .filter(|_| watch.unavailable.is_none())
+            .ok_or("timeline_unavailable")?;
+        let agent = identity.agent.as_str();
+        let target_model = params["model"].as_str();
+        let target_effort = params["effort"].as_str();
+        model_control::valid_set_target(agent, target_model, target_effort)?;
+        if !params["expect"].is_object() {
+            return Err("invalid_request");
+        }
+        let expect_model = params["expect"]["model"].as_str();
+        let expect_effort = params["expect"]["effort"].as_str();
+        let (pane, file) = self.model_pane_file(&identity)?;
+        if !matches!(pane.agent_status.as_str(), "idle" | "done") {
+            return Err("agent_busy");
+        }
+        let scanned_at_set = self.model_scan_raw(agent, &pane, file);
+        let current = self.resolve_model_scan(scanned_at_set.clone());
+        if current.as_ref().map(|(id, _)| id.as_str()) != expect_model
+            || current.as_ref().and_then(|(_, effort)| effort.as_deref()) != expect_effort
+        {
+            return Err("stale");
+        }
+        let result = match agent {
+            "claude" => self.set_claude_model(&identity, &current, target_model, target_effort)?,
+            "codex" => self.set_codex_model(&identity, &current, target_model, target_effort)?,
+            _ => return Err("unsupported_agent"),
+        };
+        // Force the next poll to re-scan and emit `model.updated` for the new
+        // pair (the confirmation may never reach the transcript).
+        if let Some(watch) = self.watch.as_mut() {
+            watch.model_stamp = None;
+            let applied = result["applied"]["model"]["id"].as_str().map(|id| {
+                (
+                    id.to_owned(),
+                    result["applied"]["effort"].as_str().map(str::to_owned),
+                )
+            });
+            if result["confirmed"] == true || applied != current {
+                watch.model_override = Some(ModelOverride {
+                    applied,
+                    applied_label: result["applied"]["model"]["label"]
+                        .as_str()
+                        .map(str::to_owned),
+                    scanned_at_set,
+                });
+            }
+        }
+        Ok(result)
+    }
+    /// Decline only a currently visible cache-switch dialog on the same idle occupant.
+    fn decline_claude_switch(&self, identity: &Identity) {
+        if self.recheck_idle(identity).is_err() {
+            return;
+        }
+        let Ok(screen) = self.client.read_visible(&identity.pane_id) else {
+            return;
+        };
+        if model_control::claude_switch_dialog(&screen).is_some_and(|dialog| dialog.can_decline()) {
+            let _ = self.client.send_keys(&identity.pane_id, &["2"]);
+        }
+    }
+    /// Wait for a direct result or accept the matching cache-switch dialog once.
+    /// Result lines must follow the submitted command and differ from the baseline.
+    fn wait_claude_confirmation(
+        &self,
+        identity: &Identity,
+        baseline: &str,
+        command: &str,
+        want_effort: Option<&str>,
+    ) -> (Option<String>, Option<&'static str>) {
+        let pane_id = &identity.pane_id;
+        let mut baseline = baseline.to_owned();
+        let mut deadline = Instant::now() + Duration::from_secs(4);
+        let mut accepted = false;
+        let want_model = want_effort
+            .is_none()
+            .then(|| command.trim_start_matches("/model "));
+        loop {
+            let screen = self.client.read_visible(pane_id).unwrap_or_default();
+            if screen != baseline {
+                if let Some(dialog) = model_control::claude_switch_dialog(&screen) {
+                    if !dialog.matches(want_model, want_effort) {
+                        self.decline_claude_switch(identity);
+                        return (None, Some("picker_mismatch"));
+                    }
+                    if !accepted {
+                        if self.recheck_idle(identity).is_err() {
+                            return (None, Some("stale"));
+                        }
+                        // A fresh read must still show exactly the verified dialog.
+                        let fresh = self.client.read_visible(pane_id).unwrap_or_default();
+                        if model_control::claude_switch_dialog(&fresh).as_ref() == Some(&dialog) {
+                            if self.client.send_keys(pane_id, &["1"]).is_err() {
+                                return (None, Some("herdr_unavailable"));
+                            }
+                            accepted = true;
+                            baseline = fresh;
+                            deadline = Instant::now() + Duration::from_secs(4);
+                        }
+                    }
+                } else if let Some((_, outcome)) = screen.rsplit_once(command) {
+                    match model_control::claude_confirmation(outcome) {
+                        // A desk-side /model after ours can be the newest line;
+                        // accept only a confirmation naming the requested model.
+                        Some(ClaudeConfirmation::Model(label)) if want_effort.is_none() => {
+                            let wanted = want_model.unwrap_or_default();
+                            if !model_control::claude_label_names(&label, wanted) {
+                                return (None, Some("stale"));
+                            }
+                            return (Some(label), None);
+                        }
+                        Some(ClaudeConfirmation::Effort(level))
+                            if want_effort.is_some_and(|wanted| level == wanted) =>
+                        {
+                            return (Some(level), None);
+                        }
+                        Some(ClaudeConfirmation::Kept) => return (None, Some("change_declined")),
+                        Some(ClaudeConfirmation::Invalid(payload)) => {
+                            let expected_invalid = match want_effort {
+                                None => payload.contains(command.trim_start_matches("/model ")),
+                                Some(wanted) => payload == wanted,
+                            };
+                            if expected_invalid {
+                                return (
+                                    None,
+                                    Some(if want_effort.is_none() {
+                                        "unknown_model"
+                                    } else {
+                                        "invalid_effort"
+                                    }),
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if Instant::now() >= deadline {
+                self.decline_claude_switch(identity);
+                return (None, Some("confirm_timeout"));
+            }
+            thread::sleep(Duration::from_millis(150));
+        }
+    }
+    /// Proves the agent's composer is empty before submitting a prompt through
+    /// `agent.prompt`, which would otherwise append to a desk-side draft.
+    /// Fails closed: an unreadable or unparsable screen refuses the send.
+    fn composer_clear(&self, identity: &Identity, agent: &str) -> Result<()> {
+        self.composer_empty(&identity.pane_id, agent)?;
+        // Re-verify the occupant last, immediately before the caller's prompt,
+        // so a pane replaced after the composer read never receives it.
+        self.recheck_idle(identity)
+    }
+    fn composer_empty(&self, pane_id: &str, agent: &str) -> Result<()> {
+        let screen = self
+            .client
+            .read_visible(pane_id)
+            .map_err(|_| "composer_not_empty")?;
+        match model_control::composer_state(agent, &screen) {
+            model_control::Composer::Empty => Ok(()),
+            // Placeholder-shaped text may be the user's draft: accept it only
+            // when the styled screen shows it faint, as idle suggestions are.
+            model_control::Composer::Placeholder(text) => {
+                let styled = self
+                    .client
+                    .read_visible_ansi(pane_id)
+                    .map_err(|_| "composer_not_empty")?;
+                if model_control::placeholder_is_faint(agent, &styled, &text) {
+                    Ok(())
+                } else {
+                    Err("composer_not_empty")
+                }
+            }
+            _ => Err("composer_not_empty"),
+        }
+    }
+    /// Occupant and idle/done re-verification before every keystroke batch.
+    /// Mid-flow failures map to `stale`, matching `interaction.respond`.
+    fn recheck_idle(&self, identity: &Identity) -> Result<()> {
+        let (pane, _) = self.model_pane_file(identity)?;
+        if !matches!(pane.agent_status.as_str(), "idle" | "done") {
+            return Err("stale");
+        }
+        Ok(())
+    }
+    fn set_claude_model(
+        &self,
+        identity: &Identity,
+        current: &Option<(String, Option<String>)>,
+        target_model: Option<&str>,
+        target_effort: Option<&str>,
+    ) -> Result<Value> {
+        let pane_id = identity.pane_id.as_str();
+        let mut applied_model = current.clone().map(|(id, _)| {
+            let label = self
+                .watch
+                .as_ref()
+                .and_then(|watch| watch.model_override.as_ref())
+                .and_then(|value| value.label_for(current))
+                .unwrap_or_else(|| model_control::claude_display_label(&id));
+            (id, label)
+        });
+        let mut applied_effort = current.as_ref().and_then(|(_, effort)| effort.clone());
+        let mut error: Option<&str> = None;
+        if let Some(target) = target_model
+            // A checked alias row (`opus`) is unchanged when the session runs the
+            // id it resolves to (`claude-opus-5-5`); sending /model would only
+            // rewrite the user's saved default.
+            .filter(|target| {
+                !current.as_ref().is_some_and(|(id, _)| {
+                    id == target || model_control::claude_alias_id(target).as_deref() == Some(id)
+                })
+            })
+        {
+            let command = format!("/model {target}");
+            self.composer_clear(identity, "claude")?;
+            let baseline = self.client.read_visible(pane_id).unwrap_or_default();
+            self.client
+                .agent_prompt(pane_id, &command)
+                .map_err(|_| "herdr_unavailable")?;
+            let (label, failure) =
+                self.wait_claude_confirmation(identity, &baseline, &command, None);
+            match (label, failure) {
+                (Some(label), _) => applied_model = Some((target.to_owned(), label)),
+                (None, Some(code)) => error = Some(code),
+                (None, None) => error = Some("confirm_timeout"),
+            }
+        }
+        if error.is_none()
+            && let Some(target) = target_effort.filter(|target| {
+                Some(*target) != current.as_ref().and_then(|(_, effort)| effort.as_deref())
+            })
+        {
+            let command = format!("/effort {target}");
+            // Re-verify occupant and status, then the composer, before the
+            // second command; failures keep the applied model step.
+            if let Err(code) = self
+                .recheck_idle(identity)
+                .and_then(|()| self.composer_clear(identity, "claude"))
+            {
+                error = Some(if code == "composer_not_empty" {
+                    code
+                } else {
+                    "stale"
+                });
+            } else {
+                let baseline = self.client.read_visible(pane_id).unwrap_or_default();
+                self.client
+                    .agent_prompt(pane_id, &command)
+                    .map_err(|_| "herdr_unavailable")?;
+                let (level, failure) =
+                    self.wait_claude_confirmation(identity, &baseline, &command, Some(target));
+                match (level, failure) {
+                    (Some(level), _) => applied_effort = Some(level),
+                    (None, Some(code)) => error = Some(code),
+                    (None, None) => error = Some("confirm_timeout"),
+                }
+            }
+        }
+        Ok(json!({
+            "identity":identity, "generation":self.generation,
+            "applied":{
+                "model": applied_model.map(|(id, label)| json!({"id":id,"label":label})),
+                "effort": applied_effort,
+            },
+            "confirmed": error.is_none(), "error": error,
+        }))
+    }
+    /// Never send Escape into the composer: Esc-Esc opens Codex's rewind UI.
+    /// An unchanged render cannot authorize another key after the first Escape.
+    fn dismiss_codex_picker(&self, identity: &Identity) {
+        let pane_id = identity.pane_id.as_str();
+        for _ in 0..3 {
+            // Never send Escape into a replacement occupant: the pane id can be
+            // reused by another terminal or session that has its own picker open.
+            if self.model_pane_file(identity).is_err() {
+                return;
+            }
+            let Ok(screen) = self.client.read_visible(pane_id) else {
+                return;
+            };
+            let before = model_control::parse_codex_screen(&screen);
+            if before.is_composer() || before.rows().is_empty() {
+                return;
+            }
+            if self.client.send_keys(pane_id, &["esc"]).is_err() {
+                return;
+            }
+            let deadline = Instant::now() + Duration::from_millis(1500);
+            loop {
+                thread::sleep(Duration::from_millis(150));
+                let Ok(screen) = self.client.read_visible(pane_id) else {
+                    return;
+                };
+                let after = model_control::parse_codex_screen(&screen);
+                if after.is_composer() || after.rows().is_empty() {
+                    return;
+                }
+                if std::mem::discriminant(&after) != std::mem::discriminant(&before) {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    return;
+                }
+            }
+        }
+    }
+    fn wait_codex_kind(
+        &self,
+        pane_id: &str,
+        matches: impl Fn(&PickerScreen) -> bool,
+    ) -> Option<PickerScreen> {
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            let screen = self.client.read_visible(pane_id).unwrap_or_default();
+            let parsed = model_control::parse_codex_screen(&screen);
+            if matches(&parsed) {
+                return Some(parsed);
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            thread::sleep(Duration::from_millis(150));
+        }
+    }
+    fn wait_codex_toast(
+        &self,
+        pane_id: &str,
+        baseline: &str,
+        slug: &str,
+        effort: Option<&str>,
+    ) -> Option<(String, String)> {
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            let screen = self.client.read_visible(pane_id).unwrap_or_default();
+            if let Some(applied) =
+                model_control::codex_fresh_change(&screen, baseline, slug, effort)
+            {
+                return Some(applied);
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            thread::sleep(Duration::from_millis(150));
+        }
+    }
+    /// Re-reads the picker and confirms the expected screen with its cursor on
+    /// `target` (or on any row when `target` is None).
+    fn verify_cursor(&self, pane_id: &str, expected: &PickerScreen, target: Option<usize>) -> bool {
+        let deadline = Instant::now() + Duration::from_millis(1500);
+        loop {
+            let matches = || -> bool {
+                let Ok(screen) = self.client.read_visible(pane_id) else {
+                    return false;
+                };
+                let parsed = model_control::parse_codex_screen(&screen);
+                match (expected, &parsed) {
+                    (PickerScreen::ModelList(_), PickerScreen::ModelList(_))
+                    | (PickerScreen::Advanced(_), PickerScreen::Advanced(_)) => {}
+                    (
+                        PickerScreen::EffortList {
+                            model_label: expected,
+                            ..
+                        },
+                        PickerScreen::EffortList {
+                            model_label: actual,
+                            ..
+                        },
+                    ) if model_control::picker_label(expected)
+                        .eq_ignore_ascii_case(model_control::picker_label(actual)) => {}
+                    _ => return false,
+                }
+                if !expected.rows().iter().zip(parsed.rows()).all(|(a, b)| {
+                    a.number == b.number
+                        && model_control::picker_label(&a.label)
+                            .eq_ignore_ascii_case(model_control::picker_label(&b.label))
+                }) || expected.rows().len() != parsed.rows().len()
+                {
+                    return false;
+                }
+                match target {
+                    Some(target) => parsed.cursor() == Some(target),
+                    None => parsed.cursor().is_some(),
+                }
+            };
+            if matches() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(150));
+        }
+    }
+
+    fn set_codex_model(
+        &self,
+        identity: &Identity,
+        current: &Option<(String, Option<String>)>,
+        target_model: Option<&str>,
+        target_effort: Option<&str>,
+    ) -> Result<Value> {
+        let pane_id = identity.pane_id.as_str();
+        let current_slug = current.as_ref().map(|(id, _)| id.as_str());
+        let target_slug = target_model.or(current_slug).ok_or("invalid_request")?;
+        let catalog = self.codex_catalog();
+        let label_for = |slug: &str| {
+            catalog
+                .iter()
+                .find(|model| model.slug == slug)
+                .map(|model| model.label.clone())
+                .unwrap_or_else(|| model_control::codex_slug_label(slug))
+        };
+        // Reselecting the current model, with no effort or the current one, is
+        // a no-op: walking the picker would apply its default row (replacing an
+        // effort it can't show, like minimal), and an identical toast can't
+        // confirm anything.
+        let current_effort = current.as_ref().and_then(|(_, effort)| effort.as_deref());
+        if Some(target_slug) == current_slug
+            && target_effort.is_none_or(|effort| Some(effort) == current_effort)
+        {
+            return Ok(json!({
+                "identity":identity, "generation":self.generation,
+                "applied":{
+                    "model":{"id":target_slug,"label":label_for(target_slug)},
+                    "effort": current.as_ref().and_then(|(_, effort)| effort.clone()),
+                },
+                "confirmed": true, "error": null,
+            }));
+        }
+        let target_label = label_for(target_slug);
+        let mismatch = || -> &'static str {
+            self.dismiss_codex_picker(identity);
+            "picker_mismatch"
+        };
+        // Mid-flow occupant/status failures dismiss the open picker first.
+        let stale = || -> &'static str {
+            self.dismiss_codex_picker(identity);
+            "stale"
+        };
+        let send = |keys: &[&str]| -> Result<()> {
+            self.recheck_idle(identity).map_err(|_| stale())?;
+            self.client
+                .send_keys(pane_id, keys)
+                .map_err(|_| "herdr_unavailable")
+        };
+        // Re-verify occupant, arrows to `target`, verify the landed cursor,
+        // and re-verify again — every keystroke batch is bracketed.
+        let walk = |screen: &PickerScreen, target: usize| -> Result<()> {
+            self.recheck_idle(identity).map_err(|_| stale())?;
+            for arrow in screen.arrow_plan(target).ok_or_else(mismatch)? {
+                send(&[arrow])?;
+            }
+            if !self.verify_cursor(pane_id, screen, Some(target)) {
+                return Err(mismatch());
+            }
+            self.recheck_idle(identity).map_err(|_| stale())?;
+            Ok(())
+        };
+
+        self.composer_clear(identity, "codex")?;
+        self.client
+            .agent_prompt(pane_id, "/model")
+            .map_err(|_| "herdr_unavailable")?;
+        let model_list = self
+            .wait_codex_kind(
+                pane_id,
+                |screen| matches!(screen, PickerScreen::ModelList(rows) if !rows.is_empty()),
+            )
+            .ok_or_else(mismatch)?;
+        let PickerScreen::ModelList(_) = &model_list else {
+            return Err(mismatch());
+        };
+        // Enter on the model row only advances to the effort step; it never
+        // persists anything (verified against the isolated picker).
+        let target_row = model_list
+            .row_for_label(&target_label)
+            .ok_or_else(mismatch)?;
+        walk(&model_list, target_row)?;
+        send(&["enter"])?;
+
+        let effort_screen = self
+            .wait_codex_kind(pane_id, |screen| {
+                matches!(screen, PickerScreen::EffortList { model_label, rows }
+                    if !rows.is_empty() && model_control::picker_label(model_label).eq_ignore_ascii_case(model_control::picker_label(&target_label)))
+            })
+            .ok_or_else(mismatch)?;
+        let PickerScreen::EffortList { rows, .. } = &effort_screen else {
+            return Err(mismatch());
+        };
+
+        // Re-picking the current effort still applies cleanly, but only when
+        // the target model offers it; otherwise the target's default cursor
+        // position applies (a model switch must not fail on a carried effort).
+        let carried = current
+            .as_ref()
+            .and_then(|(_, effort)| effort.clone())
+            .filter(|effort| match catalog.iter().find(|model| model.slug == target_slug) {
+                Some(model) => model.efforts.iter().any(|offered| offered == effort),
+                None => model_control::codex_effort_row_label(effort).is_some_and(|label| {
+                    rows.iter().any(|row| {
+                        model_control::picker_label(&row.label).starts_with(label)
+                    })
+                }),
+            });
+        if let Some(effort) = target_effort.map(str::to_owned).or(carried) {
+            let row_label =
+                model_control::codex_effort_row_label(&effort).ok_or_else(mismatch)?;
+            if row_label.starts_with("More reasoning") {
+                let index = rows
+                    .iter()
+                    .position(|row| {
+                        model_control::picker_label(&row.label).starts_with("More reasoning")
+                    })
+                    .ok_or_else(mismatch)?;
+                walk(&effort_screen, index)?;
+                send(&["enter"])?;
+                let advanced = self
+                    .wait_codex_kind(
+                        pane_id,
+                        |screen| matches!(screen, PickerScreen::Advanced(rows) if !rows.is_empty()),
+                    )
+                    .ok_or_else(mismatch)?;
+                let PickerScreen::Advanced(_) = &advanced else {
+                    return Err(mismatch());
+                };
+                let label = model_control::effort_label(&effort);
+                let index = advanced.row_for_label(label).ok_or_else(mismatch)?;
+                walk(&advanced, index)?;
+            } else {
+                let index = effort_screen
+                    .row_for_label(row_label)
+                    .ok_or_else(mismatch)?;
+                walk(&effort_screen, index)?;
+            }
+        } else {
+            // No desired effort: any selected default row applies.
+            if !self.verify_cursor(pane_id, &effort_screen, None) {
+                return Err(mismatch());
+            }
+            self.recheck_idle(identity).map_err(|_| stale())?;
+        }
+        // `s` applies for this session only; digits or enter would persist a
+        // new global default in config.toml.
+        let baseline = self.client.read_visible(pane_id).map_err(|_| mismatch())?;
+        send(&["s"])?;
+
+        let Some((applied_slug, applied_effort)) =
+            self.wait_codex_toast(pane_id, &baseline, target_slug, target_effort)
+        else {
+            self.dismiss_codex_picker(identity);
+            return Err("confirm_timeout");
+        };
+        let applied_label = if applied_slug == target_slug {
+            target_label
+        } else {
+            model_control::codex_slug_label(&applied_slug)
+        };
+        Ok(json!({
+            "identity":identity, "generation":self.generation,
+            "applied":{
+                "model":{"id":applied_slug,"label":applied_label},
+                "effort":applied_effort,
+            },
+            "confirmed":true, "error":null,
+        }))
     }
     fn respond_interaction(&self, params: &Value) -> InteractionResult<Value> {
         let question_response = params.get("answers").is_some() || params.get("skip").is_some();
@@ -1002,6 +1947,7 @@ impl Service {
             self.include_content = params["record_content"] == true;
             self.include_approvals = params["approvals"] == true;
             self.include_questions = params["questions"] == true;
+            self.include_model_control = params["model_control"] == true;
             self.watch = None;
             if params["protocol"] != 1 {
                 return Self::error(out, id, "protocol_mismatch");
@@ -1014,7 +1960,7 @@ impl Service {
             let codex_available = self.adapter_for("codex").is_some_and(|a| a.is_available());
             return Self::write(
                 out,
-                &json!({"id":id,"result":{"protocol":1,"bridge_version":env!("CARGO_PKG_VERSION"),"epoch":self.epoch,"capabilities":{"claude_timeline":claude_available,"record_content":true,"codex_timeline":codex_available,"codex_daemon_config":true,"codex_daemon_stop":true,"git":false,"prompts":false,"approvals":true,"questions":true,"routed_hosts":false}}}),
+                &json!({"id":id,"result":{"protocol":1,"bridge_version":env!("CARGO_PKG_VERSION"),"epoch":self.epoch,"capabilities":{"claude_timeline":claude_available,"record_content":true,"codex_timeline":codex_available,"codex_daemon_config":true,"codex_daemon_stop":true,"git":false,"prompts":false,"approvals":true,"questions":true,"model_control":true,"routed_hosts":false}}}),
             );
         }
         if !self.initialized {
@@ -1028,6 +1974,23 @@ impl Service {
                 }
                 Err(error) => Self::write(out, &json!({"id":id,"error":error.data()})),
             },
+            "model.status" => {
+                self.poll_with_refresh(out, refresh)?;
+                match self.model_status() {
+                    Ok(result) => Self::write(out, &json!({"id":id,"result":result})),
+                    Err(code) => Self::error(out, id, code),
+                }
+            }
+            "model.set" => {
+                self.poll_with_refresh(out, refresh)?;
+                match self.model_set(params) {
+                    Ok(result) => {
+                        Self::write(out, &json!({"id":id,"result":result}))?;
+                        self.poll(out)
+                    }
+                    Err(code) => Self::write(out, &json!({"id":id,"error":{"code":code}})),
+                }
+            }
             "watch" => {
                 let Some(pane) = params["pane_id"]
                     .as_str()
@@ -1058,6 +2021,9 @@ impl Service {
                     approval_cache: None,
                     question_cache: None,
                     source_pane: None,
+                    model_stamp: None,
+                    last_model: None,
+                    model_override: None,
                 });
                 Self::write(out, &json!({"id":id,"result":{"watching":pane}}))?;
                 self.poll(out)
@@ -1223,6 +2189,10 @@ mod tests {
     // refresh boundary makes source_changing independent of timing/file races.
     #[derive(Default)]
     struct HerdrState {
+        ansi_screen: Option<String>,
+        // (n, terminal): from the n-th plain pane.read on, snapshots report a
+        // replacement terminal (the pane was swapped right after that read).
+        terminal_after_reads: Option<(usize, String)>,
         agent: Option<String>,
         status: Option<String>,
         screen: String,
@@ -1285,9 +2255,27 @@ mod tests {
                 let request: Value = serde_json::from_str(&line).unwrap();
                 let mut state = server_state.lock().unwrap();
                 let result = match request["method"].as_str().unwrap() {
+                    "pane.read" if request["params"]["format"] == "ansi" => {
+                        assert_eq!(request["params"], json!({"pane_id":"w1:p1","source":"visible","format":"ansi"}));
+                        // Real agents draw idle placeholders faint; a test sets
+                        // `ansi_screen` to model typed, unstyled text instead.
+                        let text = state.ansi_screen.clone().unwrap_or_else(|| {
+                            state.screen.lines().map(|line| {
+                                for marker in ["❯ ", "› "] {
+                                    if let Some(rest) = line.trim_start().strip_prefix(marker) {
+                                        return format!("{marker}\u{1b}[2m{rest}\u{1b}[0m");
+                                    }
+                                }
+                                line.to_owned()
+                            }).collect::<Vec<_>>().join("\n")
+                        });
+                        json!({"read":{"text":text}})
+                    }
                     "pane.read" => {
                         assert_eq!(request["params"], json!({"pane_id":"w1:p1","source":"visible"}));
                         state.reads += 1;
+                        if let Some((count, terminal)) = state.terminal_after_reads.clone()
+                            && state.reads >= count { state.terminal_id = Some(terminal); }
                         if state.allow_question_input {
                             if let Some(screen) = state.screens_before_input.pop_front()
                                 .or_else(|| state.active_input_screens.pop_front()) {
@@ -1317,6 +2305,15 @@ mod tests {
                         assert!(request["params"]["text"].is_string());
                         assert_eq!(request["params"].as_object().unwrap().len(), 2);
                         state.inputs.push(json!({"method":"pane.send_text","params":request["params"]}));
+                        state.active_input_screens = state.screens_after_input.pop_front().unwrap_or_default();
+                        json!({})
+                    }
+                    "agent.prompt" => {
+                        assert!(state.allow_question_input);
+                        assert_eq!(request["params"]["target"], "w1:p1");
+                        assert!(request["params"]["text"].is_string());
+                        assert_eq!(request["params"].as_object().unwrap().len(), 2);
+                        state.inputs.push(json!({"method":"agent.prompt","params":request["params"]}));
                         state.active_input_screens = state.screens_after_input.pop_front().unwrap_or_default();
                         json!({})
                     }
@@ -1359,6 +2356,7 @@ mod tests {
     include!("service_question_tests.rs");
     include!("service_question_response_tests.rs");
     include!("service_response_tests.rs");
+    include!("service_model_tests.rs");
     fn cleanup(service: &Service, root: PathBuf) {
         // Wake and terminate the fixture thread without a valid request.
         drop(std::os::unix::net::UnixStream::connect(&service.client.socket).unwrap());

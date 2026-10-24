@@ -1,6 +1,6 @@
 {
   "protocol": 1,
-  "bridge_version": "0.3.0",
+  "bridge_version": "0.4.0",
   "transport": "non-PTY stdio NDJSON; one watched pane per process",
   "launch": {
     "command": "herdcats-bridge serve --stdio",
@@ -20,6 +20,7 @@
     "prompts": false,
     "approvals": true,
     "questions": true,
+    "model_control": true,
     "routed_hosts": false,
     "record_content": "true; rich entries and bounded content retrieval are enabled only when initialize params.record_content is true"
   },
@@ -34,7 +35,8 @@
         "protocol": 1,
         "record_content": "optional bool; false by default for older clients",
         "approvals": "optional bool; false by default; opts into approval interaction events and responses",
-        "questions": "optional bool; false by default; independently opts into question interaction events and responses"
+        "questions": "optional bool; false by default; independently opts into question interaction events and responses",
+        "model_control": "optional bool; false by default; opts into model.status/model.set requests and model.updated events"
       },
       "result_fields": [
         "protocol",
@@ -142,6 +144,82 @@
       ],
       "question_result": "request_id and confirmed: boolean; true when the dialog is observed gone after the final input (or after the last Codex Plan digit). False if final confirmation fails or the unchanged final dialog remains for about 1 second. Never resend automatically.",
       "question_effect": "Revalidate the newest pending request without the polling cache, identity, occupant, blocked status and fresh visible screen before input. Execute the pure key/text plan, polling the visible screen every 100ms for at most about 1 second after each step. Re-read before later inputs and revalidate the occupant before sending. Stop with stale and steps_sent on an unexpected state or intermediate read/send failure. Send the optional final Codex Plan Enter only if the selected last picker is still visible; skip it if the dialog has gone. Write the result, then poll so interaction.resolved can follow."
+    },
+    {
+      "method": "model.status",
+      "params": {},
+      "result_fields": [
+        "identity",
+        "generation",
+        "agent",
+        "model",
+        "effort",
+        "models",
+        "efforts"
+      ],
+      "result_types": {
+        "identity": "object; the watched timeline identity",
+        "generation": "u64; current timeline generation",
+        "agent": "claude or codex",
+        "model": "{id, label} or null; the model in effect from the transcript (Claude assistant message.model + effort, Codex idle/done catalog-matched live footer, otherwise last turn_context), falling back to Claude settings.json or Codex config.toml when no turns exist yet",
+        "effort": "reasoning effort id (low, medium, high, xhigh, max, ultra, minimal) or null",
+        "models": "selectable {id, label, efforts: [{id, label}], current?: bool} models, each with its own effort options (empty when none): Claude tier aliases (fable, opus, sonnet, haiku) plus the live current id when unmapped; Codex catalog slugs from models_cache.json filtered to visibility=list and ordered by priority; exactly one entry carries current=true when a model is known",
+        "efforts": "effort options for the current model: Claude low/medium/high/xhigh/max (auto hidden); Codex per-model supported_reasoning_levels, or the standard set when the model is unknown; empty when none"
+      },
+      "requires": "initialize with params.model_control true and a watch with a resolved native identity",
+      "errors": {
+        "unsupported_capability": "Client did not opt in to model control.",
+        "not_watching": "No active watch.",
+        "timeline_unavailable": "The watch has no resolved identity or its timeline is unavailable.",
+        "stale": "The pane or occupant changed or the transcript could not be re-verified.",
+        "unsupported_agent": "The watched agent is neither claude nor codex."
+      },
+      "effect": "Runs a poll first (emitting any pending timeline events), then reads the current model/effort and option lists. Read-only: never sends input."
+    },
+    {
+      "method": "model.set",
+      "params": {
+        "model": "optional model id or Claude alias to switch to; omit to keep",
+        "effort": "optional effort id to switch to; omit to keep",
+        "expect": "required {model: id|null, effort: id|null}; the client's last observed pair from model.status or model.updated"
+      },
+      "result_fields": [
+        "identity",
+        "generation",
+        "applied",
+        "confirmed",
+        "error"
+      ],
+      "result_types": {
+        "applied": "{model: {id, label}|null, effort: id|null}; the pair in effect after the attempt: the confirmed new values for steps that succeeded, the prior values otherwise",
+        "confirmed": "boolean; true when every requested step was confirmed on screen",
+        "error": "null on success; unknown_model, invalid_effort, stale, composer_not_empty, picker_mismatch, change_declined or confirm_timeout when a sent command failed its screen confirmation (partial results still return applied)"
+      },
+      "requires": "initialize with params.model_control true and a watch with a resolved native identity",
+      "validation": [
+        "The agent status must be idle or done; working and blocked panes are refused with agent_busy before any input.",
+        "A fresh Herdr snapshot and adapter re-resolution must still show the same pane, terminal, agent and native session; otherwise stale.",
+        "The transcript scan must equal the expect pair exactly; otherwise stale (the desk changed it).",
+        "Claude sends /model first, waits for the Set model to confirmation (its text supplies the applied label), then /effort and its confirmation; an invalid model stops the flow, an invalid effort still reports the applied model.",
+        "Claude may show a Switch model? or Change effort level? cache-switch dialog. The bridge verifies both numbered options and the requested target (case-insensitive model-label prefix or exact effort), rechecks occupant/idle status and the visible dialog, then sends digit 1 once. A mismatched target returns picker_mismatch. A timeout or mismatch sends digit 2 only while a fresh read still shows the recognizable dialog with No, go back. The Set confirmation must differ from the pre-send baseline and follow the submitted command; Kept model/effort results fail with change_declined.",
+        "Before every agent.prompt, the visible composer must be provably empty or the request returns composer_not_empty without sending input. Occupant and idle/done status are rechecked before subsequent sends; a mid-flow change returns stale (with Claude partial applied values) and dismisses an open Codex picker.",
+        "Codex submits /model through Herdr's agent.prompt, then drives the picker with arrows and verifies the screen, model label, row labels and cursor before enter or s; enter on the model list only advances to the effort step, including lists with ten or more models; max/ultra open the nested Advanced Reasoning entry first. The effort is applied with the s session-only key, never the digit/enter default-persist paths, so config.toml is not written."
+      ],
+      "errors": {
+        "unsupported_capability": "Client did not opt in to model control.",
+        "not_watching": "No active watch.",
+        "timeline_unavailable": "The watch has no resolved identity or its timeline is unavailable.",
+        "invalid_request": "Missing expect object, or an empty/oversized model id.",
+        "invalid_effort": "Effort id outside the agent's known set; no input sent.",
+        "agent_busy": "Pane status is working or blocked; no input sent.",
+        "stale": "Occupant/status changed or the expect pair disagrees with the transcript; no further apply input is sent. An open Codex picker is dismissed.",
+        "composer_not_empty": "The composer contains a draft or could not be proven empty; no prompt is sent (Claude may return a previously applied model as a partial result).",
+        "change_declined": "Claude kept the prior model or effort; applied retains the previously confirmed pair.",
+        "picker_mismatch": "A Claude cache-switch dialog did not match the requested target (declined only while visible), or a Codex picker screen did not show the expected title/rows; the picker is dismissed with Escape.",
+        "confirm_timeout": "The command or picker never confirmed within about 4 seconds; the Codex picker is dismissed with Escape.",
+        "herdr_unavailable": "Herdr socket I/O failed mid-flow."
+      },
+      "effect": "Applies from the next turn in the session. Claude writes the CLI's own persisted defaults (settings.json); Codex applies for this session only and writes nothing. Confirmed and partially applied pairs override the unchanged scan for model.status, subsequent expect checks and model.updated. The override is discarded when the scanned pair changes or the identity/generation resets."
     }
   ],
   "envelopes": {
@@ -275,6 +353,21 @@
         "request_id": "string; previously emitted request ID: Claude approval tool_use_id, Claude question ask-<prompt_id>-<milliseconds>, or Codex rollout call_id"
       },
       "effect": "Clear the matching pending interaction once when the call resolves/aborts, the pane leaves blocked, the dialog disappears or becomes uncertain, or the identity changes. initialize and unwatch reset pending state without emitting this event. Same-identity source_changing retries preserve the existing interaction without emitting interaction.resolved."
+    },
+    "model.updated": {
+      "fields": [
+        "identity",
+        "generation",
+        "model",
+        "effort"
+      ],
+      "field_types": {
+        "identity": "object; the watched timeline identity",
+        "generation": "u64; current timeline generation",
+        "model": "{id, label}; the label is the CLI-confirmed one while an override holds, otherwise the Codex catalog display name or the derived Claude label",
+        "effort": "string or null; the effort observed in the transcript"
+      },
+      "effect": "Emitted only when initialize opted into model control, after a transcript or live Codex idle-footer scan observes a different model/effort pair (and once after an identity/generation reset). Claude confirmed labels remain authoritative while the watch override holds. Codex session-only changes survive reconnects through the catalog-matched idle/done footer; missing or unparseable footers fall back to transcript/config. Pairs with model.set results: the request's applied pair is authoritative until the transcript catches up."
     }
   },
   "entry_fields": {
@@ -361,7 +454,11 @@
     "unsupported_herdr_protocol",
     "unsupported_session_source",
     "invalid",
-    "in_progress"
+    "agent_busy",
+    "confirm_timeout",
+    "invalid_effort",
+    "invalid_request",
+    "picker_mismatch"
   ],
   "transient_read_behavior": "source_changing retries without clearing verified cache for the same identity; after repeated retries (threshold 10), emits timeline.updated with delayed: true while keeping verified history until recovery clears it. A changed occupant still clears old state.",
   "approval_policy": {

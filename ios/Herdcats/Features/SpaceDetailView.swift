@@ -1164,6 +1164,7 @@ struct PaneSessionView: View {
     private var canSend: Bool {
         !trimmedDraft.isEmpty
             && !isSending && !isTimelineSending
+            && (!showsTimeline || !timeline.modelControl.isChanging)
             && (!showsTimeline || TimelineComposePolicy.canCompose(identity:timeline.identity,paneId:pane.paneId,status:timeline.agentStatus,connected:AgentTimelineConnectionState(phase:appModel.phase,generation:appModel.ownership.transportGeneration).isReady))
             && !dictation.isBusy
             && !(attachment?.isUploading ?? false)
@@ -1364,6 +1365,7 @@ struct PaneSessionView: View {
             isSending: isSending,
             onSend: handleSend
         )
+        bar.modelControl = showsTimeline ? timeline.modelControl : nil
         bar.composeFieldIdentifier = showsTimeline ? "timeline-compose-field" : "pane-compose-field"
         bar.composeSendIdentifier = showsTimeline ? "timeline-compose-send" : "pane-compose-send-button"
         return bar

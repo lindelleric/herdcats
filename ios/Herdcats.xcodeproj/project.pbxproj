@@ -179,7 +179,7 @@
 		568BEE7592258AE6D1351685 /* PhoneAnswersTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneAnswersTests.swift; sourceTree = "<group>"; };
 		58D221D9158228E5593662D7 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		59460EB647F68FC33C825D67 /* HerdrConnection+Queries.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HerdrConnection+Queries.swift"; sourceTree = "<group>"; };
-		5E030A59A32EEE2D37BBF028 /* Herdcats.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Herdcats.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		5E030A59A32EEE2D37BBF028 /* Herdcats.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Herdcats.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		6349F51A9FF576CFF9455B92 /* ConnectionSettingsView+Card.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ConnectionSettingsView+Card.swift"; sourceTree = "<group>"; };
 		690A325C18C2D89D90900F04 /* QuestionCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuestionCard.swift; sourceTree = "<group>"; };
 		693BA4491F3178B3C64D8348 /* QuotaUnavailable.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuotaUnavailable.swift; sourceTree = "<group>"; };
@@ -768,6 +768,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = "";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = Y9434R2ZNR;
 				INFOPLIST_FILE = Herdcats/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -943,6 +944,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = "";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = Y9434R2ZNR;
 				INFOPLIST_FILE = Herdcats/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (

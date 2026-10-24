@@ -333,6 +333,9 @@ struct AgentTimelineView: View {
         .onChange(of: timeline.pendingApproval, initial: true) { _, pending in approvalResponse.sync(pending) }
         .onChange(of: timeline.pendingQuestion, initial: true) { _, pending in questionResponse.sync(pending) }
         .task(id: taskKey) { await run() }
+        .task(id: "\(activeClient?.id.uuidString ?? "none"):\(contentScope)") {
+            await timeline.modelControl.refresh()
+        }
         .task(id: waitingTaskKey) { await prepareWaitingRow() }
         .onAppear { approvalViewVisible = true; updateTimelineSheet() }
         .onChange(of: bridgeCapabilities?.approvals) { _, _ in updateTimelineSheet() }
@@ -1263,6 +1266,9 @@ struct AgentTimelineView: View {
                         try timeline.consume(AgentTimelineScreenshotFixture.questionFrame(paneId: paneId), owner: owner)
                         questionResponse.sync(timeline.pendingQuestion)
                     }
+                    if ScreenshotFixtures.screen.hasPrefix("timeline-model") {
+                        timeline.modelControl.loadScreenshotFixture(agent: ScreenshotFixtures.paneAgent)
+                    }
                 } catch { timeline.end(owner: owner, error: (error as? AgentBridgeError) ?? .invalidFrame) }
                 return
             }
@@ -1274,8 +1280,10 @@ struct AgentTimelineView: View {
                 try await commit(frame, owner: owner, connectionState: ownedConnection)
             }
             opened = client
+            let capabilities = await client.capabilities
             try Task.checkCancellation()
             if activeOwner == owner {
+                timeline.modelControl.connect(client, supported: capabilities?.modelControl == true)
                 activeClient = client
                 bridgeCapabilities = await connection.bridgeCapabilities(for: ownedConnection.generation)
                 bridgeVersion = await connection.bridgeVersion(for: ownedConnection.generation)
