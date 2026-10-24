@@ -10,3 +10,10 @@ build/
 
 # Maestro screenshot captures
 maestro/screenshots-output/
+
+# xtool
+/.build/
+/xtool/
+/.swiftpm/
+Package.resolved
+/.bsp/

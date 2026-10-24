@@ -1,0 +1,19 @@
+version: 1
+bundleID: se.lindell.herdcats
+infoPath: xtool-Info.plist
+iconPath: Herdcats/Assets.xcassets/AppIcon.appiconset/AppIcon.png
+# xtool does not compile asset catalogs, so images ship as loose bundle files.
+resources:
+  - Herdcats/Resources/Fonts/Jost-Variable.ttf
+  - Herdcats/Resources/Fonts/Silkscreen-Regular.ttf
+  - Herdcats/Resources/Fonts/Silkscreen-Bold.ttf
+  - Herdcats/Resources/ThirdPartyNotices.txt
+  - xtool-resources/AgentClaude.png
+  - xtool-resources/AgentCodex.png
+  - xtool-resources/AgentCursor.png
+  - xtool-resources/AgentGemini.png
+  - xtool-resources/AgentPi.png
+  - xtool-resources/AgentZai.png
+  - xtool-resources/HerdrcatLogo.png
+  - xtool-resources/LaunchCat@2x.png
+  - xtool-resources/LaunchCat@3x.png
