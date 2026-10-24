@@ -15,5 +15,4 @@ maestro/screenshots-output/
 /.build/
 /xtool/
 /.swiftpm/
-Package.resolved
 /.bsp/
