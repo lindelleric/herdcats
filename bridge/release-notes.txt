@@ -1,10 +1,9 @@
 Herdcats Bridge (`herdcats-bridge`) is the optional companion on your computer that powers native Claude and Codex Timelines in Herdcats.
 
 Changes in this release:
-- Answer Claude and Codex approval prompts from your phone. Herdcats shows the dialog's options exactly as the terminal does; the bridge sends one guarded keystroke only after checking that the same dialog is still on screen, and confirms it closed. Options that loosen permissions need a swipe.
-- Answer Claude AskUserQuestion and Codex questions (Plan mode and queued questions) from your phone, including multi-select and a typed answer. The bridge types your answers step by step, re-reads the screen after each step and stops if anything looks different. A picker you already started at your desk is left for you to finish there.
-- New `herdcats-bridge hooks status|install|uninstall --agent claude|codex`. The optional hook only records the request so the phone can show it; it never answers anything, and the terminal dialog still appears. Install makes a backup, never touches other hooks, and uninstall removes the recorded requests. Codex asks you to review a new hook once at your desk.
-- Codex timelines no longer show internal answer records or empty assistant messages after a question.
+- Change the model and reasoning effort of a Claude or Codex session from your phone. The bridge reads the current model from the session, then types `/model` or `/effort` only when the agent is idle and its input box is empty, and checks every screen before the next key. Claude's "Switch model?" question is answered only when it names exactly what you picked.
+- Codex changes apply to that session only and never write config.toml. Claude saves the new model and effort as your default for new sessions, as `/model` and `/effort` do at your desk.
+- Claude timelines no longer show local command records such as `/effort` and its output.
 
 Install on the computer Herdcats connects to with SSH, the one that runs Herdr and your agents:
 

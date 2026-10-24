@@ -220,6 +220,9 @@ fn test_watch() -> Watch {
         approval_cache: None,
         question_cache: None,
         source_pane: None,
+        model_stamp: None,
+        last_model: None,
+        model_override: None,
     }
 }
 

@@ -103,6 +103,8 @@ struct PaneAttachmentInfo: Identifiable, Sendable {
 ///    Voice immediately left of Send, and Send hidden for blank/whitespace text.
 struct PaneVoiceComposeBar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var showsModelConfiguration = false
+    var modelControl: AgentModelControlState? = nil
     @State private var isKeysDrawerOpen = false
     @State private var isArrowRowOpen = false
 
@@ -262,6 +264,12 @@ struct PaneVoiceComposeBar: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("pane-voice-compose-bar")
+        .sheet(isPresented: $showsModelConfiguration) {
+            if let modelControl { AgentModelConfigurationSheet(state: modelControl) }
+        }
+        .onChange(of: modelControl?.isVisible) { _, visible in
+            if visible != true { showsModelConfiguration = false }
+        }
     }
 
     // MARK: - 1. Live Mode Bar
@@ -614,12 +622,29 @@ struct PaneVoiceComposeBar: View {
                 attachmentChip(attachment)
             }
 
-            HStack(alignment: .bottom, spacing: 8) {
-                photoPickerButton
-                messageBubble
+            // Conversation panes put the field on its own full-width row and
+            // the photo, model and voice controls on the row under it. The
+            // choice depends only on the surface, so the field keeps its
+            // identity (and focus) when the model control appears.
+            if modelControl != nil {
+                VStack(alignment: .leading, spacing: 0) {
+                    messageField
+                    HStack(alignment: .center, spacing: 4) {
+                        photoPickerButton
+                        Spacer(minLength: 0)
+                        messageActions
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+            } else {
+                HStack(alignment: .bottom, spacing: 8) {
+                    photoPickerButton
+                    messageBubble
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
         }
         .modifier(PaneInputGlassSurface(cornerRadius: DesignSystem.CornerRadius.lg))
         .simultaneousGesture(
@@ -664,76 +689,110 @@ struct PaneVoiceComposeBar: View {
     }
 
     /// Send is visible if the draft has non-whitespace text OR a send is currently in progress.
-    /// It is hidden only for blank drafts when idle.
+    /// With the model control showing it stays visible (disabled while blank) so
+    /// the action row keeps its shape; otherwise it hides for blank idle drafts.
     private var showsSendButton: Bool {
-        isSending || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        isSending || modelControl?.isVisible == true
+            || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var messageBubble: some View {
         HStack(alignment: .bottom, spacing: 4) {
-            // Editable 1-to-6-row field
-            TextField(placeholder, text: $draft, axis: .vertical)
-                .font(.jost(.subheadline))
-                .lineLimit(1...6)
-                .focused($isComposeFieldFocused)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled(false)
-                .background(ComposeTextInputMarker())
-                .disabled(isSending)
-                .submitLabel(.send)
-                .onSubmit {
-                    guard canSend && !isSending else { return }
-                    onSend()
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 8)
-                .accessibilityLabel("Message text")
-                .accessibilityIdentifier(composeFieldIdentifier)
-
-            // Voice button inside bubble, immediately left of Send
-            Button {
-                HapticFeedback.impact(.light)
-                onStartVoice()
-            } label: {
-                Image(systemName: "mic.fill")
-                    .font(.jost(18))
-                    .foregroundStyle(Color.secondary)
-                    .frame(width: 32, height: 36)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(isSending)
-            .accessibilityLabel("Dictate message")
-            .accessibilityIdentifier("pane-compose-voice-button")
-
-            // Send button: visible when text is present or when sending; shows spinner during send
-            if showsSendButton {
-                Button {
-                    HapticFeedback.impact(.light)
-                    onSend()
-                } label: {
-                    Group {
-                        if isSending {
-                            CircularArcSpinner(size: 18)
-                        } else {
-                            Image(systemName: "arrow.up.circle.fill")
-                                .font(.jost(26))
-                                .foregroundStyle(canSend ? Theme.accent : Color.secondary)
-                        }
-                    }
-                    .frame(width: 34, height: 36)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(!canSend || isSending)
-                .accessibilityLabel("Send Message")
-                .accessibilityIdentifier(composeSendIdentifier)
-                .transition(.scale(scale: 0.85).combined(with: .opacity))
-            }
+            messageField
+            messageActions
         }
         .padding(.trailing, 4)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("pane-compose-bubble")
+    }
+
+    private var messageField: some View {
+        // Editable 1-to-6-row field
+        TextField(placeholder, text: $draft, axis: .vertical)
+            // Conversation composers match the timeline's body text size.
+            .font(.jost(modelControl != nil ? .body : .subheadline))
+            .lineLimit(1...6)
+            .focused($isComposeFieldFocused)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled(false)
+            .background(ComposeTextInputMarker())
+            .disabled(isSending)
+            .submitLabel(.send)
+            .onSubmit {
+                guard canSend && !isSending else { return }
+                onSend()
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 8)
+            .accessibilityLabel("Message text")
+            .accessibilityIdentifier(composeFieldIdentifier)
+    }
+
+    @ViewBuilder private var messageActions: some View {
+        if let modelControl, modelControl.isVisible {
+            Button { showsModelConfiguration = true } label: {
+                (Text(modelControl.modelName).bold()
+                    + Text(modelControl.effortText.map { " " + $0 } ?? ""))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .font(.jost(.subheadline))
+                .foregroundStyle(Theme.accent)
+                // Hug the text: the mic glyph sits ~10pt inside its 32pt frame and
+                // Send's circle ~4pt inside its 34pt frame, so 3pt here makes the
+                // label-to-mic gap match the mic-to-Send gap (measured ~18pt each).
+                .padding(.trailing, 3)
+                .frame(minHeight: 36)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .layoutPriority(-1)
+            .accessibilityLabel(modelControl.accessibilityLabel)
+            .accessibilityHint("Configure model and effort")
+            .accessibilityIdentifier("timeline-model-control")
+        }
+
+        // Voice button inside bubble, immediately left of Send
+        Button {
+            HapticFeedback.impact(.light)
+            onStartVoice()
+        } label: {
+            Image(systemName: "mic.fill")
+                .font(.jost(18))
+                .foregroundStyle(Color.secondary)
+                .frame(width: 32, height: 36)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isSending)
+        .accessibilityLabel("Dictate message")
+        .accessibilityIdentifier("pane-compose-voice-button")
+        .fixedSize()
+
+        // Send button: visible when text is present or when sending; shows spinner during send
+        if showsSendButton {
+            Button {
+                HapticFeedback.impact(.light)
+                onSend()
+            } label: {
+                Group {
+                    if isSending {
+                        CircularArcSpinner(size: 18)
+                    } else {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.jost(26))
+                            .foregroundStyle(canSend ? Theme.accent : Color.secondary)
+                    }
+                }
+                .frame(width: 34, height: 36)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!canSend || isSending)
+            .accessibilityLabel("Send Message")
+            .accessibilityIdentifier(composeSendIdentifier)
+            .fixedSize()
+            .transition(.scale(scale: 0.85).combined(with: .opacity))
+        }
     }
 
     private func attachmentChip(_ attachment: PaneAttachmentInfo) -> some View {
@@ -781,5 +840,104 @@ struct PaneVoiceComposeBar: View {
         .padding(8)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("pane-attachment-chip")
+    }
+}
+
+
+private struct AgentModelConfigurationSheet: View {
+    let state: AgentModelControlState
+    @State private var path: [String] = []
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    var body: some View {
+        NavigationStack(path: $path) {
+            Form {
+                Section {
+                    NavigationLink(value: "Model") {
+                        row("Model", value: state.pair.model?.label ?? "Unknown")
+                    }
+                    .accessibilityIdentifier("model-configuration-model")
+                    if !state.efforts.isEmpty {
+                        NavigationLink(value: "Effort") {
+                            row("Effort", value: state.effortLabel)
+                        }
+                        .accessibilityIdentifier("model-configuration-effort")
+                    }
+                }
+                .listRowBackground(Theme.cardBackground)
+                .disabled(state.isChanging)
+                if let error = state.errorMessage {
+                    Text(error)
+                        .foregroundStyle(Theme.destructive)
+                        .listRowBackground(Theme.cardBackground)
+                        .accessibilityIdentifier("model-configuration-error")
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .contentMargins(.top, 8, for: .scrollContent)
+            .background(Theme.background)
+            .navigationTitle("Configure")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                // The app's spinner sits in front of the title while a change applies.
+                ToolbarItem(placement: .principal) {
+                    HStack(spacing: 8) {
+                        if state.isChanging { CircularArcSpinner(size: 14) }
+                        Text("Configure").font(.jost(.headline))
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityAddTraits(.isHeader)
+                }
+            }
+            .navigationDestination(for: String.self) { destination in
+                List {
+                    if destination == "Model" {
+                        ForEach(state.models) { model in
+                            option(model.label, selected: state.selectedModelID == model.id) {
+                                Task { await state.change(model: model.id) }
+                            }
+                        }
+                    } else {
+                        ForEach(state.efforts) { effort in
+                            option(effort.label, selected: state.pair.effort == effort.id) {
+                                Task { await state.change(effort: effort.id) }
+                            }
+                        }
+                    }
+                }
+                .disabled(state.isChanging)
+                .scrollContentBackground(.hidden)
+                .background(Theme.background)
+                .navigationTitle(destination)
+                .navigationBarTitleDisplayMode(.inline)
+            }
+        }
+        .font(.jost(.body))
+        .tint(Theme.accent)
+        .presentationDetents(path.isEmpty && !typeSize.isAccessibilitySize ? [.height(300)] : [.medium, .large])
+        .presentationDragIndicator(.visible)
+        .task { await state.refresh() }
+    }
+
+    private func row(_ title: String, value: String) -> some View {
+        HStack {
+            Text(title).foregroundStyle(Theme.text)
+            Spacer()
+            Text(value).foregroundStyle(Theme.textMuted).multilineTextAlignment(.trailing)
+        }
+    }
+    private func option(_ label: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button {
+            path = []
+            action()
+        } label: {
+            HStack {
+                Text(label).foregroundStyle(Theme.text)
+                Spacer()
+                if selected { Image(systemName: "checkmark").foregroundStyle(Theme.accent) }
+            }
+        }
+        .listRowBackground(Theme.cardBackground)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }

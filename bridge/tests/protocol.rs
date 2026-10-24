@@ -775,3 +775,37 @@ fn protocol_documents_approval_capability_request_and_event_fields() {
         assert!(respond["errors"].get(error).is_some());
     }
 }
+
+#[test]
+fn protocol_documents_model_control_capability_requests_and_event() {
+    let protocol: Value = serde_json::from_str(include_str!("../protocol.json")).unwrap();
+    assert_eq!(protocol["capabilities"]["model_control"], true);
+    let initialize = protocol["requests"].as_array().unwrap().iter()
+        .find(|request| request["method"] == "initialize").unwrap();
+    assert!(initialize["params"]["model_control"].as_str().unwrap().contains("false by default"));
+    let status = protocol["requests"].as_array().unwrap().iter()
+        .find(|request| request["method"] == "model.status").unwrap();
+    assert_eq!(status["result_fields"], json!([
+        "identity", "generation", "agent", "model", "effort", "models", "efforts"
+    ]));
+    let set = protocol["requests"].as_array().unwrap().iter()
+        .find(|request| request["method"] == "model.set").unwrap();
+    for field in ["model", "effort", "expect"] {
+        assert!(set["params"].get(field).is_some(), "missing model.set param: {field}");
+    }
+    assert_eq!(set["result_fields"], json!([
+        "identity", "generation", "applied", "confirmed", "error"
+    ]));
+    for error in ["unsupported_capability", "agent_busy", "stale", "picker_mismatch", "confirm_timeout"] {
+        assert!(set["errors"].get(error).is_some(), "missing model.set error: {error}");
+    }
+    assert!(set["validation"].as_array().unwrap().iter().any(|rule| {
+        rule.as_str().unwrap().contains("session-only")
+    }), "model.set must document the Codex session-only key");
+    assert_eq!(protocol["events"]["model.updated"]["fields"], json!([
+        "identity", "generation", "model", "effort"
+    ]));
+    for error in ["agent_busy", "confirm_timeout", "invalid_effort", "invalid_request", "picker_mismatch"] {
+        assert!(protocol["errors"].as_array().unwrap().contains(&json!(error)));
+    }
+}

@@ -506,3 +506,119 @@ struct TimelineMarkdownTests {
         #expect(String(result.characters) == "ok a bad b also c")
     }
 }
+
+@Suite("Model and effort control")
+@MainActor struct AgentModelControlTests {
+    let identity = AgentTimelineIdentity(paneId: "w1:p1", terminalId: "t", agent: "claude", nativeSessionId: "s")
+    func payload(_ fields: [String: Any]) throws -> AgentBridgePayload {
+        var result = fields
+        result["identity"] = ["pane_id": "w1:p1", "terminal_id": "t", "agent": "claude", "native_session_id": "s"]
+        result["generation"] = 1
+        return try #require(AgentBridgeFrame.decode(JSONSerialization.data(withJSONObject: ["result": result])).result)
+    }
+    func state() -> AgentModelControlState {
+        let state = AgentModelControlState()
+        state.bind(identity: identity, generation: 1)
+        state.connect(nil, supported: true)
+        return state
+    }
+    @Test func capabilityDefaultsToFalseAndExpectationKeepsNullKeys() throws {
+        let frame = try AgentBridgeFrame.decode(Data(#"{"result":{"capabilities":{"claude_timeline":true}}}"#.utf8))
+        #expect(frame.result?.capabilities?.modelControl == false)
+        let enabled = try AgentBridgeFrame.decode(Data(#"{"result":{"capabilities":{"claude_timeline":true,"model_control":true}}}"#.utf8))
+        #expect(enabled.result?.capabilities?.modelControl == true)
+        let data = try JSONEncoder().encode(AgentModelExpectation(model: nil, effort: nil))
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["model"] is NSNull)
+        #expect(object["effort"] is NSNull)
+    }
+    @Test func statusUsesSelectedModelsEffortsAndFormatsLabels() throws {
+        let state = state()
+        try state.update(payload([
+            "model": ["id": "claude-opus-5-5", "label": "Opus 5.5"], "effort": "HIGH",
+            "models": [
+                ["id": "opus", "label": "Opus", "current": true, "efforts": [["id": "high", "label": "High"]]],
+                ["id": "sonnet", "label": "Sonnet", "efforts": []]
+            ],
+            "efforts": [["id": "low", "label": "Low"]]
+        ]), options: true)
+        #expect(state.label == "Opus 5.5 high")
+        #expect(state.accessibilityLabel == "Model Opus 5.5, effort high")
+        #expect(state.efforts.map(\.id) == ["high"])
+        #expect(state.selectedModelID == "opus")
+        #expect(state.isVisible)
+        try state.apply(payload(["applied": ["model": ["id": "sonnet", "label": "Sonnet 5.5"], "effort": NSNull()], "confirmed": true]))
+        #expect(state.efforts.isEmpty)
+        #expect(state.effortLabel == "Default")
+        #expect(state.label == "Sonnet 5.5")
+        state.reset()
+        #expect(!state.isVisible)
+        #expect(state.models.isEmpty)
+    }
+    @Test func statusEffortsApplyWhenNoModelIsKnown() throws {
+        let state = state()
+        try state.update(payload([
+            "model": NSNull(), "effort": NSNull(),
+            "models": [["id": "opus", "label": "Opus 5.5", "efforts": [["id": "high", "label": "High"]]]],
+            "efforts": [["id": "low", "label": "Low"], ["id": "high", "label": "High"]]
+        ]), options: true)
+        #expect(state.selectedModelID == nil)
+        #expect(state.efforts.map(\.id) == ["low", "high"])
+        state.reset()
+        #expect(state.efforts.isEmpty)
+    }
+    @Test func streamedOlderVersionNeverChecksTheAliasRow() throws {
+        let state = state()
+        try state.update(payload([
+            "model": ["id": "claude-haiku-5-5", "label": "Haiku 5.5"], "effort": "low",
+            "models": [["id": "haiku", "label": "Haiku 5.5", "current": true, "efforts": [["id": "low", "label": "Low"]]]],
+            "efforts": [["id": "low", "label": "Low"]]
+        ]), options: true)
+        #expect(state.selectedModelID == "haiku")
+        try state.update(payload(["model": ["id": "claude-haiku-4-5", "label": "Haiku 4.5"], "effort": "low"]))
+        #expect(state.selectedModelID == nil)
+        #expect(state.modelName == "Haiku 4.5")
+    }
+    @Test func partialResultsPreserveAppliedPairAndShowSpecificErrors() throws {
+        let state = state()
+        for (code, message) in [
+            ("agent_busy", "The agent is working — try again when it's idle."),
+            ("composer_not_empty", "Clear the agent's input box at the desk first."),
+            ("stale", "Something changed at the desk. Check the current model and try again."),
+            ("expect_mismatch", "Couldn't change the model. Try again.")
+        ] {
+            try state.apply(payload(["applied": ["model": ["id": "sonnet", "label": "Sonnet 5.5"], "effort": "medium"],
+                "confirmed": false, "error": code]))
+            #expect(state.pair.model?.id == "sonnet")
+            #expect(state.pair.effort == "medium")
+            #expect(state.errorMessage == message)
+            #expect(AgentModelControlState.message(for: code) == message)
+        }
+    }
+    @Test func updatesDecodeStringModelsAndRejectOldGenerations() throws {
+        let state = state()
+        let update = try payload(["model": "claude-opus-5-5", "effort": "high"])
+        try state.update(update)
+        #expect(state.label == "Opus 5.5 high")
+        #expect(AgentModelOption.label(for: "claude-opus-5-5-20261001") == "Opus 5.5")
+        var stale = update
+        stale.generation = 2
+        #expect(throws: AgentBridgeError.identityMismatch) { try state.update(stale) }
+        #expect(state.pair.effort == "high")
+        state.connect(nil, supported: false)
+        #expect(!state.isVisible)
+    }
+    @Test func modelEventsUseTimelineSequenceAndResetWithOccupant() throws {
+        let timeline = AgentTimelineState()
+        let owner = UUID()
+        timeline.begin(owner: owner, paneId: "w1:p1")
+        let data = try payload(["entries": []])
+        try timeline.consume(AgentBridgeFrame(event: "timeline.snapshot", epoch: "e", seq: 1, data: data), owner: owner)
+        try timeline.consume(AgentBridgeFrame(event: "model.updated", epoch: "e", seq: 2,
+            data: payload(["model": "claude-opus-5-5", "effort": "high"])), owner: owner)
+        #expect(timeline.modelControl.label == "Opus 5.5 high")
+        timeline.end(owner: owner, error: .closed)
+        #expect(timeline.modelControl.pair.model == nil)
+        #expect(!timeline.modelControl.isVisible)
+    }
+}

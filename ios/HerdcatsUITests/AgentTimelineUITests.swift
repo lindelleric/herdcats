@@ -742,4 +742,44 @@ final class AgentTimelineUITests: XCTestCase {
         XCTAssertFalse(app.scrollViews["pane-output-scroll-view"].exists)
         app.terminate()
     }
+
+    func testModelControlOpensConfigureSheetWithModelAndEffortRows() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-hc.screenshots", "-hc.screen", "timeline-model-control", "-paneShowComposeByDefault", "YES"]
+        launch(app)
+        let control = app.buttons["timeline-model-control"]
+        XCTAssertTrue(control.waitForExistence(timeout: 5))
+        XCTAssertEqual(control.label, "Model Opus 5.5, effort high")
+        let field = app.textFields["timeline-compose-field"].exists
+            ? app.textFields["timeline-compose-field"] : app.textViews["timeline-compose-field"]
+        field.tap()
+        // Drafts persist across launches; clear one restored from an earlier run.
+        if let draft = field.value as? String, !draft.isEmpty, draft != field.placeholderValue {
+            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: draft.count))
+        }
+        let send = app.buttons["timeline-compose-send"]
+        XCTAssertTrue(send.waitForExistence(timeout: 3), "Send stays visible next to the model control")
+        XCTAssertFalse(send.isEnabled, "Send is disabled while the draft is blank")
+        field.typeText("Hi")
+        XCTAssertTrue(app.buttons["timeline-compose-send"].waitForExistence(timeout: 3))
+        let composer = XCTAttachment(screenshot: app.screenshot())
+        composer.name = "Composer with model control"
+        composer.lifetime = .keepAlways
+        add(composer)
+        control.tap()
+        XCTAssertTrue(app.navigationBars["Configure"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.navigationBars["Configure"].buttons["Done"].exists)
+        let configure = XCTAttachment(screenshot: app.screenshot())
+        configure.name = "Configure sheet"
+        configure.lifetime = .keepAlways
+        add(configure)
+        XCTAssertTrue(app.buttons["model-configuration-effort"].exists)
+        app.buttons["model-configuration-model"].tap()
+        XCTAssertTrue(app.buttons["Haiku 5.5"].waitForExistence(timeout: 3))
+        let models = XCTAttachment(screenshot: app.screenshot())
+        models.name = "Model list"
+        models.lifetime = .keepAlways
+        add(models)
+        app.terminate()
+    }
 }

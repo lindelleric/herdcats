@@ -17,8 +17,12 @@ struct AgentBridgeParams: Encodable, Sendable {
     var labelLines: [String]? = nil
     var answers: [AgentQuestionAnswer]? = nil
     var skip: Bool? = nil
+    var modelControl: Bool? = nil
+    var model: String? = nil
+    var effort: String? = nil
+    var expect: AgentModelExpectation? = nil
 }
-enum AgentBridgeMethod: String, Sendable { case initialize, watch, history, content; case respond = "interaction.respond" }
+enum AgentBridgeMethod: String, Sendable { case initialize, watch, history, content; case respond = "interaction.respond"; case modelStatus = "model.status", modelSet = "model.set" }
 
 /// One non-PTY channel, with bounded requests and guarded approval responses.
 /// Cancellation closes this channel explicitly: canceling an async iterator
@@ -66,7 +70,7 @@ actor AgentBridgeClient {
         agent: String? = nil,
         onHandshake: (@Sendable (AgentBridgeCapabilities?, String?) async -> Void)? = nil
     ) async throws {
-        let handshake = try await request(.initialize, params: AgentBridgeParams(protocol: 1, recordContent: true, questions: true, approvals: true))
+        let handshake = try await request(.initialize, params: AgentBridgeParams(protocol: 1, recordContent: true, questions: true, approvals: true, modelControl: true))
         guard handshake.protocol == 1, handshake.epoch?.isEmpty == false else {
             throw AgentBridgeError.protocolMismatch
         }
@@ -87,6 +91,16 @@ actor AgentBridgeClient {
         }
         _ = try await request(.watch, params: AgentBridgeParams(paneId: paneId))
         try Task.checkCancellation()
+    }
+
+    func modelStatus() async throws -> AgentBridgePayload {
+        guard capabilities?.modelControl == true else { throw AgentBridgeError.unavailable("unsupported_capability") }
+        return try await request(.modelStatus, params: AgentBridgeParams())
+    }
+    func setModel(model: String?, effort: String?, expect: AgentModelExpectation) async throws -> AgentBridgePayload {
+        guard capabilities?.modelControl == true else { throw AgentBridgeError.unavailable("unsupported_capability") }
+        // Claude confirms two commands separately; each can take four seconds.
+        return try await request(.modelSet, params: AgentBridgeParams(model: model, effort: effort, expect: expect), timeout: 20)
     }
 
     func respond(requestId: String, option: UInt32, labelLines: [String]) async throws -> AgentApprovalResponse {
@@ -216,7 +230,7 @@ actor AgentBridgeClient {
             return try await withCheckedThrowingContinuation { continuation in
                 let timeoutTask = Task {
                     do { try await Task.sleep(for: .seconds(timeout)) } catch { return }
-                    if method == .content || method == .history { await self.retireReadRequest(id, error: .timeout) }
+                    if method == .content || method == .history || method == .modelStatus { await self.retireReadRequest(id, error: .timeout) }
                     else { await self.stop(.timeout) }
                 }
                 pending[id] = Pending(method: method, continuation: continuation, timeout: timeoutTask)
@@ -234,7 +248,7 @@ actor AgentBridgeClient {
             }
         } onCancel: {
             Task {
-                if method == .content || method == .history { await self.retireReadRequest(id, error: .closed) }
+                if method == .content || method == .history || method == .modelStatus { await self.retireReadRequest(id, error: .closed) }
                 else { await self.close() }
             }
         }

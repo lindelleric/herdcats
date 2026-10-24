@@ -2,7 +2,7 @@
 # Pinned release installer. No sudo, compiler, daemon or agent configuration.
 main() {
 set -eu
-HB_VERSION=0.3.0
+HB_VERSION=0.4.0
 HB_BIN_DIR=${HOME:?HOME is required}/.local/bin
 HB_REPLACE=no
 HB_BASE=https://github.com/zhiyao/herdcats/releases/download

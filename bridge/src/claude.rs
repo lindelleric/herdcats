@@ -117,6 +117,31 @@ pub struct Transcript {
     pub dropped_entries: usize,
     seen: HashSet<String>,
 }
+/// Claude Code records local slash commands (`/model`, `/effort`, ...) and
+/// their terminal output as user messages wrapped in these tags. They are
+/// desk-side UI chatter, not conversation, so the timeline skips them.
+const LOCAL_COMMAND_PREFIXES: &[&str] =
+    &["<command-name>", "<command-message>", "<local-command-stdout>", "<local-command-stderr>", "<local-command-caveat>"];
+
+pub(crate) fn is_local_command_echo(text: &str) -> bool {
+    let text = text.trim_start();
+    LOCAL_COMMAND_PREFIXES.iter().any(|prefix| text.starts_with(prefix))
+}
+
+#[cfg(test)]
+mod local_command_tests {
+    use super::is_local_command_echo;
+
+    #[test]
+    fn local_command_records_are_hidden() {
+        assert!(is_local_command_echo("<command-name>/effort</command-name>\n<command-args>low</command-args>"));
+        assert!(is_local_command_echo("<local-command-stdout>Set effort level to low</local-command-stdout>"));
+        assert!(is_local_command_echo("  <local-command-caveat>Caveat</local-command-caveat>"));
+        assert!(!is_local_command_echo("Please explain <command-name> tags"));
+        assert!(!is_local_command_echo("Fix the bug"));
+    }
+}
+
 pub(crate) fn bounded(text: &str) -> (String, bool) {
     let mut end = text.len().min(TEXT_LIMIT);
     while !text.is_char_boundary(end) {
@@ -236,7 +261,7 @@ impl Transcript {
         {
             return self.apply_notification(source_id, &text);
         }
-        if !text.is_empty() {
+        if !text.is_empty() && !(kind == "user" && is_local_command_echo(&text)) {
             let (text, truncated) = bounded(&text);
             self.upsert(Entry {
                 id: entry_id("message", source_id)?,
@@ -370,7 +395,7 @@ impl Transcript {
         {
             return self.apply_notification(source_id, &full_text);
         }
-        if !full_text.is_empty() {
+        if !full_text.is_empty() && !(kind == "user" && is_local_command_echo(&full_text)) {
             let (text, truncated) = bounded(&full_text);
             self.upsert(Entry {
                 id: entry_id("message", source_id)?,
